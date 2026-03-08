@@ -1,0 +1,14 @@
+services:
+  rustio:
+    build:
+      context: .
+      dockerfile: Dockerfile.rustio
+    container_name: rustio
+    environment:
+      - RUSTIO_ADDR=0.0.0.0:9000
+      - RUSTIO_DATA_DIR=/app/data
+    ports:
+      - "9000:9000"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped

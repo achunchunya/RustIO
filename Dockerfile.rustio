@@ -1,0 +1,38 @@
+# syntax=docker/dockerfile:1.7
+
+FROM rust:1.94-bookworm AS rust-builder
+WORKDIR /app
+
+COPY Cargo.toml ./
+COPY Cargo.lock ./
+COPY .cargo ./.cargo
+COPY crates ./crates
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git/db,sharing=locked \
+    --mount=type=cache,target=/app/target,sharing=locked \
+    cargo build --locked --release -p rustio && \
+    cp /app/target/release/rustio /tmp/rustio
+
+FROM node:22-alpine AS console-builder
+WORKDIR /app/web/console
+
+COPY web/console/package*.json ./
+RUN --mount=type=cache,target=/root/.npm,sharing=locked npm ci --prefer-offline --no-audit --no-fund
+
+COPY web/console ./
+RUN npm run build
+
+FROM debian:bookworm-slim AS runtime
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --from=rust-builder /tmp/rustio /usr/local/bin/rustio
+COPY --from=console-builder /app/web/console/dist /app/web/console/dist
+
+EXPOSE 9000
+ENV RUSTIO_ADDR=0.0.0.0:9000
+ENV RUSTIO_DATA_DIR=/app/data
+ENV RUSTIO_CONSOLE_DIST=/app/web/console/dist
+
+ENTRYPOINT ["rustio"]

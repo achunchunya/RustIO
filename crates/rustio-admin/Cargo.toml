@@ -1,0 +1,50 @@
+[package]
+name = "rustio-admin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+aes-gcm.workspace = true
+anyhow.workspace = true
+async-stream.workspace = true
+axum.workspace = true
+base64.workspace = true
+chrono.workspace = true
+crc32fast.workspace = true
+csv.workspace = true
+futures.workspace = true
+hmac.workspace = true
+hex.workspace = true
+http.workspace = true
+jsonwebtoken.workspace = true
+ldap3 = "0.11"
+md-5.workspace = true
+percent-encoding.workspace = true
+quick-xml.workspace = true
+reed-solomon-erasure.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tokio-rustls = "0.26"
+tracing.workspace = true
+uuid.workspace = true
+rustls = { version = "0.23", features = ["ring"] }
+rustls-native-certs = "0.8"
+rustls-pemfile = "2"
+rustio-core = { path = "../rustio-core" }
+
+[dev-dependencies]
+axum.workspace = true
+ldap3_proto = "0.6"
+openssl = { version = "0.10", features = ["vendored"] }
+p256 = { version = "0.13", features = ["ecdsa", "pem", "pkcs8"] }
+reqwest.workspace = true
+rsa = { version = "0.9", features = ["pem"] }
+tokio.workspace = true
+tokio-util = { version = "0.7", features = ["codec"] }

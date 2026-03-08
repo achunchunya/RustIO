@@ -1,0 +1,90 @@
+name: 缺陷反馈
+description: 提交一个可复现的问题，帮助我们定位和修复缺陷
+title: "[缺陷] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈问题。请尽量填写完整信息，便于我们快速复现和定位。
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: 问题概述
+      description: 请简要说明遇到了什么问题
+      placeholder: 例如：上传大文件后控制台显示成功，但对象列表未刷新
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 请按顺序描述如何复现该问题
+      placeholder: |
+        1. 启动服务
+        2. 创建 Bucket
+        3. 上传对象
+        4. 打开对象列表
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望结果
+      description: 你原本预期应该发生什么
+      placeholder: 例如：对象应立即出现在列表中，并返回成功状态
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果
+      description: 实际发生了什么，是否有报错或异常行为
+      placeholder: 例如：页面没有刷新，后端日志出现 InternalError
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志与报错信息
+      description: 如有控制台日志、服务端日志、截图或报错栈，请贴在这里
+      render: shell
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本信息
+      description: 请填写提交号、分支名或版本号
+      placeholder: 例如：ddf5cb8 / main
+
+  - type: dropdown
+    id: deploy_mode
+    attributes:
+      label: 部署方式
+      options:
+        - Docker 单端口部署
+        - 源码部署
+        - 其他
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: 环境信息
+      description: 请填写操作系统、浏览器或运行环境
+      placeholder: 例如：macOS 15 / Docker Desktop / Chrome 135
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已搜索现有 Issues，确认不是重复问题
+          required: true
+        - label: 我已尽量提供复现步骤与必要日志
+          required: true

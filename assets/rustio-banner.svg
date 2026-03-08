@@ -1,0 +1,47 @@
+<svg width="1280" height="640" viewBox="0 0 1280 640" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="640" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0F172A"/>
+      <stop offset="0.52" stop-color="#111827"/>
+      <stop offset="1" stop-color="#1D4ED8"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="242" y1="140" x2="1038" y2="504" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#22D3EE" stop-opacity="0.9"/>
+      <stop offset="0.5" stop-color="#60A5FA" stop-opacity="0.8"/>
+      <stop offset="1" stop-color="#A78BFA" stop-opacity="0.9"/>
+    </linearGradient>
+    <linearGradient id="card" x1="180" y1="124" x2="1114" y2="532" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.05"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1280" height="640" rx="36" fill="url(#bg)"/>
+  <circle cx="1076" cy="126" r="134" fill="#38BDF8" fill-opacity="0.12"/>
+  <circle cx="184" cy="562" r="158" fill="#A78BFA" fill-opacity="0.12"/>
+  <circle cx="1006" cy="522" r="198" fill="#22D3EE" fill-opacity="0.08"/>
+
+  <rect x="132" y="96" width="1016" height="448" rx="28" fill="url(#card)" stroke="#FFFFFF" stroke-opacity="0.18"/>
+  <rect x="164" y="132" width="952" height="376" rx="22" fill="#0F172A" fill-opacity="0.56" stroke="#FFFFFF" stroke-opacity="0.08"/>
+
+  <g opacity="0.95">
+    <path d="M256 222C256 197.699 275.699 178 300 178H368C392.301 178 412 197.699 412 222V290C412 314.301 392.301 334 368 334H300C275.699 334 256 314.301 256 290V222Z" fill="url(#glow)"/>
+    <path d="M334 222L356.168 260.5H311.832L334 222Z" fill="#0F172A" fill-opacity="0.82"/>
+    <rect x="320" y="266" width="28" height="42" rx="10" fill="#0F172A" fill-opacity="0.82"/>
+  </g>
+
+  <text x="452" y="250" fill="#E2E8F0" font-size="28" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif" letter-spacing="6">RUST OBJECT STORAGE</text>
+  <text x="448" y="340" fill="white" font-size="88" font-weight="700" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">RustIO</text>
+  <text x="452" y="402" fill="#BFDBFE" font-size="28" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">S3 兼容对象存储 · 单端口控制台 · 集群管理 · 复制 · 纠删码</text>
+
+  <g opacity="0.94">
+    <rect x="452" y="450" width="154" height="44" rx="22" fill="#22D3EE" fill-opacity="0.18" stroke="#22D3EE" stroke-opacity="0.35"/>
+    <text x="528.5" y="478" text-anchor="middle" fill="#E0F2FE" font-size="20" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">单端口部署</text>
+
+    <rect x="626" y="450" width="132" height="44" rx="22" fill="#60A5FA" fill-opacity="0.18" stroke="#60A5FA" stroke-opacity="0.35"/>
+    <text x="692" y="478" text-anchor="middle" fill="#DBEAFE" font-size="20" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">S3 兼容</text>
+
+    <rect x="778" y="450" width="150" height="44" rx="22" fill="#A78BFA" fill-opacity="0.18" stroke="#A78BFA" stroke-opacity="0.35"/>
+    <text x="853" y="478" text-anchor="middle" fill="#EDE9FE" font-size="20" font-family="Inter, PingFang SC, Microsoft YaHei, sans-serif">纠删码保护</text>
+  </g>
+</svg>
