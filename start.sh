@@ -66,6 +66,19 @@ resolve_path() {
   fi
 }
 
+version_gt() {
+  local current="$1"
+  local baseline="$2"
+
+  [[ "$current" != "$baseline" ]] && [[ "$(printf '%s\n%s\n' "$baseline" "$current" | sort -V | tail -n1)" == "$current" ]]
+}
+
+extract_supported_api_version() {
+  printf '%s\n' "$1" \
+    | sed -nE 's/.*Maximum supported API version is ([0-9.]+).*/\1/p' \
+    | head -n1
+}
+
 sync_ports_from_addr() {
   local addr_port=""
 
@@ -134,21 +147,30 @@ probe_docker_api_compatibility() {
   local probe_output=""
   local probe_status=0
   local supported_api_version=""
+  local client_api_version=""
+  local server_api_version=""
 
   set +e
-  probe_output="$(docker version --format '{{.Server.APIVersion}}' 2>&1)"
+  probe_output="$(docker version --format '{{.Client.APIVersion}} {{.Server.APIVersion}}' 2>&1)"
   probe_status=$?
   set -e
 
   if [[ $probe_status -eq 0 ]]; then
+    read -r client_api_version server_api_version <<<"$probe_output"
+
+    if [[ -n "$client_api_version" ]] && [[ -n "$server_api_version" ]] && version_gt "$client_api_version" "$server_api_version"; then
+      export DOCKER_API_VERSION="$server_api_version"
+      log "检测到 Docker Client API ${client_api_version} 高于 Daemon API ${server_api_version}，已自动锁定兼容版本。"
+      if docker version --format '{{.Server.APIVersion}}' >/dev/null 2>&1; then
+        return 0
+      fi
+      fail "自动锁定 Docker API 兼容版本后仍无法连接 daemon。 / Failed to connect to Docker daemon after locking API compatibility version."
+    fi
+
     return 0
   fi
 
-  supported_api_version="$(
-    printf '%s\n' "$probe_output" \
-      | sed -nE 's/.*Maximum supported API version is ([0-9.]+).*/\1/p' \
-      | head -n1
-  )"
+  supported_api_version="$(extract_supported_api_version "$probe_output")"
 
   if [[ -n "$supported_api_version" ]]; then
     export DOCKER_API_VERSION="$supported_api_version"
@@ -174,20 +196,46 @@ ensure_docker_ready() {
   DOCKER_API_COMPATIBILITY_PROBED=1
 }
 
+probe_compose_api_compatibility() {
+  local probe_output=""
+  local probe_status=0
+  local supported_api_version=""
+
+  set +e
+  probe_output="$("${COMPOSE_BIN[@]}" ps 2>&1)"
+  probe_status=$?
+  set -e
+
+  if [[ $probe_status -eq 0 ]]; then
+    return 0
+  fi
+
+  supported_api_version="$(extract_supported_api_version "$probe_output")"
+  if [[ -n "$supported_api_version" ]]; then
+    export DOCKER_API_VERSION="$supported_api_version"
+    log "检测到 Compose 访问 Docker Daemon 时 API 版本不兼容，已自动切换到 ${supported_api_version}。"
+    if "${COMPOSE_BIN[@]}" ps >/dev/null 2>&1; then
+      return 0
+    fi
+    fail "Compose 切换 Docker API 兼容版本后仍无法访问 daemon。 / Compose still cannot access Docker daemon after switching API compatibility version."
+  fi
+
+  printf '%s\n' "$probe_output" >&2
+  fail "探测 Compose 与 Docker Daemon 兼容性失败。 / Failed to verify compose and Docker daemon compatibility."
+}
+
 ensure_compose_ready() {
   ensure_docker_ready
 
   if docker compose version >/dev/null 2>&1; then
     COMPOSE_BIN=(docker compose)
-    return
-  fi
-
-  if command -v docker-compose >/dev/null 2>&1; then
+  elif command -v docker-compose >/dev/null 2>&1; then
     COMPOSE_BIN=(docker-compose)
-    return
+  else
+    fail "当前环境未启用 docker compose 插件，也未安装 docker-compose。 / Neither docker compose plugin nor docker-compose is available."
   fi
 
-  fail "当前环境未启用 docker compose 插件，也未安装 docker-compose。 / Neither docker compose plugin nor docker-compose is available."
+  probe_compose_api_compatibility
 }
 
 prepare_environment() {

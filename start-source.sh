@@ -140,6 +140,18 @@ version_ge() {
   [[ "$(printf '%s\n%s\n' "$required" "$current" | sort -V | head -n1)" == "$required" ]]
 }
 
+version_gt() {
+  local current="$1"
+  local baseline="$2"
+  [[ "$current" != "$baseline" ]] && [[ "$(printf '%s\n%s\n' "$baseline" "$current" | sort -V | tail -n1)" == "$current" ]]
+}
+
+extract_supported_api_version() {
+  printf '%s\n' "$1" \
+    | sed -nE 's/.*Maximum supported API version is ([0-9.]+).*/\1/p' \
+    | head -n1
+}
+
 get_glibc_version() {
   if command -v getconf >/dev/null 2>&1; then
     getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}'
@@ -171,21 +183,30 @@ probe_docker_api_compatibility() {
   local probe_output=""
   local probe_status=0
   local supported_api_version=""
+  local client_api_version=""
+  local server_api_version=""
 
   set +e
-  probe_output="$(docker version --format '{{.Server.APIVersion}}' 2>&1)"
+  probe_output="$(docker version --format '{{.Client.APIVersion}} {{.Server.APIVersion}}' 2>&1)"
   probe_status=$?
   set -e
 
   if [[ $probe_status -eq 0 ]]; then
+    read -r client_api_version server_api_version <<<"$probe_output"
+
+    if [[ -n "$client_api_version" ]] && [[ -n "$server_api_version" ]] && version_gt "$client_api_version" "$server_api_version"; then
+      export DOCKER_API_VERSION="$server_api_version"
+      log "检测到 Docker Client API ${client_api_version} 高于 Daemon API ${server_api_version}，已自动锁定兼容版本。"
+      if docker version --format '{{.Server.APIVersion}}' >/dev/null 2>&1; then
+        return 0
+      fi
+      fail "自动锁定 Docker API 兼容版本后仍无法连接 daemon。 / Failed to connect to Docker daemon after locking API compatibility version."
+    fi
+
     return 0
   fi
 
-  supported_api_version="$(
-    printf '%s\n' "$probe_output" \
-      | sed -nE 's/.*Maximum supported API version is ([0-9.]+).*/\1/p' \
-      | head -n1
-  )"
+  supported_api_version="$(extract_supported_api_version "$probe_output")"
 
   if [[ -n "$supported_api_version" ]]; then
     export DOCKER_API_VERSION="$supported_api_version"
