@@ -11,11 +11,12 @@ use aes_gcm::{
 };
 use axum::{
     body::{to_bytes, Bytes},
-    extract::{OriginalUri, Path, Query, State},
+    extract::{OriginalUri, Path, Query, Request, State},
     http::{
         header::{CONTENT_DISPOSITION, CONTENT_TYPE, HOST},
         HeaderMap, HeaderValue, Method, StatusCode, Uri,
     },
+    middleware::{self, Next},
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Redirect, Response,
@@ -590,7 +591,20 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 .get(s3_get_object)
                 .delete(s3_delete_object),
         )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            track_request_activity,
+        ))
         .with_state(state)
+}
+
+async fn track_request_activity(
+    State(state): State<Arc<AppState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    state.record_request_activity();
+    next.run(request).await
 }
 
 async fn index(State(state): State<Arc<AppState>>) -> Json<ApiEnvelope<serde_json::Value>> {

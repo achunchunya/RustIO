@@ -3,7 +3,7 @@ use std::{
     fs::OpenOptions,
     io::Write,
     path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicI64, AtomicU64, Ordering},
     sync::Arc,
 };
 
@@ -31,6 +31,7 @@ use tokio::{
     time::timeout,
 };
 use tokio_rustls::{client::TlsStream, TlsConnector};
+use tracing::info;
 use uuid::Uuid;
 
 use crate::routes::{
@@ -116,6 +117,48 @@ mod tests {
         assert_eq!(server, "smtp.example.com:587");
         assert_eq!(recipient, "ops@example.com");
         assert_eq!(transport, AlertSmtpTransport::StartTls);
+    }
+
+    #[test]
+    fn memory_trim_triggers_after_idle_threshold() {
+        assert!(AppState::should_trim_memory(
+            100,
+            0,
+            1_100,
+            std::time::Duration::from_secs(900)
+        ));
+    }
+
+    #[test]
+    fn memory_trim_skips_when_already_trimmed_since_last_request() {
+        assert!(!AppState::should_trim_memory(
+            100,
+            150,
+            1_100,
+            std::time::Duration::from_secs(900)
+        ));
+    }
+
+    #[test]
+    fn memory_trim_force_triggers_when_rss_exceeds_threshold() {
+        assert!(AppState::should_force_trim_memory(
+            0,
+            7_500,
+            128 * 1024 * 1024,
+            128 * 1024 * 1024,
+            std::time::Duration::from_secs(7_200)
+        ));
+    }
+
+    #[test]
+    fn memory_trim_force_skips_when_interval_not_elapsed() {
+        assert!(!AppState::should_force_trim_memory(
+            5_000,
+            7_500,
+            256 * 1024 * 1024,
+            128 * 1024 * 1024,
+            std::time::Duration::from_secs(7_200)
+        ));
     }
 
     #[test]
@@ -917,6 +960,8 @@ pub struct AppState {
     pub object_store: RwLock<HashMap<(String, String), Vec<u8>>>,
     pub object_meta: RwLock<HashMap<(String, String), S3ObjectMeta>>,
     pub multipart_uploads: RwLock<HashMap<String, MultipartUpload>>,
+    pub last_request_activity_at: AtomicI64,
+    pub last_memory_trim_at: AtomicI64,
     pub events: broadcast::Sender<RuntimeEvent>,
 }
 
@@ -948,6 +993,29 @@ fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     format!("{:x}", hasher.finalize())
+}
+
+#[cfg(target_os = "linux")]
+fn trim_process_memory() -> bool {
+    unsafe { libc::malloc_trim(0) != 0 }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn trim_process_memory() -> bool {
+    false
+}
+
+#[cfg(target_os = "linux")]
+fn current_process_rss_bytes() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|line| line.starts_with("VmRSS:"))?;
+    let value = line.split_whitespace().nth(1)?.parse::<u64>().ok()?;
+    Some(value.saturating_mul(1024))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn current_process_rss_bytes() -> Option<u64> {
+    None
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -2044,6 +2112,8 @@ impl AppState {
             object_store: RwLock::new(HashMap::new()),
             object_meta: RwLock::new(HashMap::new()),
             multipart_uploads: RwLock::new(HashMap::new()),
+            last_request_activity_at: AtomicI64::new(Utc::now().timestamp()),
+            last_memory_trim_at: AtomicI64::new(0),
             events,
         });
         state.restore_replication_runtime_state();
@@ -2065,6 +2135,59 @@ impl AppState {
             timestamp: Utc::now(),
             payload,
         });
+    }
+
+    pub fn record_request_activity(&self) {
+        self.last_request_activity_at
+            .store(Utc::now().timestamp(), Ordering::Relaxed);
+    }
+
+    fn maybe_trim_memory(&self) {
+        if !Self::memory_trim_enabled() {
+            return;
+        }
+
+        let now_ts = Utc::now().timestamp();
+        let last_request_at = self.last_request_activity_at.load(Ordering::Relaxed);
+        let last_trim_at = self.last_memory_trim_at.load(Ordering::Relaxed);
+
+        if Self::should_trim_memory(
+            last_request_at,
+            last_trim_at,
+            now_ts,
+            Self::memory_trim_idle_threshold(),
+        ) && self.trim_memory("idle", None, now_ts)
+        {
+            return;
+        }
+
+        let Some(rss_bytes) = current_process_rss_bytes() else {
+            return;
+        };
+        let threshold_bytes = Self::memory_trim_rss_threshold_bytes();
+        if Self::should_force_trim_memory(
+            last_trim_at,
+            now_ts,
+            rss_bytes,
+            threshold_bytes,
+            Self::memory_trim_force_interval(),
+        ) {
+            let _ = self.trim_memory("pressure", Some(rss_bytes), now_ts);
+        }
+    }
+
+    fn trim_memory(&self, reason: &str, rss_bytes: Option<u64>, now_ts: i64) -> bool {
+        let trimmed = trim_process_memory();
+        if trimmed {
+            self.last_memory_trim_at.store(now_ts, Ordering::Relaxed);
+            info!(
+                reason,
+                rss_bytes = rss_bytes.unwrap_or_default(),
+                threshold_bytes = Self::memory_trim_rss_threshold_bytes(),
+                "RustIO 已执行内存回收 / RustIO memory trim executed"
+            );
+        }
+        trimmed
     }
 
     async fn append_audit_with_sync(
@@ -8462,6 +8585,69 @@ impl AppState {
         std::time::Duration::from_millis(millis)
     }
 
+    fn memory_trim_enabled() -> bool {
+        std::env::var("RUSTIO_MEMORY_TRIM_ENABLED")
+            .map(|value| !(value.eq_ignore_ascii_case("false") || value == "0"))
+            .unwrap_or(true)
+    }
+
+    fn memory_trim_interval() -> std::time::Duration {
+        let secs = std::env::var("RUSTIO_MEMORY_TRIM_INTERVAL_SECONDS")
+            .ok()
+            .and_then(|raw| raw.parse::<u64>().ok())
+            .unwrap_or(300)
+            .clamp(30, 86_400);
+        std::time::Duration::from_secs(secs)
+    }
+
+    fn memory_trim_idle_threshold() -> std::time::Duration {
+        let secs = std::env::var("RUSTIO_MEMORY_TRIM_IDLE_SECONDS")
+            .ok()
+            .and_then(|raw| raw.parse::<u64>().ok())
+            .unwrap_or(900)
+            .clamp(30, 604_800);
+        std::time::Duration::from_secs(secs)
+    }
+
+    fn memory_trim_force_interval() -> std::time::Duration {
+        let secs = std::env::var("RUSTIO_MEMORY_TRIM_FORCE_INTERVAL_SECONDS")
+            .ok()
+            .and_then(|raw| raw.parse::<u64>().ok())
+            .unwrap_or(7_200)
+            .clamp(300, 604_800);
+        std::time::Duration::from_secs(secs)
+    }
+
+    fn memory_trim_rss_threshold_bytes() -> u64 {
+        let mb = std::env::var("RUSTIO_MEMORY_TRIM_RSS_THRESHOLD_MB")
+            .ok()
+            .and_then(|raw| raw.parse::<u64>().ok())
+            .unwrap_or(128)
+            .clamp(32, 65_536);
+        mb.saturating_mul(1024 * 1024)
+    }
+
+    fn should_trim_memory(
+        last_request_at: i64,
+        last_trim_at: i64,
+        now_ts: i64,
+        idle_threshold: std::time::Duration,
+    ) -> bool {
+        let idle_secs = idle_threshold.as_secs().min(i64::MAX as u64) as i64;
+        now_ts.saturating_sub(last_request_at) >= idle_secs && last_trim_at < last_request_at
+    }
+
+    fn should_force_trim_memory(
+        last_trim_at: i64,
+        now_ts: i64,
+        rss_bytes: u64,
+        threshold_bytes: u64,
+        min_interval: std::time::Duration,
+    ) -> bool {
+        let interval_secs = min_interval.as_secs().min(i64::MAX as u64) as i64;
+        rss_bytes >= threshold_bytes && now_ts.saturating_sub(last_trim_at) >= interval_secs
+    }
+
     fn managed_async_job_lease_interval() -> std::time::Duration {
         let millis = std::env::var("RUSTIO_ASYNC_JOB_LEASE_MS")
             .ok()
@@ -11342,6 +11528,13 @@ impl AppState {
                     .process_metadata_membership_watchdog_once()
                     .await;
                 tokio::time::sleep(Self::metadata_heartbeat_interval()).await;
+            }
+        });
+        let memory_trim_state = Arc::clone(self);
+        handle.spawn(async move {
+            loop {
+                tokio::time::sleep(Self::memory_trim_interval()).await;
+                memory_trim_state.maybe_trim_memory();
             }
         });
     }

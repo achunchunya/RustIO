@@ -2171,6 +2171,7 @@ dependencies = [
  "jsonwebtoken",
  "ldap3",
  "ldap3_proto",
+ "libc",
  "md-5",
  "openssl",
  "p256",

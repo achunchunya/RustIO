@@ -19,6 +19,7 @@ hmac.workspace = true
 hex.workspace = true
 http.workspace = true
 jsonwebtoken.workspace = true
+libc = "0.2"
 ldap3 = "0.11"
 md-5.workspace = true
 percent-encoding.workspace = true
