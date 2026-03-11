@@ -163,6 +163,19 @@ mod tests {
     }
 
     #[test]
+    fn memory_trim_periodic_interval_defaults_to_one_hour() {
+        let _guard = test_env_lock()
+            .lock()
+            .expect("env lock should be available");
+        std::env::remove_var("RUSTIO_MEMORY_TRIM_PERIODIC_SECONDS");
+
+        assert_eq!(
+            AppState::memory_trim_periodic_interval(),
+            std::time::Duration::from_secs(3_600)
+        );
+    }
+
+    #[test]
     fn memory_trim_triggers_after_idle_threshold() {
         assert!(AppState::should_trim_memory(
             100,
@@ -201,6 +214,24 @@ mod tests {
             256 * 1024 * 1024,
             128 * 1024 * 1024,
             std::time::Duration::from_secs(7_200)
+        ));
+    }
+
+    #[test]
+    fn memory_trim_periodic_triggers_when_interval_elapsed() {
+        assert!(AppState::should_periodic_trim_memory(
+            0,
+            3_700,
+            std::time::Duration::from_secs(3_600)
+        ));
+    }
+
+    #[test]
+    fn memory_trim_periodic_skips_when_interval_not_elapsed() {
+        assert!(!AppState::should_periodic_trim_memory(
+            2_000,
+            3_700,
+            std::time::Duration::from_secs(3_600)
         ));
     }
 
@@ -2223,6 +2254,15 @@ impl AppState {
             return;
         }
 
+        if Self::should_periodic_trim_memory(
+            last_trim_at,
+            now_ts,
+            Self::memory_trim_periodic_interval(),
+        ) && self.trim_memory("periodic", current_rss_bytes, now_ts)
+        {
+            return;
+        }
+
         let Some(rss_bytes) = current_rss_bytes else {
             return;
         };
@@ -2752,6 +2792,15 @@ impl AppState {
         std::time::Duration::from_secs(secs)
     }
 
+    fn memory_trim_periodic_interval() -> std::time::Duration {
+        let secs = std::env::var("RUSTIO_MEMORY_TRIM_PERIODIC_SECONDS")
+            .ok()
+            .and_then(|raw| raw.parse::<u64>().ok())
+            .unwrap_or(3_600)
+            .clamp(300, 604_800);
+        std::time::Duration::from_secs(secs)
+    }
+
     fn memory_trim_rss_threshold_bytes() -> u64 {
         let mb = std::env::var("RUSTIO_MEMORY_TRIM_RSS_THRESHOLD_MB")
             .ok()
@@ -2780,6 +2829,15 @@ impl AppState {
     ) -> bool {
         let interval_secs = min_interval.as_secs().min(i64::MAX as u64) as i64;
         rss_bytes >= threshold_bytes && now_ts.saturating_sub(last_trim_at) >= interval_secs
+    }
+
+    fn should_periodic_trim_memory(
+        last_trim_at: i64,
+        now_ts: i64,
+        interval: std::time::Duration,
+    ) -> bool {
+        let interval_secs = interval.as_secs().min(i64::MAX as u64) as i64;
+        now_ts.saturating_sub(last_trim_at) >= interval_secs
     }
 
     const REPLICATION_NON_RETRYABLE_PREFIX: &'static str = "__RUSTIO_NON_RETRYABLE__:";
