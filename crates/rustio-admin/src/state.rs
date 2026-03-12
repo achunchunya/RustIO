@@ -163,7 +163,7 @@ mod tests {
     }
 
     #[test]
-    fn memory_trim_periodic_interval_defaults_to_one_hour() {
+    fn memory_trim_periodic_interval_defaults_to_ten_minutes() {
         let _guard = test_env_lock()
             .lock()
             .expect("env lock should be available");
@@ -171,7 +171,20 @@ mod tests {
 
         assert_eq!(
             AppState::memory_trim_periodic_interval(),
-            std::time::Duration::from_secs(3_600)
+            std::time::Duration::from_secs(600)
+        );
+    }
+
+    #[test]
+    fn storage_scan_interval_defaults_to_thirty_minutes() {
+        let _guard = test_env_lock()
+            .lock()
+            .expect("env lock should be available");
+        std::env::remove_var("RUSTIO_STORAGE_SCAN_INTERVAL_MS");
+
+        assert_eq!(
+            AppState::storage_scan_interval(),
+            std::time::Duration::from_secs(1_800)
         );
     }
 
@@ -2745,7 +2758,7 @@ impl AppState {
         let ms = std::env::var("RUSTIO_STORAGE_SCAN_INTERVAL_MS")
             .ok()
             .and_then(|raw| raw.parse::<u64>().ok())
-            .unwrap_or(300_000)
+            .unwrap_or(1_800_000)
             .clamp(500, 3_600_000);
         std::time::Duration::from_millis(ms)
     }
@@ -2796,7 +2809,7 @@ impl AppState {
         let secs = std::env::var("RUSTIO_MEMORY_TRIM_PERIODIC_SECONDS")
             .ok()
             .and_then(|raw| raw.parse::<u64>().ok())
-            .unwrap_or(3_600)
+            .unwrap_or(600)
             .clamp(300, 604_800);
         std::time::Duration::from_secs(secs)
     }

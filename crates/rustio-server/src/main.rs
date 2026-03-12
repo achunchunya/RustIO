@@ -2,8 +2,12 @@ use std::net::SocketAddr;
 
 use anyhow::Context;
 use rustio_admin::{build_router, AppState};
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
-use tracing::info;
+use tower_http::{
+    classify::ServerErrorsFailureClass,
+    cors::CorsLayer,
+    trace::{DefaultMakeSpan, TraceLayer},
+};
+use tracing::{error, info, Level};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -24,7 +28,25 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState::bootstrap();
     let app = build_router(state)
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(
+                    DefaultMakeSpan::new()
+                        .level(Level::INFO)
+                        .include_headers(false),
+                )
+                .on_failure(
+                    |failure: ServerErrorsFailureClass,
+                     latency: std::time::Duration,
+                     _span: &tracing::Span| {
+                        error!(
+                            classification = %failure,
+                            latency_ms = latency.as_millis(),
+                            "HTTP 请求失败 / HTTP request failed"
+                        );
+                    },
+                ),
+        )
         .layer(CorsLayer::permissive());
 
     let addr = resolve_listen_addr()?;
