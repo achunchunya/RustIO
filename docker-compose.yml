@@ -2,7 +2,7 @@ services:
   rustio:
     build:
       context: .
-      dockerfile: Dockerfile.rustio
+      dockerfile: ${RUSTIO_DOCKERFILE:-Dockerfile.rustio}
     container_name: rustio
     environment:
       - RUSTIO_ADDR=0.0.0.0:9000
