@@ -2295,15 +2295,17 @@ impl AppState {
         let trimmed = trim_process_memory();
         if trimmed {
             self.last_memory_trim_at.store(now_ts, Ordering::Relaxed);
-            let rss_after_bytes = current_process_rss_bytes();
-            info!(
-                reason,
-                rss_bytes = rss_bytes.or(rss_after_bytes).unwrap_or_default(),
-                rss_before_bytes = rss_bytes.unwrap_or_default(),
-                rss_after_bytes = rss_after_bytes.unwrap_or_default(),
-                threshold_bytes = Self::memory_trim_rss_threshold_bytes(),
-                "RustIO 已执行内存回收 / RustIO memory trim executed"
-            );
+            if reason != "periodic" {
+                let rss_after_bytes = current_process_rss_bytes();
+                info!(
+                    reason,
+                    rss_bytes = rss_bytes.or(rss_after_bytes).unwrap_or_default(),
+                    rss_before_bytes = rss_bytes.unwrap_or_default(),
+                    rss_after_bytes = rss_after_bytes.unwrap_or_default(),
+                    threshold_bytes = Self::memory_trim_rss_threshold_bytes(),
+                    "RustIO 已执行内存回收 / RustIO memory trim executed"
+                );
+            }
         }
         trimmed
     }
