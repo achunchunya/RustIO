@@ -3,6 +3,20 @@
 FROM rust:1.94-bookworm AS rust-builder
 WORKDIR /app
 
+ENV CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
+ENV CARGO_NET_RETRY=10
+ENV CARGO_HTTP_TIMEOUT=600
+ENV CARGO_HTTP_MULTIPLEXING=false
+
+RUN mkdir -p /usr/local/cargo && \
+    printf '%s\n' \
+      '[source.crates-io]' \
+      'replace-with = "rsproxy-sparse"' \
+      '' \
+      '[source.rsproxy-sparse]' \
+      'registry = "sparse+https://rsproxy.cn/index/"' \
+      > /usr/local/cargo/config.toml
+
 COPY Cargo.toml ./
 COPY Cargo.lock ./
 COPY crates ./crates
