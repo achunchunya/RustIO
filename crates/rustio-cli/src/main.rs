@@ -1,3 +1,6 @@
+// clap 子命令枚举各变体体积差异较大，装箱会破坏 derive 体验，故在 CLI 入口豁免该 lint。
+#![allow(clippy::large_enum_variant)]
+
 use std::env;
 
 use anyhow::{Context, Result};

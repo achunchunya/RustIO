@@ -1,3 +1,11 @@
+// 集成测试代码放宽若干 lint：持锁跨 await（串行化）、&PathBuf 形参、重复分支与多参 helper。
+#![allow(
+    clippy::await_holding_lock,
+    clippy::ptr_arg,
+    clippy::if_same_then_else,
+    clippy::too_many_arguments
+)]
+
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -9933,6 +9941,132 @@ async fn cluster_diagnostic_support_bundle_is_redacted_and_downloadable() {
     assert!(
         download_body.contains(&report_id),
         "download payload should include report id"
+    );
+
+    admin.stop().await;
+}
+
+#[tokio::test]
+async fn cluster_diagnostic_incident_pack_includes_runbook_sections() {
+    let admin = AdminServer::spawn().await;
+    let access_token = admin.login_access_token().await;
+
+    let create = admin
+        .client
+        .post(format!("{}/api/v1/cluster/diagnostics", admin.base_url))
+        .query(&[
+            ("kind", "incident-pack"),
+            ("incident_id", "INC-20260308-P1"),
+            ("severity", "p1"),
+            ("incident_summary", "replication-lag"),
+        ])
+        .bearer_auth(&access_token)
+        .send()
+        .await
+        .expect("create incident pack request should complete");
+    assert_eq!(create.status(), StatusCode::OK);
+    let create_body = create
+        .json::<Value>()
+        .await
+        .expect("incident pack create response should be json");
+    let report_id = create_body
+        .pointer("/data/id")
+        .and_then(Value::as_str)
+        .expect("incident pack report id should exist")
+        .to_string();
+    assert_eq!(
+        create_body.pointer("/data/kind"),
+        Some(&json!("incident-pack"))
+    );
+    assert_eq!(
+        create_body.pointer("/data/format"),
+        Some(&json!("incident-pack.v1"))
+    );
+    assert_eq!(
+        create_body.pointer("/data/download_name"),
+        Some(&json!(format!("rustio-incident-pack-{report_id}.json")))
+    );
+
+    let detail = admin
+        .client
+        .get(format!(
+            "{}/api/v1/cluster/diagnostics/{}",
+            admin.base_url, report_id
+        ))
+        .bearer_auth(&access_token)
+        .send()
+        .await
+        .expect("get incident pack detail request should complete");
+    assert_eq!(detail.status(), StatusCode::OK);
+    let detail_body = detail
+        .json::<Value>()
+        .await
+        .expect("incident pack detail response should be json");
+    assert_eq!(
+        detail_body.pointer("/data/format_version"),
+        Some(&json!("incident-pack.v1"))
+    );
+    assert_eq!(
+        detail_body.pointer("/data/sections/incident_summary/incident_id"),
+        Some(&json!("INC-20260308-P1"))
+    );
+    assert_eq!(
+        detail_body.pointer("/data/sections/incident_summary/severity"),
+        Some(&json!("P1"))
+    );
+    assert_eq!(
+        detail_body.pointer("/data/sections/incident_summary/summary"),
+        Some(&json!("replication-lag"))
+    );
+    assert!(
+        detail_body
+            .pointer("/data/sections/triage_flow")
+            .and_then(Value::as_array)
+            .map(|items| !items.is_empty())
+            .unwrap_or(false),
+        "incident pack should include triage flow"
+    );
+    assert!(
+        detail_body
+            .pointer("/data/sections/restore_playbook")
+            .and_then(Value::as_array)
+            .map(|items| !items.is_empty())
+            .unwrap_or(false),
+        "incident pack should include restore playbook"
+    );
+    assert!(
+        detail_body
+            .pointer("/data/sections/runbook_catalog")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items.iter().any(|item| {
+                    item.get("path").and_then(Value::as_str)
+                        == Some("docs/operations/incident-runbook.md")
+                })
+            })
+            .unwrap_or(false),
+        "incident pack should include local runbook catalog"
+    );
+
+    let download = admin
+        .client
+        .get(format!(
+            "{}/api/v1/cluster/diagnostics/{}/download",
+            admin.base_url, report_id
+        ))
+        .bearer_auth(&access_token)
+        .send()
+        .await
+        .expect("download incident pack request should complete");
+    assert_eq!(download.status(), StatusCode::OK);
+    let content_disposition = download
+        .headers()
+        .get(header::CONTENT_DISPOSITION)
+        .and_then(|value| value.to_str().ok())
+        .expect("incident pack download should expose content-disposition");
+    assert!(
+        content_disposition.contains(&format!("rustio-incident-pack-{report_id}.json")),
+        "incident pack download file name should include report id"
     );
 
     admin.stop().await;

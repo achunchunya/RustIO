@@ -1,3 +1,11 @@
+// 集成测试代码放宽若干 lint：持锁跨 await（串行化）、&PathBuf 形参、重复分支与多参 helper。
+#![allow(
+    clippy::await_holding_lock,
+    clippy::ptr_arg,
+    clippy::if_same_then_else,
+    clippy::too_many_arguments
+)]
+
 use std::{
     collections::HashMap,
     path::PathBuf,
