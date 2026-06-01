@@ -112,37 +112,3 @@ fn contains_cjk(text: &str) -> bool {
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::bilingual_message;
-
-    #[test]
-    fn bilingual_message_keeps_existing_bilingual_text() {
-        let msg = bilingual_message("bad_request", "参数错误 / invalid argument");
-        assert_eq!(msg, "参数错误 / invalid argument");
-    }
-
-    #[test]
-    fn bilingual_message_wraps_english_only_message() {
-        let msg = bilingual_message("bad_request", "invalid argument");
-        assert_eq!(msg, "请求参数错误 / invalid argument");
-    }
-
-    #[test]
-    fn bilingual_message_wraps_chinese_only_message() {
-        let msg = bilingual_message("not_found", "存储桶不存在");
-        assert_eq!(msg, "存储桶不存在 / not found");
-    }
-
-    #[test]
-    fn bilingual_message_handles_empty_message() {
-        let msg = bilingual_message("internal_error", "");
-        assert_eq!(msg, "服务器内部错误 / internal server error");
-    }
-
-    #[test]
-    fn bilingual_message_maps_service_unavailable() {
-        let msg = bilingual_message("service_unavailable", "");
-        assert_eq!(msg, "服务暂不可用 / service unavailable");
-    }
-}

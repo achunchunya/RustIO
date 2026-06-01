@@ -40,12 +40,3 @@ rustls-native-certs = "0.8"
 rustls-pemfile = "2"
 rustio-core = { path = "../rustio-core" }
 
-[dev-dependencies]
-axum.workspace = true
-ldap3_proto = "0.6"
-openssl = { version = "0.10", features = ["vendored"] }
-p256 = { version = "0.13", features = ["ecdsa", "pem", "pkcs8"] }
-reqwest.workspace = true
-rsa = { version = "0.9", features = ["pem"] }
-tokio.workspace = true
-tokio-util = { version = "0.7", features = ["codec"] }

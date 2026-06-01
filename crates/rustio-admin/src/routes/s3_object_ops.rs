@@ -162,6 +162,103 @@ pub(crate) async fn s3_root_get_object(
         }
     }
 
+    // 流式下载快路径：无 Range 请求 + 当前对象 + etag 非空 + 非加密 + 非远端层 + 非 restore-active。
+    // 满足时内存恒定（不随对象大小增长）；其余情况落入下方全量加载路径（Range/归档版本/加密等）。
+    let has_range = headers.contains_key(axum::http::header::RANGE);
+    let stream_eligible = !has_range
+        && selected_is_current
+        && selected_meta.as_ref().is_some_and(|meta| {
+            !meta.etag.is_empty()
+                && !encryption_enabled(meta)
+                && meta.remote_tier.is_none()
+                && !object_restore_is_active(meta)
+        });
+    if stream_eligible {
+        match read_ec_object_streaming(&state, &bucket, &key, selected_meta.as_ref()).await {
+            Ok(Some(body)) => {
+                touch_object_access_heat(&state, &bucket, &key).await;
+                let meta = selected_meta
+                    .as_ref()
+                    .expect("stream_eligible guarantees meta exists");
+                let etag_quoted = format!("\"{}\"", meta.etag);
+                let last_modified = meta.created_at;
+                if let Some(response) = evaluate_object_preconditions(
+                    &method,
+                    &headers,
+                    &meta.etag,
+                    &etag_quoted,
+                    last_modified,
+                    &key,
+                ) {
+                    return response;
+                }
+                let mut response = body.into_response();
+                *response.status_mut() = StatusCode::OK;
+                response.headers_mut().insert(
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::HeaderValue::from_static("application/octet-stream"),
+                );
+                response.headers_mut().insert(
+                    axum::http::header::HeaderName::from_static("accept-ranges"),
+                    axum::http::HeaderValue::from_static("bytes"),
+                );
+                if let Ok(value) =
+                    axum::http::HeaderValue::from_str(&format_http_date(last_modified))
+                {
+                    response
+                        .headers_mut()
+                        .insert(axum::http::header::LAST_MODIFIED, value);
+                }
+                if let Ok(value) = axum::http::HeaderValue::from_str(&meta.size.to_string()) {
+                    response
+                        .headers_mut()
+                        .insert(axum::http::header::CONTENT_LENGTH, value);
+                }
+                if let Ok(value) = axum::http::HeaderValue::from_str(&etag_quoted) {
+                    response
+                        .headers_mut()
+                        .insert(axum::http::header::ETAG, value);
+                }
+                if let Ok(value) = axum::http::HeaderValue::from_str(&meta.version_id) {
+                    response.headers_mut().insert(
+                        axum::http::header::HeaderName::from_static("x-amz-version-id"),
+                        value,
+                    );
+                }
+                if let Some(mode) = meta.retention_mode.as_deref() {
+                    if let Ok(value) = axum::http::HeaderValue::from_str(mode) {
+                        response.headers_mut().insert(
+                            axum::http::header::HeaderName::from_static("x-amz-object-lock-mode"),
+                            value,
+                        );
+                    }
+                }
+                if let Some(retention_until) = meta.retention_until {
+                    if let Ok(value) = axum::http::HeaderValue::from_str(
+                        &retention_until.to_rfc3339_opts(SecondsFormat::Secs, true),
+                    ) {
+                        response.headers_mut().insert(
+                            axum::http::header::HeaderName::from_static(
+                                "x-amz-object-lock-retain-until-date",
+                            ),
+                            value,
+                        );
+                    }
+                }
+                if meta.legal_hold {
+                    response.headers_mut().insert(
+                        axum::http::header::HeaderName::from_static("x-amz-object-lock-legal-hold"),
+                        axum::http::HeaderValue::from_static("ON"),
+                    );
+                }
+                apply_object_metadata_headers(&mut response, meta);
+                return response;
+            }
+            Ok(None) => {}
+            Err(response) => return response,
+        }
+    }
+
     let bytes = if selected_is_current {
         match read_current_object_payload(&state, &bucket, &key, selected_meta.as_ref()).await {
             Ok(Some(bytes)) => bytes,
@@ -2047,20 +2144,28 @@ pub(crate) async fn s3_complete_multipart_upload(
     )
     .await;
     object_meta.encryption = upload_encryption;
-    let complete_bytes = match tokio::fs::read(&target_path).await {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            return s3_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "InternalError",
-                &format!("Failed to read completed object payload: {err}"),
-                &key,
-            );
+    if encryption_enabled(&object_meta) {
+        // 加密对象需整体 AES-GCM 加密，暂走全量读取路径（流式分块加密为后续阶段）
+        let complete_bytes = match tokio::fs::read(&target_path).await {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                return s3_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "InternalError",
+                    &format!("Failed to read completed object payload: {err}"),
+                    &key,
+                );
+            }
+        };
+        if let Err(response) =
+            write_ec_object(&state, &bucket, &key, &complete_bytes, &mut object_meta).await
+        {
+            return response;
         }
-    };
-    if let Err(response) =
-        write_ec_object(&state, &bucket, &key, &complete_bytes, &mut object_meta).await
+    } else if let Err(response) =
+        write_ec_object_streaming(&state, &bucket, &key, &target_path, target_len).await
     {
+        // 非加密对象：从合并后的临时文件流式编码，内存恒定，不随对象大小增长
         return response;
     }
     if let Err(response) = persist_current_object_meta(&state, object_meta.clone()).await {
