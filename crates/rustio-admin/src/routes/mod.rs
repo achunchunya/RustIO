@@ -639,13 +639,6 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 .post(s3_root_post_object)
                 .delete(s3_root_delete_object),
         )
-        .route("/s3/{bucket}", put(s3_create_bucket).get(s3_list_objects))
-        .route(
-            "/s3/{bucket}/{*key}",
-            put(s3_put_object)
-                .get(s3_get_object)
-                .delete(s3_delete_object),
-        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             track_request_activity,
