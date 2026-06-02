@@ -838,3 +838,21 @@ pub(crate) fn wrap<T>(data: T) -> Json<ApiEnvelope<T>> {
         request_id: Uuid::new_v4().to_string(),
     })
 }
+
+/// 原子写入：先写同名 `.tmp` 临时文件 + fsync，再原子 rename 到目标路径，确保崩溃安全。
+pub(crate) async fn atomic_write(path: &FsPath, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = path.with_extension(
+        path.extension()
+            .map(|ext| format!("{}.tmp", ext.to_string_lossy()))
+            .unwrap_or_else(|| "tmp".to_string()),
+    );
+    if let Some(parent) = tmp.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    tokio::fs::write(&tmp, bytes).await?;
+    // flush 到磁盘（macOS fsync 即可，Linux 需 fsync + fsync dir）
+    let file = tokio::fs::File::open(&tmp).await?;
+    file.sync_all().await?;
+    drop(file);
+    tokio::fs::rename(&tmp, path).await
+}

@@ -80,7 +80,7 @@ pub(crate) async fn write_ec_object(
             write_failed = true;
         }
         if !write_failed
-            && tokio::fs::write(&shard_path, &shards[shard_index])
+            && atomic_write(&shard_path, &shards[shard_index])
                 .await
                 .is_ok()
         {
@@ -138,7 +138,7 @@ pub(crate) async fn write_ec_object(
             key,
         )
     })?;
-    if let Err(err) = tokio::fs::write(&manifest_path, bytes).await {
+    if let Err(err) = atomic_write(&manifest_path, &bytes).await {
         let cleanup_failed = cleanup_ec_written_shards(&shard_infos).await;
         return Err(s3_error(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -383,7 +383,7 @@ pub(crate) async fn write_ec_object_streaming(
             key,
         )
     })?;
-    if let Err(err) = tokio::fs::write(&manifest_path, bytes).await {
+    if let Err(err) = atomic_write(&manifest_path, &bytes).await {
         cleanup_streaming_shards(&shard_paths).await;
         return Err(s3_error(
             StatusCode::INTERNAL_SERVER_ERROR,

@@ -620,7 +620,7 @@ pub(crate) async fn persist_archived_object_meta(
             &meta.key,
         )
     })?;
-    tokio::fs::write(&meta_path, bytes).await.map_err(|err| {
+    atomic_write(&meta_path, &bytes).await.map_err(|err| {
         s3_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "InternalError",
@@ -657,7 +657,7 @@ pub(crate) async fn persist_current_object_meta(
         )
     })?;
 
-    tokio::fs::write(&meta_path, bytes).await.map_err(|err| {
+    atomic_write(&meta_path, &bytes).await.map_err(|err| {
         s3_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "InternalError",
