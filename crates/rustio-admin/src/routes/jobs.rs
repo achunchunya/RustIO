@@ -586,10 +586,10 @@ pub(crate) async fn execute_replication_requeue_batch(
 
     let metas = state
         .object_meta
-        .read()
-        .await
         .iter()
-        .filter(|((bucket, key), meta)| {
+        .filter(|entry| {
+            let (bucket, key) = entry.key().clone();
+            let meta = entry.value();
             bucket == source_bucket
                 && !meta.delete_marker
                 && !meta.version_id.is_empty()
@@ -599,7 +599,10 @@ pub(crate) async fn execute_replication_requeue_batch(
                     .map(|prefix| key.starts_with(prefix))
                     .unwrap_or(true)
         })
-        .map(|((_, key), meta)| (key.clone(), meta.clone()))
+        .map(|entry| {
+            let (_, key) = entry.key();
+            (key.clone(), entry.value().clone())
+        })
         .collect::<Vec<_>>();
 
     let backlog = state.replication_backlog.read().await.clone();

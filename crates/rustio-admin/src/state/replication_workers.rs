@@ -324,10 +324,8 @@ impl AppState {
     ) -> Result<Option<S3ObjectMeta>, String> {
         let cached = self
             .object_meta
-            .read()
-            .await
             .get(&(item.source_bucket.clone(), item.object_key.clone()))
-            .cloned();
+            .map(|r| r.value().clone());
         if let Some(version_id) = item.version_id.as_deref() {
             if let Some(meta) = cached.clone() {
                 if meta.version_id == version_id {

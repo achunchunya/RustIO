@@ -461,7 +461,7 @@ pub struct AppState {
     pub object_access_heat: RwLock<HashMap<(String, String), u64>>,
     pub storage_governance: RwLock<StorageGovernanceRuntimeState>,
     pub object_store: RwLock<HashMap<(String, String), Vec<u8>>>,
-    pub object_meta: RwLock<HashMap<(String, String), S3ObjectMeta>>,
+    pub object_meta: dashmap::DashMap<(String, String), S3ObjectMeta>,
     pub multipart_uploads: RwLock<HashMap<String, MultipartUpload>>,
     pub last_request_activity_at: AtomicI64,
     pub last_memory_trim_at: AtomicI64,

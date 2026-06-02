@@ -208,11 +208,7 @@ pub(crate) async fn delete_bucket_spec(
         .write()
         .await
         .retain(|(bucket, _), _| bucket != &name);
-    state
-        .object_meta
-        .write()
-        .await
-        .retain(|(bucket, _), _| bucket != &name);
+    state.object_meta.retain(|(bucket, _), _| bucket != &name);
     state
         .sync_metadata_raft("bucket-delete")
         .await
@@ -2706,7 +2702,8 @@ pub(crate) async fn delete_remote_tier(
             )));
         }
     }
-    if state.object_meta.read().await.values().any(|meta| {
+    if state.object_meta.iter().any(|entry| {
+        let meta = entry.value();
         meta.remote_tier
             .as_ref()
             .map(|item| normalize_remote_tier_name(&item.tier) == normalized_name)

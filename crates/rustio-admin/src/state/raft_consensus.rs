@@ -2763,11 +2763,11 @@ impl AppState {
             .bucket_encryptions
             .into_iter()
             .collect::<HashMap<_, _>>();
-        *self.object_meta.write().await = snapshot
-            .objects
-            .into_iter()
-            .map(|entry| ((entry.bucket, entry.key), entry.meta))
-            .collect::<HashMap<_, _>>();
+        self.object_meta.clear();
+        for entry in snapshot.objects {
+            self.object_meta
+                .insert((entry.bucket, entry.key), entry.meta);
+        }
         *self.credentials.write().await =
             snapshot.credentials.into_iter().collect::<HashMap<_, _>>();
         *self.users.write().await = snapshot.iam_users;

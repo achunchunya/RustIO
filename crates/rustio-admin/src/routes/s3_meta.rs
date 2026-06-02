@@ -668,8 +668,6 @@ pub(crate) async fn persist_current_object_meta(
 
     state
         .object_meta
-        .write()
-        .await
         .insert((meta.bucket.clone(), meta.key.clone()), meta);
     state
         .sync_metadata_raft("object-meta-upsert")
@@ -692,10 +690,8 @@ pub(crate) async fn read_current_object_meta(
 ) -> Result<Option<S3ObjectMeta>, Response> {
     if let Some(meta) = state
         .object_meta
-        .read()
-        .await
         .get(&(bucket.to_string(), key.to_string()))
-        .cloned()
+        .map(|r| r.value().clone())
     {
         return Ok(Some(meta));
     }
@@ -705,8 +701,6 @@ pub(crate) async fn read_current_object_meta(
     };
     state
         .object_meta
-        .write()
-        .await
         .insert((bucket.to_string(), key.to_string()), meta.clone());
     Ok(Some(meta))
 }
@@ -749,8 +743,6 @@ pub(crate) async fn remove_current_object_meta(
 ) -> Result<(), Response> {
     state
         .object_meta
-        .write()
-        .await
         .remove(&(bucket.to_string(), key.to_string()));
 
     let bucket_root = bucket_path(state, bucket)?;

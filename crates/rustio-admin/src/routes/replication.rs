@@ -926,16 +926,19 @@ pub(crate) async fn enqueue_bucket_replication_catch_up(
 ) {
     let items = state
         .object_meta
-        .read()
-        .await
         .iter()
-        .filter(|((source_bucket, _), meta)| {
+        .filter(|entry| {
+            let (source_bucket, _) = entry.key();
+            let meta = entry.value();
             source_bucket == &rule.source_bucket
                 && !meta.delete_marker
                 && !meta.version_id.is_empty()
                 && replication_rule_matches_meta(rule, &meta.key, Some(meta))
         })
-        .map(|((_, key), meta)| (key.clone(), Some(meta.version_id.clone())))
+        .map(|entry| {
+            let (_, key) = entry.key();
+            (key.clone(), Some(entry.value().version_id.clone()))
+        })
         .collect::<Vec<_>>();
     for (key, version_id) in items {
         state

@@ -2205,17 +2205,21 @@ async fn build_system_metrics_summary(state: &Arc<AppState>) -> SystemMetricsSum
         )
     };
     let (retained_objects, legal_hold_objects) = {
-        let object_meta = state.object_meta.read().await;
+        let all_meta: Vec<S3ObjectMeta> = state
+            .object_meta
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect();
         (
-            object_meta
-                .values()
+            all_meta
+                .iter()
                 .filter(|item| {
                     item.retention_until
                         .map(|until| until > now)
                         .unwrap_or(false)
                 })
                 .count(),
-            object_meta.values().filter(|item| item.legal_hold).count(),
+            all_meta.iter().filter(|item| item.legal_hold).count(),
         )
     };
     let governance_state = state.storage_governance.read().await.clone();

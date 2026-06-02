@@ -400,10 +400,8 @@ pub(crate) async fn collect_object_meta_entries_for_kms_rotation(
 ) -> Vec<KmsRotationEntry> {
     let mut entries = state
         .object_meta
-        .read()
-        .await
-        .values()
-        .cloned()
+        .iter()
+        .map(|entry| entry.value().clone())
         .map(|meta| KmsRotationEntry {
             meta,
             kind: KmsRotationEntryKind::Current,

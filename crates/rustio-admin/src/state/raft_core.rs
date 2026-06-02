@@ -601,13 +601,15 @@ impl AppState {
 
         let mut objects = self
             .object_meta
-            .read()
-            .await
             .iter()
-            .map(|((bucket, key), meta)| MetadataObjectEntry {
-                bucket: bucket.clone(),
-                key: key.clone(),
-                meta: meta.clone(),
+            .map(|entry| {
+                let (bucket, key) = entry.key();
+                let meta = entry.value();
+                MetadataObjectEntry {
+                    bucket: bucket.clone(),
+                    key: key.clone(),
+                    meta: meta.clone(),
+                }
             })
             .collect::<Vec<_>>();
         objects.sort_by(|left, right| {

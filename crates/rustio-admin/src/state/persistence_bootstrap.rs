@@ -820,7 +820,7 @@ impl AppState {
             object_access_heat: RwLock::new(HashMap::new()),
             storage_governance: RwLock::new(StorageGovernanceRuntimeState::default()),
             object_store: RwLock::new(HashMap::new()),
-            object_meta: RwLock::new(HashMap::new()),
+            object_meta: dashmap::DashMap::new(),
             multipart_uploads: RwLock::new(HashMap::new()),
             last_request_activity_at: AtomicI64::new(Utc::now().timestamp()),
             last_memory_trim_at: AtomicI64::new(0),
