@@ -1236,18 +1236,39 @@ pub(crate) async fn s3_root_put_object(
     meta.user_metadata = request_user_metadata;
     meta.tags = request_tags;
     meta.encryption = requested_encryption;
-    if let Err(err) = file.write_all(&body_bytes).await {
-        return s3_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "InternalError",
-            &format!("Failed to write object: {err}"),
-            &key,
-        );
-    }
-    if let Err(response) =
-        write_ec_object(&state, &bucket, &key, body_bytes.as_ref(), &mut meta).await
-    {
-        return response;
+
+    // 非加密对象：先写临时文件再流式 EC 编码，避免把整个对象同时 hold 在内存
+    if !encryption_enabled(&meta) {
+        if let Err(err) = file.write_all(&body_bytes).await {
+            return s3_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "InternalError",
+                &format!("Failed to write object: {err}"),
+                &key,
+            );
+        }
+        drop(file);
+        if let Err(response) =
+            write_ec_object_streaming(&state, &bucket, &key, &target_path, body_bytes.len() as u64)
+                .await
+        {
+            return response;
+        }
+    } else {
+        // 加密对象：需整体 AES-GCM 加密，暂时走全量路径 TODO: 未来流式分块加密
+        if let Err(err) = file.write_all(&body_bytes).await {
+            return s3_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "InternalError",
+                &format!("Failed to write object: {err}"),
+                &key,
+            );
+        }
+        if let Err(response) =
+            write_ec_object(&state, &bucket, &key, body_bytes.as_ref(), &mut meta).await
+        {
+            return response;
+        }
     }
     if let Err(response) = persist_current_object_meta(&state, meta.clone()).await {
         return response;
