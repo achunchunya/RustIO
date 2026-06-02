@@ -14,10 +14,8 @@ pub(crate) struct StreamingSigV4Context {
     pub(crate) signing_key: Vec<u8>,
     /// ISO8601 时间戳（YYYYMMDDTHHMMSSZ，用于块签名 string-to-sign）
     pub(crate) amz_date: String,
-    /// 凭证作用域（date/region/service/aws4_request）
+    /// 凭证作用域（date/region/service/aws4_request，用于 chunk string-to-sign）
     pub(crate) credential_scope: String,
-    /// 区域（如 us-east-1）
-    pub(crate) region: String,
 }
 
 /// S3 鉴权结果（向后兼容：非流式请求 streaming_context 为 None，现有调用方 `if let Err` 无需改）。
@@ -1719,7 +1717,6 @@ pub(crate) fn ensure_s3_auth(
             signing_key,
             amz_date: amz_date.to_string(),
             credential_scope: sig.credential_scope.clone(),
-            region: sig.region.clone(),
         })
     } else {
         None
