@@ -688,47 +688,13 @@ pub(crate) async fn s3_root_put_object(
     State(state): State<Arc<AppState>>,
     method: Method,
     OriginalUri(uri): OriginalUri,
-    headers: HeaderMap,
     Path((bucket, key)): Path<(String, String)>,
-    body: Bytes,
+    request: Request,
 ) -> Response {
-    if let Err(response) = ensure_s3_auth(&headers, &method, &uri, Some(body.as_ref()), &state) {
-        return response;
-    }
+    let (parts, body) = request.into_parts();
+    let headers = parts.headers;
 
-    if query_has_key(uri.query(), "legal-hold") {
-        return s3_put_object_legal_hold(
-            state,
-            bucket,
-            key,
-            query_value(uri.query(), "versionId"),
-            body,
-        )
-        .await;
-    }
-
-    if query_has_key(uri.query(), "retention") {
-        return s3_put_object_retention(
-            state,
-            bucket,
-            key,
-            query_value(uri.query(), "versionId"),
-            body,
-        )
-        .await;
-    }
-
-    if query_has_key(uri.query(), "tagging") {
-        return s3_put_object_tagging(
-            state,
-            bucket,
-            key,
-            query_value(uri.query(), "versionId"),
-            body,
-        )
-        .await;
-    }
-
+    // part 上传分支：直接用流式 body（任务14 改造 s3_upload_part 接收流）
     if let Some(upload_id) = query_value(uri.query(), "uploadId") {
         let Some(part_number_raw) = query_value(uri.query(), "partNumber") else {
             return s3_error(
@@ -749,7 +715,78 @@ pub(crate) async fn s3_root_put_object(
                 );
             }
         };
-        return s3_upload_part(state, bucket, key, upload_id, part_number, body).await;
+
+        // 流式请求：先验 seed 签名（header-only），解码时逐块验签
+        let auth_outcome = match ensure_s3_auth(&headers, &method, &uri, None, &state) {
+            Ok(outcome) => outcome,
+            Err(response) => return response,
+        };
+
+        // part 上传走流式路径（传 body + streaming_context 给 s3_upload_part）
+        return s3_upload_part_streaming(
+            state,
+            bucket,
+            key,
+            upload_id,
+            part_number,
+            body,
+            auth_outcome.streaming_context,
+        )
+        .await
+        .unwrap_or_else(|response| response);
+    }
+
+    // 其他分支（legal-hold/retention/tagging/单次PUT）：需先收集 body 验签
+    let body_bytes = match to_bytes(body, usize::MAX).await {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            return s3_error(
+                StatusCode::BAD_REQUEST,
+                "IncompleteBody",
+                &format!("Failed to read request body: {err}"),
+                &key,
+            );
+        }
+    };
+
+    // 非流式验签（需完整 body）
+    if let Err(response) =
+        ensure_s3_auth(&headers, &method, &uri, Some(body_bytes.as_ref()), &state)
+    {
+        return response;
+    }
+
+    if query_has_key(uri.query(), "legal-hold") {
+        return s3_put_object_legal_hold(
+            state,
+            bucket,
+            key,
+            query_value(uri.query(), "versionId"),
+            body_bytes,
+        )
+        .await;
+    }
+
+    if query_has_key(uri.query(), "retention") {
+        return s3_put_object_retention(
+            state,
+            bucket,
+            key,
+            query_value(uri.query(), "versionId"),
+            body_bytes,
+        )
+        .await;
+    }
+
+    if query_has_key(uri.query(), "tagging") {
+        return s3_put_object_tagging(
+            state,
+            bucket,
+            key,
+            query_value(uri.query(), "versionId"),
+            body_bytes,
+        )
+        .await;
     }
 
     if is_reserved_internal_key(&key) {
@@ -1186,12 +1223,12 @@ pub(crate) async fn s3_root_put_object(
         }
     };
 
-    let etag = weak_etag(&body);
+    let etag = weak_etag(&body_bytes);
     let mut meta = build_object_meta_for_current_version(
         &state,
         &bucket,
         &key,
-        body.len() as u64,
+        body_bytes.len() as u64,
         etag.clone(),
         false,
     )
@@ -1199,7 +1236,7 @@ pub(crate) async fn s3_root_put_object(
     meta.user_metadata = request_user_metadata;
     meta.tags = request_tags;
     meta.encryption = requested_encryption;
-    if let Err(err) = file.write_all(&body).await {
+    if let Err(err) = file.write_all(&body_bytes).await {
         return s3_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "InternalError",
@@ -1207,7 +1244,9 @@ pub(crate) async fn s3_root_put_object(
             &key,
         );
     }
-    if let Err(response) = write_ec_object(&state, &bucket, &key, body.as_ref(), &mut meta).await {
+    if let Err(response) =
+        write_ec_object(&state, &bucket, &key, body_bytes.as_ref(), &mut meta).await
+    {
         return response;
     }
     if let Err(response) = persist_current_object_meta(&state, meta.clone()).await {

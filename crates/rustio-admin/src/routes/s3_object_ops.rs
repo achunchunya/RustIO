@@ -1882,6 +1882,158 @@ pub(crate) async fn s3_upload_part(
     response
 }
 
+/// 流式分片上传：接收 axum Body（可含 aws-chunked），流式写入 part 文件并增量计算 weak_etag。
+///
+/// - 若 `streaming_context` 存在（aws-chunked 编码），先用 `AwsChunkedDecoder` 解码 + 链式验签，
+///   累积解码后的明文再写文件（单个 part 大小有自然上限，不会 OOM）
+/// - 否则直接消费 body 帧，边写边喂 hasher，内存恒定
+pub(crate) async fn s3_upload_part_streaming(
+    state: Arc<AppState>,
+    bucket: String,
+    key: String,
+    upload_id: String,
+    part_number: u32,
+    body: axum::body::Body,
+    streaming_context: Option<StreamingSigV4Context>,
+) -> Result<Response, Response> {
+    use crate::routes::s3_chunked::{AwsChunkedDecoder, WeakEtagHasher};
+    use futures::StreamExt;
+
+    let bucket_path = bucket_path(&state, &bucket)?;
+    if !bucket_path.exists() {
+        return Err(s3_error(
+            StatusCode::NOT_FOUND,
+            "NoSuchBucket",
+            "The specified bucket does not exist",
+            &bucket,
+        ));
+    }
+
+    let mut uploads = state.multipart_uploads.write().await;
+    let Some(upload) = uploads.get_mut(&upload_id) else {
+        return Err(s3_error(
+            StatusCode::NOT_FOUND,
+            "NoSuchUpload",
+            "The specified upload does not exist",
+            &key,
+        ));
+    };
+    if upload.bucket != bucket || upload.key != key {
+        return Err(s3_error(
+            StatusCode::NOT_FOUND,
+            "NoSuchUpload",
+            "The specified upload does not match bucket/key",
+            &key,
+        ));
+    }
+
+    let upload_dir = multipart_upload_dir(&state, &upload_id);
+    tokio::fs::create_dir_all(&upload_dir)
+        .await
+        .map_err(|err| {
+            s3_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "InternalError",
+                &format!("Failed to create multipart upload directory: {err}"),
+                &key,
+            )
+        })?;
+
+    let part_path = upload_dir.join(format!("{part_number}.part"));
+    let mut file = tokio::fs::File::create(&part_path).await.map_err(|err| {
+        s3_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "InternalError",
+            &format!("Failed to create part file: {err}"),
+            &key,
+        )
+    })?;
+
+    let mut total_size: u64 = 0;
+    let mut hasher = WeakEtagHasher::new();
+
+    if let Some(ctx) = streaming_context {
+        // aws-chunked：解码 + 链式验签 → 写出（单个 part 大小有自然上限，先解码到 Vec 没问题）
+        let mut full_body = Vec::new();
+        let mut stream = body.into_data_stream();
+        while let Some(result) = stream.next().await {
+            let frame = result.map_err(|err| {
+                s3_error(
+                    StatusCode::BAD_REQUEST,
+                    "IncompleteBody",
+                    &format!("Failed to read request body: {err}"),
+                    &key,
+                )
+            })?;
+            full_body.extend_from_slice(&frame);
+        }
+        let reader = std::io::Cursor::new(full_body);
+        let decoder = AwsChunkedDecoder::new(reader, ctx);
+        let decoded = decoder.decode_all().await.map_err(|err| {
+            s3_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidChunk",
+                &format!("aws-chunked decode failed: {err}"),
+                &key,
+            )
+        })?;
+        file.write_all(&decoded).await.map_err(|err| {
+            s3_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "InternalError",
+                &format!("Failed to write part: {err}"),
+                &key,
+            )
+        })?;
+        hasher.update(&decoded);
+        total_size = decoded.len() as u64;
+    } else {
+        // 非 chunked：直接消费 body 帧，边写边喂 hasher
+        let mut stream = body.into_data_stream();
+        while let Some(result) = stream.next().await {
+            let frame = result.map_err(|err| {
+                s3_error(
+                    StatusCode::BAD_REQUEST,
+                    "IncompleteBody",
+                    &format!("Failed to read request body: {err}"),
+                    &key,
+                )
+            })?;
+            file.write_all(&frame).await.map_err(|err| {
+                s3_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "InternalError",
+                    &format!("Failed to write part: {err}"),
+                    &key,
+                )
+            })?;
+            hasher.update(&frame);
+            total_size += frame.len() as u64;
+        }
+    }
+
+    let etag = hasher.finalize();
+    upload.parts.insert(
+        part_number,
+        MultipartPart {
+            part_number,
+            etag: etag.clone(),
+            size: total_size,
+            path: part_path,
+            updated_at: Utc::now(),
+        },
+    );
+    drop(uploads);
+
+    let mut response = StatusCode::OK.into_response();
+    if let Ok(value) = axum::http::HeaderValue::from_str(&format!("\"{etag}\"")) {
+        response
+            .headers_mut()
+            .insert(axum::http::header::ETAG, value);
+    }
+    Ok(response)
+}
+
 pub(crate) async fn s3_list_multipart_parts_xml(
     state: Arc<AppState>,
     bucket: String,

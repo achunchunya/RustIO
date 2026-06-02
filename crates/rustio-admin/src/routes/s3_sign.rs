@@ -2,6 +2,31 @@
 
 use super::*;
 
+/// 流式 SigV4 签名上下文（aws-chunked 链式验签需要的 seed 签名和密钥信息）。
+///
+/// 仅当请求头含 `x-amz-content-sha256: STREAMING-AWS4-HMAC-SHA256-PAYLOAD` 时填充，
+/// 供 aws-chunked 解码器逐块验证 chunk-signature（每块签名链式依赖上一块签名，初始为 seed）。
+#[derive(Debug, Clone)]
+pub(crate) struct StreamingSigV4Context {
+    /// seed 签名（请求 Authorization header 验证通过的签名，作为链式验签起点）
+    pub(crate) seed_signature: String,
+    /// 签名密钥（由 secret_key/date/region/service 推导）
+    pub(crate) signing_key: Vec<u8>,
+    /// ISO8601 时间戳（YYYYMMDDTHHMMSSZ，用于块签名 string-to-sign）
+    pub(crate) amz_date: String,
+    /// 凭证作用域（date/region/service/aws4_request）
+    pub(crate) credential_scope: String,
+    /// 区域（如 us-east-1）
+    pub(crate) region: String,
+}
+
+/// S3 鉴权结果（向后兼容：非流式请求 streaming_context 为 None，现有调用方 `if let Err` 无需改）。
+#[derive(Debug, Clone, Default)]
+pub(crate) struct S3AuthOutcome {
+    /// 仅当 payload 用 STREAMING-AWS4-HMAC-SHA256-PAYLOAD 时填充，供 aws-chunked 解码器链式验签
+    pub(crate) streaming_context: Option<StreamingSigV4Context>,
+}
+
 pub(crate) fn is_s3_signed_request(headers: &HeaderMap, raw_query: Option<&str>) -> bool {
     if is_s3_style_request(headers) {
         return true;
@@ -1361,7 +1386,7 @@ pub(crate) fn ensure_s3_auth(
     uri: &Uri,
     body: Option<&[u8]>,
     state: &AppState,
-) -> Result<(), Response> {
+) -> Result<S3AuthOutcome, Response> {
     let query_sig = parse_aws_v4_query_auth(uri.query()).map_err(|message| {
         s3_error(
             StatusCode::FORBIDDEN,
@@ -1474,14 +1499,14 @@ pub(crate) fn ensure_s3_auth(
                 auth_type: S3AuthType::AwsSigV4Query,
             },
         )?;
-        return Ok(());
+        return Ok(S3AuthOutcome::default());
     }
 
     let Some(auth) = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
     else {
-        return ensure_s3_policy_allowed(
+        ensure_s3_policy_allowed(
             state,
             &S3PolicyRequest {
                 method,
@@ -1490,7 +1515,8 @@ pub(crate) fn ensure_s3_auth(
                 identity: None,
                 auth_type: S3AuthType::Anonymous,
             },
-        );
+        )?;
+        return Ok(S3AuthOutcome::default());
     };
 
     if let Some(token) = auth.strip_prefix("Basic ") {
@@ -1532,7 +1558,7 @@ pub(crate) fn ensure_s3_auth(
                     auth_type: S3AuthType::Basic,
                 },
             )?;
-            return Ok(());
+            return Ok(S3AuthOutcome::default());
         }
         return Err(s3_error(
             StatusCode::FORBIDDEN,
@@ -1562,7 +1588,7 @@ pub(crate) fn ensure_s3_auth(
                     auth_type: S3AuthType::AwsLegacy,
                 },
             )?;
-            return Ok(());
+            return Ok(S3AuthOutcome::default());
         }
         return Err(s3_error(
             StatusCode::FORBIDDEN,
@@ -1685,7 +1711,21 @@ pub(crate) fn ensure_s3_auth(
             auth_type: S3AuthType::AwsSigV4Header,
         },
     )?;
-    Ok(())
+
+    // 若请求用 STREAMING-AWS4-HMAC-SHA256-PAYLOAD，回传 seed 签名上下文供 aws-chunked 解码器链式验签
+    let streaming_context = if payload_hash.starts_with("STREAMING-AWS4-HMAC-SHA256") {
+        Some(StreamingSigV4Context {
+            seed_signature: expected,
+            signing_key,
+            amz_date: amz_date.to_string(),
+            credential_scope: sig.credential_scope.clone(),
+            region: sig.region.clone(),
+        })
+    } else {
+        None
+    };
+
+    Ok(S3AuthOutcome { streaming_context })
 }
 
 pub(crate) fn parse_aws_v4_authorization(value: &str) -> Result<AwsSigV4Auth, String> {

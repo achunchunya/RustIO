@@ -14,6 +14,7 @@ mod ldap;
 mod oidc;
 mod replication;
 mod s3_bucket_ops;
+mod s3_chunked;
 mod s3_helpers;
 mod s3_meta;
 mod s3_object_ops;
@@ -65,7 +66,7 @@ use aes_gcm::{
 };
 use axum::{
     body::{to_bytes, Bytes},
-    extract::{OriginalUri, Path, Query, Request, State},
+    extract::{DefaultBodyLimit, OriginalUri, Path, Query, Request, State},
     http::{
         header::{CONTENT_DISPOSITION, CONTENT_TYPE, HOST},
         HeaderMap, HeaderValue, Method, StatusCode, Uri,
@@ -649,7 +650,20 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             state.clone(),
             track_request_activity,
         ))
+        .layer(DefaultBodyLimit::max(s3_request_body_limit_bytes()))
         .with_state(state)
+}
+
+/// S3 请求体大小上限（字节）。默认 5 GiB，可经 `RUSTIO_S3_MAX_BODY_BYTES` 覆盖。
+///
+/// axum 默认上限仅 2 MiB，会导致任何稍大的对象上传被 413 拒绝。对象存储必须放开此限制；
+/// 同时保留一个可配置的护栏，避免单次 PUT（当前仍全量缓冲）被超大请求打爆内存。
+fn s3_request_body_limit_bytes() -> usize {
+    std::env::var("RUSTIO_S3_MAX_BODY_BYTES")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(5 * 1024 * 1024 * 1024)
 }
 
 async fn track_request_activity(
