@@ -744,7 +744,9 @@ pub(crate) async fn encrypt_shard(
     let nonce = derive_shard_nonce(meta, shard_index)?;
     let data_key = if let Some(wrapped) = meta.encryption.wrapped_key_base64.as_deref() {
         if !wrapped.is_empty() {
-            unwrap_object_data_key(state, resource, meta, wrapped).await?.to_vec()
+            unwrap_object_data_key(state, resource, meta, wrapped)
+                .await?
+                .to_vec()
         } else {
             derive_object_encryption_key(state, meta).to_vec()
         }
@@ -782,7 +784,9 @@ pub(crate) async fn decrypt_shard(
     let nonce = derive_shard_nonce(meta, shard_index)?;
     let data_key = if let Some(wrapped) = meta.encryption.wrapped_key_base64.as_deref() {
         if !wrapped.is_empty() {
-            unwrap_object_data_key(state, resource, meta, wrapped).await?.to_vec()
+            unwrap_object_data_key(state, resource, meta, wrapped)
+                .await?
+                .to_vec()
         } else {
             derive_object_encryption_key(state, meta).to_vec()
         }
