@@ -584,25 +584,22 @@ pub(crate) async fn execute_replication_requeue_batch(
         );
     }
 
+    // 按 source_bucket 前缀 scan_bucket(redb range,非全表)。
     let metas = state
-        .object_meta
-        .iter()
-        .filter(|entry| {
-            let (bucket, key) = entry.key().clone();
-            let meta = entry.value();
-            bucket == source_bucket
-                && !meta.delete_marker
+        .meta_store
+        .scan_bucket(source_bucket)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|meta| {
+            !meta.delete_marker
                 && !meta.version_id.is_empty()
                 && scope
                     .object_prefix
                     .as_deref()
-                    .map(|prefix| key.starts_with(prefix))
+                    .map(|prefix| meta.key.starts_with(prefix))
                     .unwrap_or(true)
         })
-        .map(|entry| {
-            let (_, key) = entry.key();
-            (key.clone(), entry.value().clone())
-        })
+        .map(|meta| (meta.key.clone(), meta))
         .collect::<Vec<_>>();
 
     let backlog = state.replication_backlog.read().await.clone();

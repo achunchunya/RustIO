@@ -635,6 +635,17 @@ pub(crate) async fn persist_current_object_meta(
     state: &AppState,
     meta: S3ObjectMeta,
 ) -> Result<(), Response> {
+    // redb 为真相源(put 内部更新 LRU);DashMap + .rustio_meta JSON 暂保留以兼容现有
+    // 扫描/复制路径(list/versions/replication 等),阶段3统一改 redb scan 后移除。
+    state.meta_store.put(&meta).map_err(|err| {
+        s3_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "InternalError",
+            &format!("Failed to persist object metadata: {err}"),
+            &meta.key,
+        )
+    })?;
+
     let bucket_root = bucket_path(state, &meta.bucket)?;
     let meta_path = object_meta_path(&bucket_root, &meta.key)?;
     if let Some(parent) = meta_path.parent() {
@@ -647,7 +658,6 @@ pub(crate) async fn persist_current_object_meta(
             )
         })?;
     }
-
     let bytes = serde_json::to_vec_pretty(&meta).map_err(|err| {
         s3_error(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -656,7 +666,6 @@ pub(crate) async fn persist_current_object_meta(
             &meta.key,
         )
     })?;
-
     atomic_write(&meta_path, &bytes).await.map_err(|err| {
         s3_error(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -666,20 +675,8 @@ pub(crate) async fn persist_current_object_meta(
         )
     })?;
 
-    state
-        .object_meta
-        .insert((meta.bucket.clone(), meta.key.clone()), meta);
-    state
-        .sync_metadata_raft("object-meta-upsert")
-        .await
-        .map_err(|err| {
-            s3_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "InternalError",
-                &format!("metadata raft commit failed: {err}"),
-                "metadata",
-            )
-        })?;
+    // 对象元数据已下沉 redb(持久化真相源),不再走 Raft 全量快照——消除每次写 O(N) 全量序列化。
+    // 未来分布式集群:在 MetaStore::put 处提交增量 op 到 openraft,复制到各节点本地 redb。
     Ok(())
 }
 
@@ -688,21 +685,15 @@ pub(crate) async fn read_current_object_meta(
     bucket: &str,
     key: &str,
 ) -> Result<Option<S3ObjectMeta>, Response> {
-    if let Some(meta) = state
-        .object_meta
-        .get(&(bucket.to_string(), key.to_string()))
-        .map(|r| r.value().clone())
-    {
-        return Ok(Some(meta));
-    }
-
-    let Some(meta) = read_current_object_meta_from_disk(state, bucket, key).await? else {
-        return Ok(None);
-    };
-    state
-        .object_meta
-        .insert((bucket.to_string(), key.to_string()), meta.clone());
-    Ok(Some(meta))
+    // 真相源已下沉 redb;MetaStore::get 内部 LRU 命中 / redb 点查回填。
+    state.meta_store.get(bucket, key).map_err(|err| {
+        s3_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "InternalError",
+            &format!("Failed to read object metadata: {err}"),
+            key,
+        )
+    })
 }
 
 pub(crate) async fn read_current_object_meta_from_disk(
@@ -710,30 +701,15 @@ pub(crate) async fn read_current_object_meta_from_disk(
     bucket: &str,
     key: &str,
 ) -> Result<Option<S3ObjectMeta>, Response> {
-    let bucket_root = bucket_path(state, bucket)?;
-    let meta_path = object_meta_path(&bucket_root, key)?;
-    let bytes = match tokio::fs::read(&meta_path).await {
-        Ok(bytes) => bytes,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => {
-            return Err(s3_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "InternalError",
-                &format!("Failed to read object metadata: {err}"),
-                key,
-            ));
-        }
-    };
-
-    let meta = serde_json::from_slice::<S3ObjectMeta>(&bytes).map_err(|err| {
+    // 后台/绕缓存读:直查 redb 真相源,不暖 LRU(避免冷数据污染前台缓存)。
+    state.meta_store.get_uncached(bucket, key).map_err(|err| {
         s3_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "InternalError",
-            &format!("Failed to decode object metadata: {err}"),
+            &format!("Failed to read object metadata: {err}"),
             key,
         )
-    })?;
-    Ok(Some(meta))
+    })
 }
 
 pub(crate) async fn remove_current_object_meta(
@@ -741,10 +717,15 @@ pub(crate) async fn remove_current_object_meta(
     bucket: &str,
     key: &str,
 ) -> Result<(), Response> {
-    state
-        .object_meta
-        .remove(&(bucket.to_string(), key.to_string()));
-
+    // redb 删除真相源(remove 内部淘汰 LRU);DashMap 暂保留同步删除以喂 Raft 快照(阶段2移除)。
+    state.meta_store.remove(bucket, key).map_err(|err| {
+        s3_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "InternalError",
+            &format!("Failed to remove object metadata: {err}"),
+            key,
+        )
+    })?;
     let bucket_root = bucket_path(state, bucket)?;
     let meta_path = object_meta_path(&bucket_root, key)?;
     match tokio::fs::remove_file(&meta_path).await {
@@ -759,22 +740,11 @@ pub(crate) async fn remove_current_object_meta(
             ));
         }
     }
-
     if let Some(parent) = meta_path.parent() {
         let meta_root = bucket_root.join(".rustio_meta");
         let _ = remove_empty_dirs_until(parent, &meta_root);
     }
-    state
-        .sync_metadata_raft("object-meta-remove")
-        .await
-        .map_err(|err| {
-            s3_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "InternalError",
-                &format!("metadata raft commit failed: {err}"),
-                "metadata",
-            )
-        })?;
+    // 对象元数据已下沉 redb,不再走 Raft 全量快照(redb 删除即持久)。
     Ok(())
 }
 

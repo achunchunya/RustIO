@@ -332,6 +332,14 @@ impl AppState {
         let cluster_config_history = Self::load_cluster_config_history(&data_dir, &security);
         let console_sessions = Self::load_console_sessions(&data_dir);
 
+        let meta_store =
+            MetaStore::open(&data_dir.join(".rustio_meta.redb")).expect("打开元数据库 redb 失败");
+        match meta_store.migrate_from_data_dir(&data_dir) {
+            Ok(0) => {}
+            Ok(count) => tracing::info!("已迁移 {count} 条对象元数据到 redb"),
+            Err(err) => tracing::warn!("对象元数据迁移到 redb 失败: {err}"),
+        }
+
         let state = Arc::new(Self {
             jwt_secret: std::env::var("RUSTIO_JWT_SECRET")
                 .unwrap_or_else(|_| "rustio-dev-secret".to_string()),
@@ -819,7 +827,7 @@ impl AppState {
             }]),
             object_access_heat: RwLock::new(HashMap::new()),
             storage_governance: RwLock::new(StorageGovernanceRuntimeState::default()),
-            object_meta: dashmap::DashMap::new(),
+            meta_store,
             multipart_uploads: RwLock::new(HashMap::new()),
             last_request_activity_at: AtomicI64::new(Utc::now().timestamp()),
             last_memory_trim_at: AtomicI64::new(0),

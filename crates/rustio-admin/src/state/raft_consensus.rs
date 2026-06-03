@@ -2763,11 +2763,7 @@ impl AppState {
             .bucket_encryptions
             .into_iter()
             .collect::<HashMap<_, _>>();
-        self.object_meta.clear();
-        for entry in snapshot.objects {
-            self.object_meta
-                .insert((entry.bucket, entry.key), entry.meta);
-        }
+        // 对象元数据不再从 Raft 快照恢复(redb 持久化,启动时从 redb 灌入 DashMap)。
         *self.credentials.write().await =
             snapshot.credentials.into_iter().collect::<HashMap<_, _>>();
         *self.users.write().await = snapshot.iam_users;

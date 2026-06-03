@@ -1,11 +1,13 @@
 mod alerts;
 mod jobs;
+mod meta_store;
 mod persistence_bootstrap;
 mod raft_consensus;
 mod raft_core;
 mod replication_workers;
 mod runtime_config;
 
+use meta_store::MetaStore;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs::OpenOptions,
@@ -460,11 +462,24 @@ pub struct AppState {
     pub jobs: RwLock<Vec<JobStatus>>,
     pub object_access_heat: RwLock<HashMap<(String, String), u64>>,
     pub storage_governance: RwLock<StorageGovernanceRuntimeState>,
-    pub object_meta: dashmap::DashMap<(String, String), S3ObjectMeta>,
+    pub(crate) meta_store: MetaStore,
     pub multipart_uploads: RwLock<HashMap<String, MultipartUpload>>,
     pub last_request_activity_at: AtomicI64,
     pub last_memory_trim_at: AtomicI64,
     pub events: broadcast::Sender<RuntimeEvent>,
+}
+
+impl AppState {
+    /// 查询对象当前版本元数据(读 redb 真相源,不暖缓存)。供外部查询与测试白盒验证。
+    pub fn lookup_object_meta(&self, bucket: &str, key: &str) -> Option<S3ObjectMeta> {
+        self.meta_store.get_uncached(bucket, key).ok().flatten()
+    }
+
+    /// 直接写入对象当前版本元数据(供测试白盒注入;写 redb 真相源)。
+    #[doc(hidden)]
+    pub fn put_object_meta_direct(&self, meta: &S3ObjectMeta) {
+        let _ = self.meta_store.put(meta);
+    }
 }
 
 pub(crate) fn bilingual_runtime_error(zh: &str, en: impl AsRef<str>) -> String {

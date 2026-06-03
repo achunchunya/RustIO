@@ -390,9 +390,9 @@ impl AppState {
             .then(|| scope.statuses.iter().cloned().collect::<HashSet<String>>());
         let now = Utc::now();
         let bucket_root = self.lifecycle_bucket_root(bucket).await;
-        let current_meta_root = bucket_root.join(".rustio_meta");
         let archived_meta_root = bucket_root.join(".rustio_versions");
-        let current_metas = Self::lifecycle_scan_object_metas(&current_meta_root, bucket);
+        // current 已下沉 redb,直接 scan_bucket;archived 仍是 .rustio_versions JSON。
+        let current_metas = self.meta_store.scan_bucket(bucket).unwrap_or_default();
         let archived_metas = Self::lifecycle_scan_object_metas(&archived_meta_root, bucket);
         let mut candidates = Vec::<LifecycleJobDraft>::new();
 
@@ -642,9 +642,9 @@ impl AppState {
             }
 
             let bucket_root = self.lifecycle_bucket_root(&bucket).await;
-            let current_meta_root = bucket_root.join(".rustio_meta");
             let archived_meta_root = bucket_root.join(".rustio_versions");
-            let current_metas = Self::lifecycle_scan_object_metas(&current_meta_root, &bucket);
+            // current 已下沉 redb,直接 scan_bucket;archived 仍是 .rustio_versions JSON。
+            let current_metas = self.meta_store.scan_bucket(&bucket).unwrap_or_default();
             let archived_metas = Self::lifecycle_scan_object_metas(&archived_meta_root, &bucket);
 
             for meta in current_metas {

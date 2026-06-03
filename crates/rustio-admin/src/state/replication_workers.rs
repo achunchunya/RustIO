@@ -323,9 +323,10 @@ impl AppState {
         item: &ReplicationBacklogItem,
     ) -> Result<Option<S3ObjectMeta>, String> {
         let cached = self
-            .object_meta
-            .get(&(item.source_bucket.clone(), item.object_key.clone()))
-            .map(|r| r.value().clone());
+            .meta_store
+            .get_uncached(&item.source_bucket, &item.object_key)
+            .ok()
+            .flatten();
         if let Some(version_id) = item.version_id.as_deref() {
             if let Some(meta) = cached.clone() {
                 if meta.version_id == version_id {

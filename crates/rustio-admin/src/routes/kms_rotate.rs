@@ -398,10 +398,12 @@ pub(crate) async fn perform_kms_rotation(
 pub(crate) async fn collect_object_meta_entries_for_kms_rotation(
     state: &Arc<AppState>,
 ) -> Vec<KmsRotationEntry> {
+    // 全表 scan_all(KMS 轮转为低频管理操作;海量对象时全表扫描代价由低调用频率摊薄)。
     let mut entries = state
-        .object_meta
-        .iter()
-        .map(|entry| entry.value().clone())
+        .meta_store
+        .scan_all()
+        .unwrap_or_default()
+        .into_iter()
         .map(|meta| KmsRotationEntry {
             meta,
             kind: KmsRotationEntryKind::Current,
@@ -434,7 +436,7 @@ pub(crate) async fn collect_object_meta_entries_for_kms_rotation(
             Ok(path) => path,
             Err(_) => continue,
         };
-        for meta in scan_bucket_current_object_meta_from_disk(&bucket_root, &bucket).await {
+        for meta in scan_bucket_current_object_meta(state, &bucket) {
             let current_identity = (meta.bucket.clone(), meta.key.clone());
             let version_identity = (
                 meta.bucket.clone(),
@@ -517,11 +519,9 @@ pub(crate) async fn scan_object_meta_root_from_disk(
     metas
 }
 
-pub(crate) async fn scan_bucket_current_object_meta_from_disk(
-    bucket_root: &FsPath,
-    bucket: &str,
-) -> Vec<S3ObjectMeta> {
-    scan_object_meta_root_from_disk(bucket_root.join(".rustio_meta"), bucket).await
+pub(crate) fn scan_bucket_current_object_meta(state: &AppState, bucket: &str) -> Vec<S3ObjectMeta> {
+    // current 已下沉 redb,直接 scan_bucket;archived 仍走 .rustio_versions JSON。
+    state.meta_store.scan_bucket(bucket).unwrap_or_default()
 }
 
 pub(crate) async fn scan_bucket_archived_object_meta_from_disk(

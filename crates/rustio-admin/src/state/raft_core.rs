@@ -599,24 +599,9 @@ impl AppState {
         let bucket_encryptions =
             Self::sorted_map_entries(&self.bucket_encryptions.read().await.clone());
 
-        let mut objects = self
-            .object_meta
-            .iter()
-            .map(|entry| {
-                let (bucket, key) = entry.key();
-                let meta = entry.value();
-                MetadataObjectEntry {
-                    bucket: bucket.clone(),
-                    key: key.clone(),
-                    meta: meta.clone(),
-                }
-            })
-            .collect::<Vec<_>>();
-        objects.sort_by(|left, right| {
-            left.bucket
-                .cmp(&right.bucket)
-                .then_with(|| left.key.cmp(&right.key))
-        });
+        // 对象元数据已下沉 redb,不再纳入 Raft 全量快照(消除每次写 O(N) 全量序列化)。
+        // 未来分布式集群改用 openraft 增量 log 复制对象元数据到各节点本地 redb。
+        let objects: Vec<MetadataObjectEntry> = Vec::new();
 
         let mut iam_users = self.users.read().await.clone();
         iam_users.sort_by(|left, right| left.username.cmp(&right.username));

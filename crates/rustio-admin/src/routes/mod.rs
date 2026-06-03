@@ -2205,11 +2205,8 @@ async fn build_system_metrics_summary(state: &Arc<AppState>) -> SystemMetricsSum
         )
     };
     let (retained_objects, legal_hold_objects) = {
-        let all_meta: Vec<S3ObjectMeta> = state
-            .object_meta
-            .iter()
-            .map(|entry| entry.value().clone())
-            .collect();
+        // 全表 scan_all(指标统计接口为低频操作)。
+        let all_meta: Vec<S3ObjectMeta> = state.meta_store.scan_all().unwrap_or_default();
         (
             all_meta
                 .iter()

@@ -203,7 +203,7 @@ pub(crate) async fn delete_bucket_spec(
         .write()
         .await
         .retain(|item| item.source_bucket != name);
-    state.object_meta.retain(|(bucket, _), _| bucket != &name);
+    let _ = state.meta_store.delete_bucket_prefix(&name);
     state
         .sync_metadata_raft("bucket-delete")
         .await
@@ -980,7 +980,7 @@ pub(crate) async fn collect_storage_inventory_candidates(
         }
 
         if !noncurrent_only {
-            for meta in scan_bucket_current_object_meta_from_disk(&bucket_root, &bucket).await {
+            for meta in scan_bucket_current_object_meta(state, &bucket) {
                 if !storage_inventory_matches_filters(
                     &meta,
                     true,
@@ -2701,13 +2701,19 @@ pub(crate) async fn delete_remote_tier(
             )));
         }
     }
-    if state.object_meta.iter().any(|entry| {
-        let meta = entry.value();
-        meta.remote_tier
-            .as_ref()
-            .map(|item| normalize_remote_tier_name(&item.tier) == normalized_name)
-            .unwrap_or(false)
-    }) {
+    // 全表 scan_all(删除 remote tier 为低频管理操作)。
+    if state
+        .meta_store
+        .scan_all()
+        .unwrap_or_default()
+        .iter()
+        .any(|meta| {
+            meta.remote_tier
+                .as_ref()
+                .map(|item| normalize_remote_tier_name(&item.tier) == normalized_name)
+                .unwrap_or(false)
+        })
+    {
         return Err(AppError::bad_request(
             "远端层仍被当前对象引用 / remote tier is still referenced by current objects",
         ));
