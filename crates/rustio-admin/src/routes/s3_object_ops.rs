@@ -2,6 +2,7 @@
 
 use super::*;
 
+#[allow(unused_variables)]
 pub(crate) async fn s3_root_get_object(
     State(state): State<Arc<AppState>>,
     method: Method,
