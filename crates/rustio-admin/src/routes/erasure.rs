@@ -9,8 +9,9 @@ pub(crate) async fn write_ec_object(
     key: &str,
     payload: &[u8],
     meta: &mut S3ObjectMeta,
+    customer_key: Option<&[u8; 32]>,
 ) -> Result<(), Response> {
-    let payload = encrypt_payload_for_storage(state, key, payload, meta).await?;
+    let payload = encrypt_payload_for_storage(state, key, payload, meta, customer_key).await?;
     let (data_shards, parity_shards) = ec_layout();
     let total_shards = data_shards + parity_shards;
     if state.data_disks.len() < total_shards {
@@ -408,6 +409,7 @@ pub(crate) async fn read_ec_object(
     bucket: &str,
     key: &str,
     meta: Option<&S3ObjectMeta>,
+    customer_key: Option<&[u8; 32]>,
 ) -> Result<Option<Vec<u8>>, Response> {
     let bucket_root = bucket_path(state, bucket)?;
     let manifest_path = ec_manifest_path(&bucket_root, key);
@@ -683,7 +685,7 @@ pub(crate) async fn read_ec_object(
     payload.truncate(manifest.total_size as usize);
     touch_object_access_heat(state, bucket, key).await;
     Ok(Some(
-        decrypt_payload_from_storage(state, key, payload, meta).await?,
+        decrypt_payload_from_storage(state, key, payload, meta, customer_key).await?,
     ))
 }
 
@@ -697,6 +699,7 @@ pub(crate) async fn read_ec_object_streaming(
     bucket: &str,
     key: &str,
     meta: Option<&S3ObjectMeta>,
+    _customer_key: Option<&[u8; 32]>,
 ) -> Result<Option<axum::body::Body>, Response> {
     // 加密对象为整体 AEAD，无法流式解密，交回退路径处理
     if let Some(meta) = meta {

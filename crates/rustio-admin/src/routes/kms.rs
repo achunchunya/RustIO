@@ -591,7 +591,12 @@ pub(crate) async fn wrap_object_data_key(
     resource: &str,
     meta: &S3ObjectMeta,
     data_key: &[u8; 32],
+    customer_key: Option<&[u8; 32]>,
 ) -> Result<String, Response> {
+    // SSE-C：客户密钥直接本地包装 DEK
+    if let Some(ck) = customer_key {
+        return wrap_object_data_key_with_customer_key(resource, data_key, ck);
+    }
     if let Some(remote_wrapped) =
         kms_encrypt_data_key_remote(state, resource, meta, data_key).await?
     {
@@ -605,7 +610,20 @@ pub(crate) async fn unwrap_object_data_key(
     resource: &str,
     meta: &S3ObjectMeta,
     wrapped_key_base64: &str,
+    customer_key: Option<&[u8; 32]>,
 ) -> Result<[u8; 32], Response> {
+    // SSE-C：检测 ssec: 前缀，用客户密钥本地解包装 DEK
+    if let Some(payload) = wrapped_key_base64.strip_prefix(SSEC_WRAP_PREFIX) {
+        let ck = customer_key.ok_or_else(|| {
+            s3_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidRequest",
+                "对象需要 SSE-C 客户密钥才能解密 / object requires SSE-C customer key for decryption",
+                resource,
+            )
+        })?;
+        return unwrap_object_data_key_with_customer_key(resource, payload, ck);
+    }
     if let Some(remote_data_key) =
         kms_decrypt_data_key_remote(state, resource, meta, wrapped_key_base64).await?
     {
@@ -619,6 +637,7 @@ pub(crate) async fn encrypt_payload_for_storage(
     resource: &str,
     payload: &[u8],
     meta: &mut S3ObjectMeta,
+    customer_key: Option<&[u8; 32]>,
 ) -> Result<Vec<u8>, Response> {
     if !encryption_enabled(meta) {
         meta.encryption.nonce_base64 = None;
@@ -635,7 +654,7 @@ pub(crate) async fn encrypt_payload_for_storage(
     meta.encryption.nonce_base64 = Some(BASE64.encode(payload_nonce));
     let data_key = random_32_bytes();
     meta.encryption.wrapped_key_base64 =
-        Some(wrap_object_data_key(state, resource, meta, &data_key).await?);
+        Some(wrap_object_data_key(state, resource, meta, &data_key, customer_key).await?);
     let cipher = Aes256Gcm::new_from_slice(&data_key).map_err(|err| {
         s3_error(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -661,6 +680,7 @@ pub(crate) async fn decrypt_payload_from_storage(
     resource: &str,
     payload: Vec<u8>,
     meta: Option<&S3ObjectMeta>,
+    customer_key: Option<&[u8; 32]>,
 ) -> Result<Vec<u8>, Response> {
     let Some(meta) = meta else {
         return Ok(payload);
@@ -694,7 +714,7 @@ pub(crate) async fn decrypt_payload_from_storage(
         ));
     }
     let data_key = if let Some(wrapped) = meta.encryption.wrapped_key_base64.as_deref() {
-        unwrap_object_data_key(state, resource, meta, wrapped).await?
+        unwrap_object_data_key(state, resource, meta, wrapped, customer_key).await?
     } else {
         derive_object_encryption_key(state, meta)
     };
@@ -740,11 +760,12 @@ pub(crate) async fn encrypt_shard(
     shard_data: &[u8],
     meta: &S3ObjectMeta,
     shard_index: usize,
+    customer_key: Option<&[u8; 32]>,
 ) -> Result<Vec<u8>, Response> {
     let nonce = derive_shard_nonce(meta, shard_index)?;
     let data_key = if let Some(wrapped) = meta.encryption.wrapped_key_base64.as_deref() {
         if !wrapped.is_empty() {
-            unwrap_object_data_key(state, resource, meta, wrapped)
+            unwrap_object_data_key(state, resource, meta, wrapped, customer_key)
                 .await?
                 .to_vec()
         } else {
@@ -780,11 +801,12 @@ pub(crate) async fn decrypt_shard(
     shard_data: Vec<u8>,
     meta: &S3ObjectMeta,
     shard_index: usize,
+    customer_key: Option<&[u8; 32]>,
 ) -> Result<Vec<u8>, Response> {
     let nonce = derive_shard_nonce(meta, shard_index)?;
     let data_key = if let Some(wrapped) = meta.encryption.wrapped_key_base64.as_deref() {
         if !wrapped.is_empty() {
-            unwrap_object_data_key(state, resource, meta, wrapped)
+            unwrap_object_data_key(state, resource, meta, wrapped, customer_key)
                 .await?
                 .to_vec()
         } else {
@@ -847,4 +869,91 @@ fn derive_shard_nonce(meta: &S3ObjectMeta, shard_index: usize) -> Result<[u8; 12
     nonce[10] ^= idx_bytes[2];
     nonce[11] ^= idx_bytes[3];
     Ok(nonce)
+}
+
+/// SSE-C 客户密钥本地包装 DEK (AES-256-GCM)。
+/// 格式: 12-byte nonce || ciphertext
+fn wrap_object_data_key_with_customer_key(
+    resource: &str,
+    data_key: &[u8; 32],
+    customer_key: &[u8; 32],
+) -> Result<String, Response> {
+    let wrap_nonce = random_12_bytes();
+    let cipher = Aes256Gcm::new_from_slice(customer_key).map_err(|err| {
+        s3_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "InternalError",
+            &format!("初始化 SSE-C 密钥包装加密器失败 / failed to init SSE-C key wrap cipher: {err}"),
+            resource,
+        )
+    })?;
+    let ciphertext = cipher
+        .encrypt(Nonce::from_slice(&wrap_nonce), data_key.as_slice())
+        .map_err(|_| {
+            s3_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "InternalError",
+                "SSE-C 客户密钥包装 DEK 失败 / failed to wrap data key with SSE-C key",
+                resource,
+            )
+        })?;
+    let mut wrapped = Vec::with_capacity(12 + ciphertext.len());
+    wrapped.extend_from_slice(&wrap_nonce);
+    wrapped.extend_from_slice(&ciphertext);
+    Ok(format!("{SSEC_WRAP_PREFIX}{}", BASE64.encode(&wrapped)))
+}
+
+/// SSE-C 客户密钥本地解包装 DEK。
+fn unwrap_object_data_key_with_customer_key(
+    resource: &str,
+    payload: &str,
+    customer_key: &[u8; 32],
+) -> Result<[u8; 32], Response> {
+    let raw = BASE64.decode(payload).map_err(|err| {
+        s3_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "InternalError",
+            &format!("SSE-C 包装密钥 Base64 解码失败 / failed to decode SSE-C wrapped key: {err}"),
+            resource,
+        )
+    })?;
+    if raw.len() < 13 {
+        return Err(s3_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "InternalError",
+            "SSE-C 包装密钥数据长度不足 / SSE-C wrapped key length invalid",
+            resource,
+        ));
+    }
+    let wrap_nonce = &raw[..12];
+    let ciphertext = &raw[12..];
+    let cipher = Aes256Gcm::new_from_slice(customer_key).map_err(|err| {
+        s3_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "InternalError",
+            &format!("初始化 SSE-C 密钥解包装加密器失败 / failed to init SSE-C key unwrap cipher: {err}"),
+            resource,
+        )
+    })?;
+    let dek = cipher
+        .decrypt(Nonce::from_slice(wrap_nonce), ciphertext)
+        .map_err(|_| {
+            s3_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "InternalError",
+                "SSE-C 客户密钥解包装 DEK 失败，客户密钥可能不正确 / failed to unwrap data key with SSE-C key — wrong customer key?",
+                resource,
+            )
+        })?;
+    if dek.len() != 32 {
+        return Err(s3_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "InternalError",
+            "SSE-C 解包装后 DEK 长度不正确 / unwrapped SSE-C data key length invalid",
+            resource,
+        ));
+    }
+    let mut output = [0u8; 32];
+    output.copy_from_slice(&dek);
+    Ok(output)
 }

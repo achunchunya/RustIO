@@ -621,7 +621,7 @@ pub(crate) async fn execute_storage_migration_job(
         Ok(meta) => meta,
         Err(response) => return Err(response_message(response).await),
     };
-    if let Err(response) = read_ec_object(state, bucket, key, current_meta.as_ref()).await {
+    if let Err(response) = read_ec_object(state, bucket, key, current_meta.as_ref(), None).await {
         return Err(response_message(response).await);
     }
 
@@ -964,7 +964,7 @@ pub(crate) async fn execute_storage_job(
         .map_err(|_| {
             "读取对象元数据失败 / failed to read object metadata for background heal".to_string()
         })?;
-    let repaired = read_ec_object(state, bucket, key, meta.as_ref())
+    let repaired = read_ec_object(state, bucket, key, meta.as_ref(), None)
         .await
         .map_err(|_| "后台修复执行失败 / background heal execution failed".to_string())?;
     if repaired.is_none() {

@@ -871,6 +871,7 @@ pub(crate) async fn read_current_object_payload(
     bucket: &str,
     key: &str,
     meta: Option<&S3ObjectMeta>,
+    customer_key: Option<&[u8; 32]>,
 ) -> Result<Option<Vec<u8>>, Response> {
     if let Some(meta) = meta {
         if object_restore_is_active(meta) {
@@ -882,7 +883,7 @@ pub(crate) async fn read_current_object_payload(
             return Ok(Some(bytes));
         }
     }
-    match read_ec_object(state, bucket, key, meta).await? {
+    match read_ec_object(state, bucket, key, meta, customer_key).await? {
         Some(bytes) => Ok(Some(bytes)),
         None => {
             let bucket_root = bucket_path(state, bucket)?;

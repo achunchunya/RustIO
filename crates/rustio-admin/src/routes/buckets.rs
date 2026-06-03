@@ -468,6 +468,7 @@ impl SseCustomerHeaderKind {
 pub(crate) struct SseCustomerRequest {
     pub(crate) algorithm: String,
     pub(crate) key_md5: String,
+    pub(crate) key_bytes: [u8; 32],
 }
 
 pub(crate) fn encryption_uses_customer_key(encryption: &S3ObjectEncryptionMeta) -> bool {
@@ -586,6 +587,7 @@ pub(crate) fn validate_sse_customer_headers(
     Ok(Some(SseCustomerRequest {
         algorithm: "AES256".to_string(),
         key_md5: computed_key_md5,
+        key_bytes: key_bytes.as_slice().try_into().unwrap(),
     }))
 }
 
@@ -1255,7 +1257,7 @@ pub(crate) async fn resolve_object_encryption_meta(
     headers: &HeaderMap,
     resource: &str,
     allow_sse_customer: bool,
-) -> Result<S3ObjectEncryptionMeta, Response> {
+) -> Result<(S3ObjectEncryptionMeta, Option<[u8; 32]>), Response> {
     let sse_customer_request = validate_sse_customer_headers(
         headers,
         resource,
@@ -1296,14 +1298,16 @@ pub(crate) async fn resolve_object_encryption_meta(
 
     let bucket_default = state.bucket_encryptions.read().await.get(bucket).cloned();
     if let Some(sse_customer_request) = sse_customer_request {
-        return Ok(S3ObjectEncryptionMeta {
+        let customer_key = sse_customer_request.key_bytes;
+        let meta = S3ObjectEncryptionMeta {
             enabled: true,
             algorithm: sse_customer_request.algorithm,
             customer_key_md5: Some(sse_customer_request.key_md5),
             kms_key_id: None,
             nonce_base64: None,
             wrapped_key_base64: None,
-        });
+        };
+        return Ok((meta, Some(customer_key)));
     }
     if let Some(algorithm) = request_algorithm {
         let Some(normalized) = normalize_sse_algorithm(&algorithm) else {
@@ -1342,7 +1346,7 @@ pub(crate) async fn resolve_object_encryption_meta(
             wrapped_key_base64: None,
         };
         ensure_kms_runtime_ready_for_encryption(state, resource, &meta).await?;
-        return Ok(meta);
+        return Ok((meta, None));
     }
 
     if let Some(default_config) = bucket_default.filter(|item| item.enabled) {
@@ -1370,10 +1374,10 @@ pub(crate) async fn resolve_object_encryption_meta(
             wrapped_key_base64: None,
         };
         ensure_kms_runtime_ready_for_encryption(state, resource, &meta).await?;
-        return Ok(meta);
+        return Ok((meta, None));
     }
 
-    Ok(S3ObjectEncryptionMeta::default())
+    Ok((S3ObjectEncryptionMeta::default(), None))
 }
 
 pub(crate) async fn ensure_kms_runtime_ready_for_encryption(

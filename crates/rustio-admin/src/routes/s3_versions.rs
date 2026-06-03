@@ -417,6 +417,7 @@ pub(crate) struct VaultTransitDecryptDataKeyResponse {
 pub(crate) const KMS_WRAP_PREFIX_GENERIC: &str = "kms-generic:";
 pub(crate) const KMS_WRAP_PREFIX_VAULT: &str = "kms-vault:";
 pub(crate) const KMS_WRAP_PREFIX_KES: &str = "kms-kes:";
+pub(crate) const SSEC_WRAP_PREFIX: &str = "ssec:";
 
 #[derive(Debug, Serialize)]
 pub(crate) struct KesGenerateDataKeyRequest {

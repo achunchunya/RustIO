@@ -212,7 +212,7 @@ pub(crate) async fn perform_kms_rotation(
         }
 
         let data_key = if let Some(wrapped) = meta.encryption.wrapped_key_base64.clone() {
-            match unwrap_object_data_key(state.as_ref(), &key, &meta, &wrapped).await {
+            match unwrap_object_data_key(state.as_ref(), &key, &meta, &wrapped, None).await {
                 Ok(key_bytes) => key_bytes,
                 Err(_) => {
                     let error_message = state
@@ -243,7 +243,7 @@ pub(crate) async fn perform_kms_rotation(
         };
 
         meta.encryption.wrapped_key_base64 =
-            match wrap_object_data_key(state.as_ref(), &key, &meta, &data_key).await {
+            match wrap_object_data_key(state.as_ref(), &key, &meta, &data_key, None).await {
                 Ok(value) => Some(value),
                 Err(_) => {
                     let error_message = state

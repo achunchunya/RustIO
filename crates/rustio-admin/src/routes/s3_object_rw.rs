@@ -894,7 +894,7 @@ pub(crate) async fn s3_root_put_object(
         },
         None => Vec::new(),
     };
-    let requested_encryption =
+    let (requested_encryption, sse_customer_key) =
         match resolve_object_encryption_meta(&state, &bucket, &headers, &key, true).await {
             Ok(value) => value,
             Err(response) => return response,
@@ -989,6 +989,9 @@ pub(crate) async fn s3_root_put_object(
             Ok(value) => value,
             Err(response) => return response,
         };
+        let source_sse_customer_key = source_sse_customer_request
+            .as_ref()
+            .map(|req| &req.key_bytes);
         if let Err(response) = ensure_sse_customer_access(
             &source_key,
             &source_meta.encryption,
@@ -1045,6 +1048,7 @@ pub(crate) async fn s3_root_put_object(
                 &source_bucket,
                 &source_key,
                 Some(&source_meta),
+                source_sse_customer_key,
             )
             .await
             {
@@ -1138,7 +1142,7 @@ pub(crate) async fn s3_root_put_object(
             );
         }
         if let Err(response) =
-            write_ec_object(&state, &bucket, &key, &source_bytes, &mut meta).await
+            write_ec_object(&state, &bucket, &key, &source_bytes, &mut meta, sse_customer_key.as_ref()).await
         {
             return response;
         }
@@ -1265,7 +1269,7 @@ pub(crate) async fn s3_root_put_object(
             );
         }
         if let Err(response) =
-            write_ec_object(&state, &bucket, &key, body_bytes.as_ref(), &mut meta).await
+            write_ec_object(&state, &bucket, &key, body_bytes.as_ref(), &mut meta, sse_customer_key.as_ref()).await
         {
             return response;
         }
@@ -1410,8 +1414,9 @@ pub(crate) async fn load_selected_object_for_advanced_api(
         SseCustomerHeaderKind::Request,
     )?;
 
+    let customer_key = sse_customer_request.map(|req| &req.key_bytes);
     let bytes = if selected_is_current {
-        match read_current_object_payload(state, bucket, key, Some(&selected_meta)).await? {
+        match read_current_object_payload(state, bucket, key, Some(&selected_meta), customer_key).await? {
             Some(bytes) => bytes,
             None => {
                 return Err(s3_error(

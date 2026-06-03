@@ -66,7 +66,7 @@ pub(crate) async fn archive_object_version(
             object_version_payload_path(&bucket_root, key, &archived_meta.version_id)?;
         if !tokio::fs::try_exists(&payload_path).await.unwrap_or(false) {
             if let Some(payload) =
-                read_current_object_payload(state, bucket, key, Some(&archived_meta)).await?
+                read_current_object_payload(state, bucket, key, Some(&archived_meta), None).await?
             {
                 tokio::fs::write(&payload_path, payload)
                     .await
@@ -515,7 +515,7 @@ pub(crate) async fn promote_latest_archived_version(
                 key,
             )
         })?;
-        write_ec_object(state, bucket, key, &payload, &mut next).await?;
+        write_ec_object(state, bucket, key, &payload, &mut next, None).await?;
     } else {
         let target = object_path(&bucket_root, key)?;
         let _ = tokio::fs::remove_file(target).await;

@@ -315,7 +315,7 @@ pub(crate) async fn get_bucket_object(
     }
 
     let bytes = if is_current {
-        read_current_object_payload(&state, &name, &key, Some(&meta))
+        read_current_object_payload(&state, &name, &key, Some(&meta), None)
             .await
             .map_err(|_| AppError::internal("读取对象失败 / failed to read object"))?
             .ok_or_else(|| AppError::not_found("对象不存在 / object not found"))?
@@ -1171,7 +1171,7 @@ pub(crate) async fn transition_current_object_for_lifecycle(
     }
 
     let tier_config = lookup_remote_tier_config(state, tier_name).await?;
-    let payload = read_current_object_payload(state, bucket, key, Some(&current_meta))
+    let payload = read_current_object_payload(state, bucket, key, Some(&current_meta), None)
         .await
         .map_err(|_| "读取当前对象内容失败 / failed to read current object payload".to_string())?;
     let Some(payload) = payload else {
