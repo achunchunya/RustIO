@@ -203,11 +203,6 @@ pub(crate) async fn delete_bucket_spec(
         .write()
         .await
         .retain(|item| item.source_bucket != name);
-    state
-        .object_store
-        .write()
-        .await
-        .retain(|(bucket, _), _| bucket != &name);
     state.object_meta.retain(|(bucket, _), _| bucket != &name);
     state
         .sync_metadata_raft("bucket-delete")
