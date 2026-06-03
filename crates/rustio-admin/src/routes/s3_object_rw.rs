@@ -694,7 +694,6 @@ pub(crate) async fn s3_root_put_object(
     let (parts, body) = request.into_parts();
     let headers = parts.headers;
 
-    // part 上传分支：直接用流式 body（任务14 改造 s3_upload_part 接收流）
     if let Some(upload_id) = query_value(uri.query(), "uploadId") {
         let Some(part_number_raw) = query_value(uri.query(), "partNumber") else {
             return s3_error(
@@ -1141,8 +1140,15 @@ pub(crate) async fn s3_root_put_object(
                 &key,
             );
         }
-        if let Err(response) =
-            write_ec_object(&state, &bucket, &key, &source_bytes, &mut meta, sse_customer_key.as_ref()).await
+        if let Err(response) = write_ec_object(
+            &state,
+            &bucket,
+            &key,
+            &source_bytes,
+            &mut meta,
+            sse_customer_key.as_ref(),
+        )
+        .await
         {
             return response;
         }
@@ -1268,8 +1274,15 @@ pub(crate) async fn s3_root_put_object(
                 &key,
             );
         }
-        if let Err(response) =
-            write_ec_object(&state, &bucket, &key, body_bytes.as_ref(), &mut meta, sse_customer_key.as_ref()).await
+        if let Err(response) = write_ec_object(
+            &state,
+            &bucket,
+            &key,
+            body_bytes.as_ref(),
+            &mut meta,
+            sse_customer_key.as_ref(),
+        )
+        .await
         {
             return response;
         }
@@ -1416,7 +1429,9 @@ pub(crate) async fn load_selected_object_for_advanced_api(
 
     let customer_key = sse_customer_request.map(|req| &req.key_bytes);
     let bytes = if selected_is_current {
-        match read_current_object_payload(state, bucket, key, Some(&selected_meta), customer_key).await? {
+        match read_current_object_payload(state, bucket, key, Some(&selected_meta), customer_key)
+            .await?
+        {
             Some(bytes) => bytes,
             None => {
                 return Err(s3_error(

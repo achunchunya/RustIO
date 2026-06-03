@@ -883,7 +883,9 @@ fn wrap_object_data_key_with_customer_key(
         s3_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "InternalError",
-            &format!("初始化 SSE-C 密钥包装加密器失败 / failed to init SSE-C key wrap cipher: {err}"),
+            &format!(
+                "初始化 SSE-C 密钥包装加密器失败 / failed to init SSE-C key wrap cipher: {err}"
+            ),
             resource,
         )
     })?;
@@ -931,7 +933,9 @@ fn unwrap_object_data_key_with_customer_key(
         s3_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "InternalError",
-            &format!("初始化 SSE-C 密钥解包装加密器失败 / failed to init SSE-C key unwrap cipher: {err}"),
+            &format!(
+                "初始化 SSE-C 密钥解包装加密器失败 / failed to init SSE-C key unwrap cipher: {err}"
+            ),
             resource,
         )
     })?;

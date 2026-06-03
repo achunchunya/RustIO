@@ -175,7 +175,9 @@ pub(crate) async fn s3_root_get_object(
                 && !object_restore_is_active(meta)
         });
     if stream_eligible {
-        match read_ec_object_streaming(&state, &bucket, &key, selected_meta.as_ref(), customer_key).await {
+        match read_ec_object_streaming(&state, &bucket, &key, selected_meta.as_ref(), customer_key)
+            .await
+        {
             Ok(Some(body)) => {
                 touch_object_access_heat(&state, &bucket, &key).await;
                 let meta = selected_meta
@@ -261,7 +263,15 @@ pub(crate) async fn s3_root_get_object(
     }
 
     let bytes = if selected_is_current {
-        match read_current_object_payload(&state, &bucket, &key, selected_meta.as_ref(), customer_key).await {
+        match read_current_object_payload(
+            &state,
+            &bucket,
+            &key,
+            selected_meta.as_ref(),
+            customer_key,
+        )
+        .await
+        {
             Ok(Some(bytes)) => bytes,
             Ok(None) => {
                 return s3_error(
@@ -725,7 +735,15 @@ pub(crate) async fn s3_root_head_object(
     }
 
     let bytes = if selected_is_current {
-        match read_current_object_payload(&state, &bucket, &key, selected_meta.as_ref(), customer_key).await {
+        match read_current_object_payload(
+            &state,
+            &bucket,
+            &key,
+            selected_meta.as_ref(),
+            customer_key,
+        )
+        .await
+        {
             Ok(Some(bytes)) => bytes,
             Ok(None) => return StatusCode::NOT_FOUND.into_response(),
             Err(response) => return response,
@@ -2219,8 +2237,15 @@ pub(crate) async fn s3_complete_multipart_upload(
                 );
             }
         };
-        if let Err(response) =
-            write_ec_object(&state, &bucket, &key, &complete_bytes, &mut object_meta, None).await
+        if let Err(response) = write_ec_object(
+            &state,
+            &bucket,
+            &key,
+            &complete_bytes,
+            &mut object_meta,
+            None,
+        )
+        .await
         {
             return response;
         }
