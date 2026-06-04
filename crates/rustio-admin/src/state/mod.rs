@@ -2,10 +2,11 @@ mod alerts;
 mod jobs;
 mod meta_store;
 mod persistence_bootstrap;
-mod raft_consensus;
-mod raft_core;
+pub(crate) mod raft;
 mod replication_workers;
 mod runtime_config;
+mod raft_consensus;
+mod raft_core;
 
 use meta_store::MetaStore;
 use std::{
@@ -205,22 +206,36 @@ pub struct MetadataRaftLogEntry {
     pub snapshot_hash: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MetadataRaftPeer {
     pub id: String,
     pub path: PathBuf,
-    #[serde(default)]
     pub endpoint: Option<String>,
     pub online: bool,
-    #[serde(default)]
     pub match_index: u64,
-    #[serde(default = "metadata_peer_next_index_default")]
     pub next_index: u64,
     pub last_index: u64,
 }
 
-pub(crate) fn metadata_peer_next_index_default() -> u64 {
-    1
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MetadataRaftStatus {
+    pub cluster_id: String,
+    pub leader_id: String,
+    pub term: u64,
+    pub commit_index: u64,
+    pub quorum: usize,
+    pub online_peers: usize,
+    pub last_error: Option<String>,
+    pub last_commit_at: Option<DateTime<Utc>>,
+    pub membership_phase: String,
+    #[serde(default)]
+    pub joint_old_members: Vec<String>,
+    #[serde(default)]
+    pub joint_new_members: Vec<String>,
+    #[serde(default)]
+    pub joint_elapsed_seconds: Option<u64>,
+    pub joint_timeout_seconds: u64,
+    pub peers: Vec<MetadataRaftPeer>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -253,27 +268,6 @@ pub struct MetadataRaftState {
 
 pub(crate) fn metadata_membership_phase_default() -> String {
     "stable".to_string()
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MetadataRaftStatus {
-    pub cluster_id: String,
-    pub leader_id: String,
-    pub term: u64,
-    pub commit_index: u64,
-    pub quorum: usize,
-    pub online_peers: usize,
-    pub last_error: Option<String>,
-    pub last_commit_at: Option<DateTime<Utc>>,
-    pub membership_phase: String,
-    #[serde(default)]
-    pub joint_old_members: Vec<String>,
-    #[serde(default)]
-    pub joint_new_members: Vec<String>,
-    #[serde(default)]
-    pub joint_elapsed_seconds: Option<u64>,
-    pub joint_timeout_seconds: u64,
-    pub peers: Vec<MetadataRaftPeer>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -336,7 +330,7 @@ pub struct MetadataRaftReadIndexRequest {
     pub request_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MetadataRaftReadIndexResponse {
     pub term: u64,
     pub leader_id: String,
@@ -467,6 +461,10 @@ pub struct AppState {
     pub last_request_activity_at: AtomicI64,
     pub last_memory_trim_at: AtomicI64,
     pub events: broadcast::Sender<RuntimeEvent>,
+    /// openraft 元数据 raft 句柄(集群模式);单机未启时为空,写路径回退本地 apply。
+    pub(crate) meta_raft: std::sync::OnceLock<raft::MetadataRaft>,
+    /// state machine 的 AppState 弱引用 holder(init_metadata_raft 时回填,打破循环)。
+    pub(crate) meta_raft_app: raft::AppStateRef,
 }
 
 impl AppState {
@@ -563,64 +561,6 @@ pub(crate) struct ReplicationRuntimeState {
     backlog: Vec<ReplicationBacklogItem>,
     #[serde(default)]
     checkpoints: HashMap<String, u64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub(crate) struct MetadataRaftRuntimePeer {
-    #[serde(default)]
-    id: String,
-    #[serde(default)]
-    endpoint: Option<String>,
-    #[serde(default = "metadata_runtime_peer_online_default")]
-    online: bool,
-    #[serde(default)]
-    last_index: u64,
-    #[serde(default)]
-    match_index: u64,
-    #[serde(default = "metadata_peer_next_index_default")]
-    next_index: u64,
-}
-
-pub(crate) fn metadata_runtime_peer_online_default() -> bool {
-    true
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub(crate) struct MetadataRaftRuntimeState {
-    #[serde(default)]
-    version: u32,
-    #[serde(default)]
-    cluster_id: String,
-    #[serde(default)]
-    leader_id: String,
-    #[serde(default)]
-    term: u64,
-    #[serde(default)]
-    voted_for: Option<String>,
-    #[serde(default)]
-    commit_index: u64,
-    #[serde(default)]
-    last_commit_term: u64,
-    #[serde(default)]
-    last_snapshot_hash: String,
-    #[serde(default)]
-    last_error: Option<String>,
-    #[serde(default)]
-    last_commit_at: Option<DateTime<Utc>>,
-    #[serde(default)]
-    last_heartbeat_at: Option<DateTime<Utc>>,
-    #[serde(default)]
-    last_election_at: Option<DateTime<Utc>>,
-    #[serde(default)]
-    last_quorum_at: Option<DateTime<Utc>>,
-    #[serde(default = "metadata_membership_phase_default")]
-    membership_phase: String,
-    #[serde(default)]
-    joint_old_members: Vec<String>,
-    #[serde(default)]
-    joint_new_members: Vec<String>,
-    #[serde(default)]
-    peers: Vec<MetadataRaftRuntimePeer>,
 }
 
 pub(crate) fn default_security_config_from_env() -> SecurityConfig {
@@ -828,4 +768,27 @@ pub(crate) fn default_cluster_config_payload(security: &SecurityConfig) -> Value
             "metrics_enabled": true
         }
     })
+}
+
+impl AppState {
+    /// 元数据 Raft 状态视图(从旧自研 Raft 字段构建)。
+    pub async fn metadata_raft_status_from_old(&self) -> MetadataRaftStatus {
+    let raft = self.metadata_raft.read().await;
+    MetadataRaftStatus {
+        cluster_id: raft.cluster_id.clone(),
+        leader_id: raft.leader_id.clone(),
+        term: raft.term,
+        quorum: 1,
+        online_peers: raft.peers.iter().filter(|p| p.online).count(),
+        commit_index: raft.commit_index,
+        last_error: raft.last_error.clone(),
+        last_commit_at: raft.last_commit_at,
+        membership_phase: raft.membership_phase.clone(),
+        joint_old_members: raft.joint_old_members.clone(),
+        joint_new_members: raft.joint_new_members.clone(),
+        joint_elapsed_seconds: None,
+        joint_timeout_seconds: 0,
+        peers: raft.peers.clone(),
+    }
+}
 }

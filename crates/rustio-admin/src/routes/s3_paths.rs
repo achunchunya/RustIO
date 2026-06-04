@@ -121,12 +121,6 @@ pub(crate) fn is_reserved_internal_key(key: &str) -> bool {
         || key.starts_with(".rustio_versions/")
 }
 
-pub(crate) fn object_meta_path(bucket_root: &FsPath, key: &str) -> Result<PathBuf, Response> {
-    let mut meta_key = key.to_string();
-    meta_key.push_str(".json");
-    object_path(&bucket_root.join(".rustio_meta"), &meta_key)
-}
-
 pub(crate) fn valid_version_id(version_id: &str) -> bool {
     !version_id.is_empty()
         && version_id.len() <= 128

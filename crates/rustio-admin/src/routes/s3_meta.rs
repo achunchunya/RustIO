@@ -462,6 +462,7 @@ pub(crate) async fn list_object_versions(
                 tags: Vec::new(),
                 user_metadata: HashMap::new(),
                 encryption: S3ObjectEncryptionMeta::default(),
+                content_type: None,
             });
         }
     }
@@ -635,8 +636,9 @@ pub(crate) async fn persist_current_object_meta(
     state: &AppState,
     meta: S3ObjectMeta,
 ) -> Result<(), Response> {
-    // redb 为真相源(put 内部更新 LRU);DashMap + .rustio_meta JSON 暂保留以兼容现有
-    // 扫描/复制路径(list/versions/replication 等),阶段3统一改 redb scan 后移除。
+    // 对象元数据已完全下沉 redb(真相源 + LRU 缓存),不再写 .rustio_meta JSON——
+    // list/versions/lifecycle/KMS 等扫描路径均已改 redb scan。
+    // 未来分布式集群:在 MetaStore::put 处提交增量 op 到 openraft,复制到各节点本地 redb。
     state.meta_store.put(&meta).map_err(|err| {
         s3_error(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -645,38 +647,6 @@ pub(crate) async fn persist_current_object_meta(
             &meta.key,
         )
     })?;
-
-    let bucket_root = bucket_path(state, &meta.bucket)?;
-    let meta_path = object_meta_path(&bucket_root, &meta.key)?;
-    if let Some(parent) = meta_path.parent() {
-        tokio::fs::create_dir_all(parent).await.map_err(|err| {
-            s3_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "InternalError",
-                &format!("Failed to create object metadata directory: {err}"),
-                &meta.key,
-            )
-        })?;
-    }
-    let bytes = serde_json::to_vec_pretty(&meta).map_err(|err| {
-        s3_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "InternalError",
-            &format!("Failed to serialize object metadata: {err}"),
-            &meta.key,
-        )
-    })?;
-    atomic_write(&meta_path, &bytes).await.map_err(|err| {
-        s3_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "InternalError",
-            &format!("Failed to persist object metadata: {err}"),
-            &meta.key,
-        )
-    })?;
-
-    // 对象元数据已下沉 redb(持久化真相源),不再走 Raft 全量快照——消除每次写 O(N) 全量序列化。
-    // 未来分布式集群:在 MetaStore::put 处提交增量 op 到 openraft,复制到各节点本地 redb。
     Ok(())
 }
 
@@ -717,7 +687,7 @@ pub(crate) async fn remove_current_object_meta(
     bucket: &str,
     key: &str,
 ) -> Result<(), Response> {
-    // redb 删除真相源(remove 内部淘汰 LRU);DashMap 暂保留同步删除以喂 Raft 快照(阶段2移除)。
+    // 对象元数据已完全下沉 redb,不再写/删 .rustio_meta JSON。
     state.meta_store.remove(bucket, key).map_err(|err| {
         s3_error(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -726,25 +696,6 @@ pub(crate) async fn remove_current_object_meta(
             key,
         )
     })?;
-    let bucket_root = bucket_path(state, bucket)?;
-    let meta_path = object_meta_path(&bucket_root, key)?;
-    match tokio::fs::remove_file(&meta_path).await {
-        Ok(_) => {}
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => {
-            return Err(s3_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "InternalError",
-                &format!("Failed to remove object metadata: {err}"),
-                key,
-            ));
-        }
-    }
-    if let Some(parent) = meta_path.parent() {
-        let meta_root = bucket_root.join(".rustio_meta");
-        let _ = remove_empty_dirs_until(parent, &meta_root);
-    }
-    // 对象元数据已下沉 redb,不再走 Raft 全量快照(redb 删除即持久)。
     Ok(())
 }
 
@@ -755,6 +706,7 @@ pub(crate) async fn build_object_meta_for_current_version(
     size: u64,
     etag: String,
     delete_marker: bool,
+    content_type: Option<String>,
 ) -> S3ObjectMeta {
     let now = Utc::now();
     let (versioning, object_lock_from_bucket) = state
@@ -833,5 +785,6 @@ pub(crate) async fn build_object_meta_for_current_version(
         tags: Vec::new(),
         user_metadata: HashMap::new(),
         encryption: S3ObjectEncryptionMeta::default(),
+        content_type,
     }
 }

@@ -23,6 +23,31 @@ pub(crate) struct StreamingSigV4Context {
 pub(crate) struct S3AuthOutcome {
     /// 仅当 payload 用 STREAMING-AWS4-HMAC-SHA256-PAYLOAD 时填充，供 aws-chunked 解码器链式验签
     pub(crate) streaming_context: Option<StreamingSigV4Context>,
+    /// 期望的 body SHA256（小写 64 位 hex）。
+    ///
+    /// 仅当 SigV4 验签（query/header）且声明的 payload_hash 是 64 位 hex、**且调用方传 body=None**
+    /// （流式分叉，无法在验签阶段比对）时填充，供调用方在流式消费 body 后比对防篡改。
+    /// body=Some 的旧路径已在 `ensure_s3_auth` 内部比对，此字段保持 None 避免重复。
+    pub(crate) expected_payload_sha256: Option<String>,
+}
+
+/// 流式分叉判定：仅当调用方传 `body=None`（无法在验签阶段比对）且声明的 payload_hash 是
+/// 64 位 hex 时，回传该 hash 供调用方流式消费 body 后校验防篡改。其余情形返回 None
+/// （UNSIGNED-PAYLOAD / STREAMING-* / body=Some 已内部比对）。
+fn expected_payload_sha256_for_streaming(
+    body: Option<&[u8]>,
+    payload_hash: &str,
+) -> Option<String> {
+    if body.is_none()
+        && payload_hash != "UNSIGNED-PAYLOAD"
+        && !payload_hash.starts_with("STREAMING-AWS4-HMAC-SHA256")
+        && payload_hash.len() == 64
+        && payload_hash.chars().all(|ch| ch.is_ascii_hexdigit())
+    {
+        Some(payload_hash.to_string())
+    } else {
+        None
+    }
 }
 
 pub(crate) fn is_s3_signed_request(headers: &HeaderMap, raw_query: Option<&str>) -> bool {
@@ -1497,7 +1522,12 @@ pub(crate) fn ensure_s3_auth(
                 auth_type: S3AuthType::AwsSigV4Query,
             },
         )?;
-        return Ok(S3AuthOutcome::default());
+        // 流式分叉（body=None）：presigned 声明的 payload_hash 是 64 位 hex 时回传供流式校验
+        let expected_payload_sha256 = expected_payload_sha256_for_streaming(body, &payload_hash);
+        return Ok(S3AuthOutcome {
+            streaming_context: None,
+            expected_payload_sha256,
+        });
     }
 
     let Some(auth) = headers
@@ -1722,7 +1752,13 @@ pub(crate) fn ensure_s3_auth(
         None
     };
 
-    Ok(S3AuthOutcome { streaming_context })
+    // 流式分叉（body=None）：声明的 payload_hash 是 64 位 hex 时无法在此比对，回传供调用方流式消费后校验
+    let expected_payload_sha256 = expected_payload_sha256_for_streaming(body, &payload_hash);
+
+    Ok(S3AuthOutcome {
+        streaming_context,
+        expected_payload_sha256,
+    })
 }
 
 pub(crate) fn parse_aws_v4_authorization(value: &str) -> Result<AwsSigV4Auth, String> {
@@ -1932,8 +1968,15 @@ pub(crate) fn canonical_headers(
 }
 
 pub(crate) fn canonical_uri(path: &str) -> String {
-    let raw = if path.is_empty() { "/" } else { path };
-    aws_encode_uri_path(raw)
+    // canonical URI 必须逐字使用请求行中的原始路径：客户端（aws-sdk / minio-go 等）
+    // 签名时签的就是它发到线上的那串已编码字节（如 `(` → `%28`）。若在此再做一次
+    // 百分号编码，会把 `%` 二次编码成 `%25`（`%28` → `%2528`），导致任何含特殊字符
+    // key 的请求签名不匹配。故直接用原始 path，仅处理空路径。
+    if path.is_empty() {
+        "/".to_string()
+    } else {
+        path.to_string()
+    }
 }
 
 pub(crate) fn canonical_query(raw_query: Option<&str>) -> String {
@@ -2110,19 +2153,8 @@ pub(crate) const AWS_QUERY_ENCODE_SET: AsciiSet = NON_ALPHANUMERIC
     .remove(b'.')
     .remove(b'~');
 
-pub(crate) const AWS_PATH_ENCODE_SET: AsciiSet = NON_ALPHANUMERIC
-    .remove(b'-')
-    .remove(b'_')
-    .remove(b'.')
-    .remove(b'~')
-    .remove(b'/');
-
 pub(crate) fn aws_encode_query_component(value: &str) -> String {
     utf8_percent_encode(value, &AWS_QUERY_ENCODE_SET).to_string()
-}
-
-pub(crate) fn aws_encode_uri_path(value: &str) -> String {
-    utf8_percent_encode(value, &AWS_PATH_ENCODE_SET).to_string()
 }
 
 pub(crate) fn multipart_upload_dir(state: &AppState, upload_id: &str) -> PathBuf {
@@ -2680,3 +2712,4 @@ pub(crate) fn collect_json_files(dir: &FsPath, output: &mut Vec<PathBuf>) -> std
     }
     Ok(())
 }
+

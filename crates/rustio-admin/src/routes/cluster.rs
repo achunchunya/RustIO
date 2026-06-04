@@ -1925,8 +1925,13 @@ pub(crate) async fn apply_cluster_config(
     };
 
     let previous_version = append_cluster_config_history_snapshot(&state, snapshot.clone()).await?;
+    let security_snapshot = Box::new(state.security.read().await.clone());
+    let history_snapshot = state.cluster_config_history.read().await.clone();
     state
-        .sync_metadata_raft("cluster-config-apply")
+        .submit_metadata_command(MetadataCommand::SetSecurityAndHistory {
+            security: security_snapshot,
+            history: history_snapshot,
+        })
         .await
         .map_err(|err| {
             AppError::internal(format!(
@@ -2014,8 +2019,13 @@ pub(crate) async fn rollback_cluster_config(
     };
 
     append_cluster_config_history_snapshot(&state, snapshot.clone()).await?;
+    let security_snapshot = Box::new(state.security.read().await.clone());
+    let history_snapshot = state.cluster_config_history.read().await.clone();
     state
-        .sync_metadata_raft("cluster-config-rollback")
+        .submit_metadata_command(MetadataCommand::SetSecurityAndHistory {
+            security: security_snapshot,
+            history: history_snapshot,
+        })
         .await
         .map_err(|err| {
             AppError::internal(format!(
@@ -2182,23 +2192,6 @@ pub(crate) async fn restore_cluster_backup(
     if body.rewrite_peer_id {
         snapshot.peer_id = local_peer_id.clone();
     }
-    let next_commit_index = raft_status.commit_index.saturating_add(1);
-    snapshot.prev_log_index = raft_status.commit_index;
-    snapshot.prev_log_term = if raft_status.commit_index > 0 {
-        raft_status.term
-    } else {
-        0
-    };
-    snapshot.install_snapshot = true;
-    snapshot.entry.index = snapshot.entry.index.max(next_commit_index);
-    snapshot.entry.term = snapshot.entry.term.max(raft_status.term);
-    snapshot.entry.reason = format!(
-        "cluster-backup-restore: {} / cluster backup restore: {}",
-        reason, reason
-    );
-    snapshot.entry.written_at = Utc::now();
-    snapshot.leader_commit = snapshot.entry.index;
-
     let response = state
         .apply_remote_metadata_raft_sync(snapshot)
         .await

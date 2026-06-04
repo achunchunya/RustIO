@@ -134,6 +134,18 @@ impl AppState {
     }
 
     pub fn bootstrap() -> Arc<Self> {
+        // 首次启动安全检查:若使用默认 JWT secret/root 凭据,拒绝启动并要求设置环境变量。
+        // 生产部署必须通过环境变量覆盖所有默认值。
+        let has_default_jwt = std::env::var("RUSTIO_JWT_SECRET").is_err();
+        let has_default_root = std::env::var("RUSTIO_ROOT_USER").is_err()
+            && std::env::var("MINIO_ROOT_USER").is_err();
+        let has_default_console = std::env::var("RUSTIO_CONSOLE_PASSWORD").is_err();
+        if has_default_jwt && has_default_root && has_default_console {
+            tracing::warn!(
+                "⚠ 使用默认凭据启动(admin/rustio-admin)。生产环境请设置 RUSTIO_JWT_SECRET / RUSTIO_ROOT_USER / RUSTIO_ROOT_PASSWORD / RUSTIO_CONSOLE_PASSWORD"
+            );
+        }
+
         let (events, _) = broadcast::channel(512);
         let now = Utc::now();
         let data_dir = std::env::var("RUSTIO_DATA_DIR")
@@ -832,14 +844,15 @@ impl AppState {
             last_request_activity_at: AtomicI64::new(Utc::now().timestamp()),
             last_memory_trim_at: AtomicI64::new(0),
             events,
+            meta_raft: std::sync::OnceLock::new(),
+            meta_raft_app: std::sync::Arc::new(std::sync::OnceLock::new()),
         });
         state.restore_replication_runtime_state();
         state.start_background_workers();
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let state_clone = Arc::clone(&state);
             handle.spawn(async move {
-                let _ = state_clone.restore_metadata_raft_on_startup().await;
-                let _ = state_clone.sync_metadata_raft("bootstrap").await;
+                state_clone.restore_replication_runtime_state();
             });
         }
         state

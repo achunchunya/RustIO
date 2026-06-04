@@ -18,13 +18,15 @@ pub(crate) fn valid_bucket_name(name: &str) -> bool {
 }
 
 pub(crate) fn collect_objects(
+    state: &AppState,
+    bucket: &str,
     bucket_root: &FsPath,
     dir: &FsPath,
     output: &mut Vec<DiskObjectEntry>,
 ) -> std::io::Result<()> {
     let mut entries = HashMap::<String, DiskObjectEntry>::new();
     collect_object_payload_files(bucket_root, dir, &mut entries)?;
-    collect_object_meta_entries(bucket_root, &mut entries)?;
+    collect_object_meta_entries(state, bucket, &mut entries);
     output.extend(entries.into_values());
     Ok(())
 }
@@ -48,6 +50,8 @@ pub(crate) fn collect_object_payload_files(
             || rel.starts_with(".rustio_meta/")
             || rel == ".rustio_versions"
             || rel.starts_with(".rustio_versions/")
+            || rel == ".rustio_ec_meta"
+            || rel.starts_with(".rustio_ec_meta/")
         {
             continue;
         }
@@ -84,18 +88,12 @@ pub(crate) fn collect_object_payload_files(
 }
 
 pub(crate) fn collect_object_meta_entries(
-    bucket_root: &FsPath,
+    state: &AppState,
+    bucket: &str,
     output: &mut HashMap<String, DiskObjectEntry>,
-) -> std::io::Result<()> {
-    let mut meta_files = Vec::new();
-    collect_json_files(&bucket_root.join(".rustio_meta"), &mut meta_files)?;
-    for file in meta_files {
-        let Ok(bytes) = std::fs::read(&file) else {
-            continue;
-        };
-        let Ok(meta) = serde_json::from_slice::<S3ObjectMeta>(&bytes) else {
-            continue;
-        };
+) {
+    // current 对象元数据已下沉 redb,从 scan_bucket 覆盖 payload 枚举得到的默认值。
+    for meta in state.meta_store.scan_bucket(bucket).unwrap_or_default() {
         if meta.delete_marker {
             output.remove(&meta.key);
             continue;
@@ -111,7 +109,6 @@ pub(crate) fn collect_object_meta_entries(
             },
         );
     }
-    Ok(())
 }
 
 pub(crate) fn is_bucket_control_plane_metadata_path(bucket_root: &FsPath, path: &FsPath) -> bool {
@@ -130,7 +127,8 @@ pub(crate) fn is_bucket_control_plane_metadata_path(bucket_root: &FsPath, path: 
             | ".rustio_meta/bucket-cors.json"
             | ".rustio_meta/bucket-tags.json"
             | ".rustio_meta/bucket-encryption.json"
-    )
+    ) || rel == ".rustio_ec_meta"
+        || rel.starts_with(".rustio_ec_meta/")
 }
 
 pub(crate) fn bucket_has_objects(bucket_root: &FsPath, dir: &FsPath) -> std::io::Result<bool> {
@@ -170,12 +168,8 @@ pub(crate) fn remove_empty_dirs_until(
 }
 
 pub(crate) fn weak_etag(bytes: &[u8]) -> String {
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in bytes {
-        hash ^= *byte as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    format!("{hash:016x}")
+    let result = md5::Md5::digest(bytes);
+    format!("{:x}", result)
 }
 
 pub(crate) fn format_http_date(value: DateTime<Utc>) -> String {

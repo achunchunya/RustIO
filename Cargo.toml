@@ -46,6 +46,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1.15", features = ["serde", "v4"] }
 lru = "0.18"
 redb = "4"
+digest = "0.10"
+openraft = { version = "0.9", features = ["serde", "storage-v2"] }
 
 [profile.dev]
 opt-level = 0

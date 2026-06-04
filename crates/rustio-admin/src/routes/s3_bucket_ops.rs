@@ -559,47 +559,10 @@ pub(crate) async fn s3_root_create_bucket(
         replication_policy: None,
     };
 
-    state
-        .buckets
-        .write()
+    if let Err(err) = state
+        .submit_metadata_command(MetadataCommand::CreateBucket(Box::new(spec)))
         .await
-        .insert(bucket.clone(), spec.clone());
-    state
-        .bucket_object_locks
-        .write()
-        .await
-        .insert(bucket.clone(), default_object_lock_config(&spec));
-    state
-        .bucket_retentions
-        .write()
-        .await
-        .insert(bucket.clone(), default_retention_config());
-    state
-        .bucket_legal_holds
-        .write()
-        .await
-        .insert(bucket.clone(), default_legal_hold_config());
-    state
-        .bucket_notifications
-        .write()
-        .await
-        .insert(bucket.clone(), Vec::new());
-    state
-        .bucket_lifecycle_rules
-        .write()
-        .await
-        .insert(bucket.clone(), Vec::new());
-    state
-        .bucket_acls
-        .write()
-        .await
-        .insert(bucket.clone(), default_bucket_acl_config());
-    state
-        .bucket_public_access_blocks
-        .write()
-        .await
-        .insert(bucket, default_bucket_public_access_block_config());
-    if let Err(err) = state.sync_metadata_raft("s3-bucket-create").await {
+    {
         return s3_error(
             StatusCode::SERVICE_UNAVAILABLE,
             "InternalError",

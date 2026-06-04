@@ -17,7 +17,7 @@ pub(crate) async fn list_bucket_objects(
     }
 
     let mut objects = Vec::new();
-    collect_objects(&bucket_dir, &bucket_dir, &mut objects).map_err(|err| {
+    collect_objects(&state, &name, &bucket_dir, &bucket_dir, &mut objects).map_err(|err| {
         AppError::internal(format!(
             "列出存储桶对象失败 / failed to list bucket objects: {err}"
         ))
@@ -229,6 +229,7 @@ pub(crate) async fn put_bucket_object(
         body.len() as u64,
         etag.clone(),
         false,
+        None,
     )
     .await;
     persist_current_object_meta(&state, meta.clone())
@@ -455,7 +456,7 @@ pub(crate) async fn delete_bucket_object(
     let mut response_body = json!({ "bucket": name, "key": key, "deleted": true });
     let notification_meta = if versioning_enabled {
         let marker =
-            build_object_meta_for_current_version(&state, &name, &key, 0, String::new(), true)
+            build_object_meta_for_current_version(&state, &name, &key, 0, String::new(), true, None)
                 .await;
         persist_current_object_meta(&state, marker.clone())
             .await
@@ -1078,7 +1079,7 @@ pub(crate) async fn expire_current_object_for_lifecycle(
 
     let removed_meta = if versioning_enabled {
         let marker =
-            build_object_meta_for_current_version(state, bucket, key, 0, String::new(), true).await;
+            build_object_meta_for_current_version(state, bucket, key, 0, String::new(), true, None).await;
         persist_current_object_meta(state, marker.clone())
             .await
             .map_err(|_| {
@@ -2078,8 +2079,13 @@ pub(crate) async fn update_security(
     };
     let previous_version =
         append_cluster_config_history_snapshot(&state, cluster_snapshot.clone()).await?;
+    let security_snapshot = Box::new(state.security.read().await.clone());
+    let history_snapshot = state.cluster_config_history.read().await.clone();
     state
-        .sync_metadata_raft("security-config-update")
+        .submit_metadata_command(MetadataCommand::SetSecurityAndHistory {
+            security: security_snapshot,
+            history: history_snapshot,
+        })
         .await
         .map_err(|err| {
             AppError::internal(format!(

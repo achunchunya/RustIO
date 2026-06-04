@@ -588,7 +588,7 @@ pub(crate) async fn s3_root_delete_object(
 
     if versioning_enabled {
         let marker =
-            build_object_meta_for_current_version(&state, &bucket, &key, 0, String::new(), true)
+            build_object_meta_for_current_version(&state, &bucket, &key, 0, String::new(), true, None)
                 .await;
         if let Err(response) = persist_current_object_meta(&state, marker.clone()).await {
             return response;
@@ -1942,6 +1942,24 @@ pub(crate) async fn s3_upload_part_streaming(
     }
 
     let etag = hasher.finalize();
+
+    // Amazon S3 要求除最后一个分片外所有分片至少 5 MiB(EntityTooSmall),对分片最小大小进行校验。
+    let min_part_size: u64 = std::env::var("RUSTIO_S3_MIN_PART_SIZE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5 * 1024 * 1024);
+    if total_size > 0 && total_size < min_part_size {
+        return Err(s3_error(
+            StatusCode::BAD_REQUEST,
+            "EntityTooSmall",
+            &format!(
+                "Your proposed upload is smaller than the minimum allowed size of {} bytes",
+                min_part_size
+            ),
+            &key,
+        ));
+    }
+
     upload.parts.insert(
         part_number,
         MultipartPart {
@@ -2222,6 +2240,7 @@ pub(crate) async fn s3_complete_multipart_upload(
         target_len,
         final_etag.clone(),
         false,
+        None,
     )
     .await;
     object_meta.encryption = upload_encryption;

@@ -27,6 +27,10 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let state = AppState::bootstrap();
+    // 启动单节点元数据 raft(集群基座);失败降级本地直写(单机仍可用)。
+    if let Err(err) = state.init_metadata_raft(1).await {
+        tracing::warn!("元数据 raft 启动失败,降级本地直写: {err}");
+    }
     let app = build_router(state)
         .layer(
             TraceLayer::new_for_http()
@@ -47,7 +51,34 @@ async fn main() -> anyhow::Result<()> {
                     },
                 ),
         )
-        .layer(CorsLayer::permissive());
+        .layer(
+            std::env::var("RUSTIO_CORS_ORIGIN")
+                .ok()
+                .map(|origin| {
+                    CorsLayer::new()
+                        .allow_origin(
+                            origin
+                                .parse::<axum::http::HeaderValue>()
+                                .expect("RUSTIO_CORS_ORIGIN 无效"),
+                        )
+                        .allow_methods([
+                            axum::http::Method::GET,
+                            axum::http::Method::PUT,
+                            axum::http::Method::POST,
+                            axum::http::Method::DELETE,
+                            axum::http::Method::HEAD,
+                        ])
+                        .allow_headers([
+                            axum::http::header::CONTENT_TYPE,
+                            axum::http::header::AUTHORIZATION,
+                            axum::http::header::HeaderName::from_static(
+                                "x-amz-content-sha256",
+                            ),
+                            axum::http::header::HeaderName::from_static("x-amz-date"),
+                        ])
+                })
+                .unwrap_or_else(CorsLayer::permissive),
+        );
 
     let addr = resolve_listen_addr()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;

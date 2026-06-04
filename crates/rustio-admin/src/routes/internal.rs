@@ -21,29 +21,29 @@ pub(crate) fn ensure_internal_token(headers: &HeaderMap) -> Result<(), Response>
 pub(crate) async fn ensure_metadata_read_barrier_api(
     state: &Arc<AppState>,
 ) -> Result<(), AppError> {
-    state
-        .metadata_read_index()
-        .await
-        .map(|_| ())
-        .map_err(|err| AppError::new(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", err))
+    if let Some(raft) = state.meta_raft.get() {
+        let _ = raft.ensure_linearizable().await.map_err(|err| {
+            AppError::new(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", format!("{err:?}"))
+        })?;
+    }
+    Ok(())
 }
 
 pub(crate) async fn ensure_metadata_read_barrier_s3(
     state: &Arc<AppState>,
     resource: &str,
 ) -> Result<(), Response> {
-    state
-        .metadata_read_index()
-        .await
-        .map(|_| ())
-        .map_err(|err| {
+    if let Some(raft) = state.meta_raft.get() {
+        let _ = raft.ensure_linearizable().await.map_err(|err| {
             s3_error(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "ServiceUnavailable",
-                &format!("元数据线性读屏障失败 / metadata linearizable read barrier failed: {err}"),
+                &format!("元数据线性读屏障失败 / metadata linearizable read barrier failed: {err:?}"),
                 resource,
             )
-        })
+        })?;
+    }
+    Ok(())
 }
 
 pub(crate) fn safe_internal_replication_path(root: &FsPath, key: &str) -> Option<PathBuf> {
@@ -112,106 +112,6 @@ pub(crate) fn internal_replication_object_space_root(
         .join(target_site)
         .join("data")
         .join(source_bucket)
-}
-
-pub(crate) async fn internal_metadata_raft_sync(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(body): Json<MetadataRaftSyncRequest>,
-) -> Response {
-    if let Err(response) = ensure_internal_token(&headers) {
-        return response;
-    }
-    match state.apply_remote_metadata_raft_sync(body).await {
-        Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
-        Err(message) => {
-            (StatusCode::BAD_REQUEST, Json(json!({ "error": message }))).into_response()
-        }
-    }
-}
-
-pub(crate) async fn internal_metadata_raft_request_vote(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(body): Json<MetadataRaftVoteRequest>,
-) -> Response {
-    if let Err(response) = ensure_internal_token(&headers) {
-        return response;
-    }
-    match state.handle_metadata_vote_request(body).await {
-        Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
-        Err(message) => {
-            (StatusCode::BAD_REQUEST, Json(json!({ "error": message }))).into_response()
-        }
-    }
-}
-
-pub(crate) async fn internal_metadata_raft_pre_vote(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(body): Json<MetadataRaftPreVoteRequest>,
-) -> Response {
-    if let Err(response) = ensure_internal_token(&headers) {
-        return response;
-    }
-    match state.handle_metadata_pre_vote_request(body).await {
-        Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
-        Err(message) => {
-            (StatusCode::BAD_REQUEST, Json(json!({ "error": message }))).into_response()
-        }
-    }
-}
-
-pub(crate) async fn internal_metadata_raft_heartbeat(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(body): Json<MetadataRaftHeartbeatRequest>,
-) -> Response {
-    if let Err(response) = ensure_internal_token(&headers) {
-        return response;
-    }
-    match state.handle_metadata_heartbeat_request(body).await {
-        Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
-        Err(message) => {
-            (StatusCode::BAD_REQUEST, Json(json!({ "error": message }))).into_response()
-        }
-    }
-}
-
-pub(crate) async fn internal_metadata_raft_read_index(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(body): Json<MetadataRaftReadIndexRequest>,
-) -> Response {
-    if let Err(response) = ensure_internal_token(&headers) {
-        return response;
-    }
-    match state.handle_metadata_read_index_request(body).await {
-        Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
-        Err(message) => {
-            (StatusCode::BAD_REQUEST, Json(json!({ "error": message }))).into_response()
-        }
-    }
-}
-
-pub(crate) async fn internal_metadata_raft_export(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Response {
-    if let Err(response) = ensure_internal_token(&headers) {
-        return response;
-    }
-    match state
-        .export_metadata_raft_sync_request("internal-export")
-        .await
-    {
-        Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
-        Err(message) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": message })),
-        )
-            .into_response(),
-    }
 }
 
 pub(crate) async fn internal_replication_apply(

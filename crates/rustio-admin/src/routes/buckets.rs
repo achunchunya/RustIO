@@ -82,46 +82,7 @@ pub(crate) async fn create_bucket_spec(
     };
 
     state
-        .buckets
-        .write()
-        .await
-        .insert(spec.name.clone(), spec.clone());
-    state
-        .bucket_object_locks
-        .write()
-        .await
-        .insert(spec.name.clone(), default_object_lock_config(&spec));
-    state
-        .bucket_retentions
-        .write()
-        .await
-        .insert(spec.name.clone(), default_retention_config());
-    state
-        .bucket_legal_holds
-        .write()
-        .await
-        .insert(spec.name.clone(), default_legal_hold_config());
-    state
-        .bucket_notifications
-        .write()
-        .await
-        .insert(spec.name.clone(), Vec::new());
-    state
-        .bucket_lifecycle_rules
-        .write()
-        .await
-        .insert(spec.name.clone(), Vec::new());
-    state
-        .bucket_acls
-        .write()
-        .await
-        .insert(spec.name.clone(), default_bucket_acl_config());
-    state.bucket_public_access_blocks.write().await.insert(
-        spec.name.clone(),
-        default_bucket_public_access_block_config(),
-    );
-    state
-        .sync_metadata_raft("bucket-create")
+        .submit_metadata_command(MetadataCommand::CreateBucket(Box::new(spec.clone())))
         .await
         .map_err(|err| {
             AppError::internal(format!(
@@ -177,35 +138,9 @@ pub(crate) async fn delete_bucket_spec(
             ))
         })?;
 
-    state.buckets.write().await.remove(&name);
-    state.bucket_object_locks.write().await.remove(&name);
-    state.bucket_retentions.write().await.remove(&name);
-    state.bucket_legal_holds.write().await.remove(&name);
-    state.bucket_notifications.write().await.remove(&name);
-    state.bucket_lifecycle_rules.write().await.remove(&name);
-    state.bucket_acls.write().await.remove(&name);
-    state
-        .bucket_public_access_blocks
-        .write()
-        .await
-        .remove(&name);
-    state.bucket_policies.write().await.remove(&name);
-    state.bucket_cors_rules.write().await.remove(&name);
-    state.bucket_tags.write().await.remove(&name);
-    state.bucket_encryptions.write().await.remove(&name);
-    state
-        .replications
-        .write()
-        .await
-        .retain(|rule| rule.source_bucket != name);
-    state
-        .replication_backlog
-        .write()
-        .await
-        .retain(|item| item.source_bucket != name);
     let _ = state.meta_store.delete_bucket_prefix(&name);
     state
-        .sync_metadata_raft("bucket-delete")
+        .submit_metadata_command(MetadataCommand::DeleteBucket { name: name.clone() })
         .await
         .map_err(|err| {
             AppError::internal(format!(
@@ -2511,14 +2446,8 @@ pub(crate) async fn update_remote_tiers(
         .cloned()
         .map(|tier| (tier.name.clone(), tier))
         .collect::<HashMap<_, _>>();
-    AppState::persist_remote_tiers_snapshot(&state.data_dir, &tiers_map).map_err(|err| {
-        AppError::internal(format!(
-            "持久化远端层配置失败 / failed to persist remote tiers: {err}"
-        ))
-    })?;
-    *state.remote_tiers.write().await = tiers_map;
     state
-        .sync_metadata_raft("remote-tiers-update")
+        .submit_metadata_command(MetadataCommand::SetRemoteTiers(Box::new(tiers_map)))
         .await
         .map_err(|err| {
             AppError::internal(format!(
@@ -2569,17 +2498,12 @@ pub(crate) async fn check_remote_tier_health(
         .ok_or_else(|| AppError::not_found("远端层不存在 / remote tier not found"))?;
     let probed = probe_remote_tier_connectivity(current).await;
     let tiers_snapshot = {
-        let mut tiers = state.remote_tiers.write().await;
+        let mut tiers = state.remote_tiers.read().await.clone();
         tiers.insert(normalized_name.clone(), probed.clone());
-        tiers.clone()
+        tiers
     };
-    AppState::persist_remote_tiers_snapshot(&state.data_dir, &tiers_snapshot).map_err(|err| {
-        AppError::internal(format!(
-            "持久化远端层配置失败 / failed to persist remote tiers: {err}"
-        ))
-    })?;
     state
-        .sync_metadata_raft("remote-tier-health-check")
+        .submit_metadata_command(MetadataCommand::SetRemoteTiers(Box::new(tiers_snapshot)))
         .await
         .map_err(|err| {
             AppError::internal(format!(
@@ -2645,17 +2569,12 @@ pub(crate) async fn rotate_remote_tier_secret(
         probe_remote_tier_connectivity(normalize_remote_tier_config(next)?).await
     };
     let tiers_snapshot = {
-        let mut tiers = state.remote_tiers.write().await;
+        let mut tiers = state.remote_tiers.read().await.clone();
         tiers.insert(normalized_name.clone(), updated.clone());
-        tiers.clone()
+        tiers
     };
-    AppState::persist_remote_tiers_snapshot(&state.data_dir, &tiers_snapshot).map_err(|err| {
-        AppError::internal(format!(
-            "持久化远端层配置失败 / failed to persist remote tiers: {err}"
-        ))
-    })?;
     state
-        .sync_metadata_raft("remote-tier-rotate-secret")
+        .submit_metadata_command(MetadataCommand::SetRemoteTiers(Box::new(tiers_snapshot)))
         .await
         .map_err(|err| {
             AppError::internal(format!(
@@ -2743,19 +2662,17 @@ pub(crate) async fn delete_remote_tier(
         }
     }
 
-    let mut remote_tiers = state.remote_tiers.write().await;
-    if remote_tiers.remove(&normalized_name).is_none() {
-        return Err(AppError::not_found("远端层不存在 / remote tier not found"));
-    }
-    AppState::persist_remote_tiers_snapshot(&state.data_dir, &remote_tiers).map_err(|err| {
-        AppError::internal(format!(
-            "持久化远端层配置失败 / failed to persist remote tiers: {err}"
-        ))
-    })?;
-    drop(remote_tiers);
-
+    let new_map = {
+        let tiers = state.remote_tiers.read().await;
+        if !tiers.contains_key(&normalized_name) {
+            return Err(AppError::not_found("远端层不存在 / remote tier not found"));
+        }
+        let mut m = tiers.clone();
+        m.remove(&normalized_name);
+        m
+    };
     state
-        .sync_metadata_raft("remote-tier-delete")
+        .submit_metadata_command(MetadataCommand::SetRemoteTiers(Box::new(new_map)))
         .await
         .map_err(|err| {
             AppError::internal(format!(

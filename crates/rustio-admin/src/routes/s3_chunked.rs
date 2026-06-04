@@ -7,7 +7,7 @@
 //! 参考：https://docs.aws.amazon.com/AmazonS3/latest/API/sigv4-streaming.html
 
 use super::*;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// aws-chunked 解码器（边读边解帧 + 链式验签）。
 ///
@@ -82,6 +82,61 @@ impl<R: tokio::io::AsyncRead + Unpin> AwsChunkedDecoder<R> {
         }
 
         Ok(result)
+    }
+
+    /// 流式解码（逐块解帧 + 链式验签），边解码边写入 `writer` 并喂增量 `etag`，返回明文总字节数。
+    ///
+    /// 与 `decode_all` 的区别：明文不累积到内存，对大对象（单次 PUT aws-chunked）内存恒定。
+    /// 块签名链式（`verify_chunk_signature`）已保证完整性，无需额外 sha256 比对。
+    /// 调用方需保证 `self.inner` 是真正的流式 `AsyncRead`（如 `StreamReader`），否则失去省内存意义。
+    pub(crate) async fn decode_into<W: tokio::io::AsyncWrite + Unpin>(
+        mut self,
+        writer: &mut W,
+        etag: &mut WeakEtagHasher,
+    ) -> Result<u64, std::io::Error> {
+        let mut total: u64 = 0;
+        loop {
+            let (chunk_size, chunk_sig) = self.parse_chunk_header().await?;
+
+            if chunk_size == 0 {
+                // 末尾 0 块：验证其签名（空数据），读取末尾 \r\n，结束
+                self.verify_chunk_signature(&[], &chunk_sig)?;
+                let mut trailing = [0u8; 2];
+                self.inner.read_exact(&mut trailing).await?;
+                if &trailing != b"\r\n" {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "missing \\r\\n after 0-chunk",
+                    ));
+                }
+                break;
+            }
+
+            // 读取块数据
+            let mut chunk_data = vec![0u8; chunk_size];
+            self.inner.read_exact(&mut chunk_data).await?;
+
+            // 读块尾 \r\n
+            let mut trailing = [0u8; 2];
+            self.inner.read_exact(&mut trailing).await?;
+            if &trailing != b"\r\n" {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "missing \\r\\n after chunk data",
+                ));
+            }
+
+            // 验签
+            self.verify_chunk_signature(&chunk_data, &chunk_sig)?;
+
+            // 验签通过，更新状态并流式产出明文
+            self.prev_signature = chunk_sig;
+            writer.write_all(&chunk_data).await?;
+            etag.update(&chunk_data);
+            total += chunk_data.len() as u64;
+        }
+
+        Ok(total)
     }
 
     /// 解析块头：`<hex-size>;chunk-signature=<sig>\r\n`，返回 (chunk_size, signature)。
@@ -164,27 +219,25 @@ impl<R: tokio::io::AsyncRead + Unpin> AwsChunkedDecoder<R> {
     }
 }
 
-/// FNV-1a 增量 hasher（用于 weak_etag 流式计算）。
+/// MD5 增量 hasher（用于单次 PUT 流式计算 S3 ETag）。
 pub(crate) struct WeakEtagHasher {
-    hash: u64,
+    hasher: md5::Md5,
 }
 
 impl WeakEtagHasher {
     pub(crate) fn new() -> Self {
         Self {
-            hash: 0xcbf29ce484222325,
+            hasher: md5::Md5::new(),
         }
     }
 
     pub(crate) fn update(&mut self, bytes: &[u8]) {
-        for byte in bytes {
-            self.hash ^= *byte as u64;
-            self.hash = self.hash.wrapping_mul(0x100000001b3);
-        }
+        self.hasher.update(bytes);
     }
 
     pub(crate) fn finalize(self) -> String {
-        format!("{:016x}", self.hash)
+        let result = self.hasher.finalize();
+        format!("{:x}", result)
     }
 }
 

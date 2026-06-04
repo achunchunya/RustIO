@@ -27,22 +27,21 @@ pub(crate) async fn restore_iam_runtime_snapshot(state: &AppState, snapshot: Iam
 
 pub(crate) async fn commit_iam_runtime_change(
     state: &AppState,
-    reason: &str,
+    _reason: &str,
     rollback: IamRuntimeSnapshot,
 ) -> Result<(), AppError> {
-    if let Err(err) = state.sync_metadata_raft(reason).await {
+    // handler 已乐观改内存;提交改后的 IAM 运行时全集经 raft(apply 落盘 admin_sessions)。
+    // submit 失败则回滚内存,保留原乐观语义。
+    let current = capture_iam_runtime_snapshot(state).await;
+    if let Err(err) = state
+        .submit_metadata_command(MetadataCommand::SetIamRuntime(Box::new(current)))
+        .await
+    {
         restore_iam_runtime_snapshot(state, rollback).await;
         return Err(AppError::internal(format!(
             "IAM 元数据 Raft 提交失败 / iam metadata raft commit failed: {err}"
         )));
     }
-
-    let sessions = state.admin_sessions.read().await.clone();
-    AppState::persist_console_sessions_snapshot(&state.data_dir, &sessions).map_err(|err| {
-        AppError::internal(format!(
-            "持久化控制台会话快照失败 / failed to persist console session snapshot: {err}"
-        ))
-    })?;
     Ok(())
 }
 

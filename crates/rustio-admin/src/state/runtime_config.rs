@@ -80,7 +80,7 @@ impl AppState {
         trimmed
     }
 
-    pub(crate) async fn append_audit_with_sync(
+    pub(crate) async fn append_audit_event(
         &self,
         actor: &str,
         action: &str,
@@ -88,7 +88,6 @@ impl AppState {
         outcome: &str,
         reason: Option<String>,
         details: serde_json::Value,
-        sync_metadata: bool,
     ) {
         let event = AuditEvent {
             id: Uuid::new_v4().to_string(),
@@ -116,9 +115,6 @@ impl AppState {
             }),
         )
         .await;
-        if sync_metadata {
-            let _ = self.sync_metadata_raft("audit").await;
-        }
     }
 
     pub async fn append_audit(
@@ -130,7 +126,7 @@ impl AppState {
         reason: Option<String>,
         details: serde_json::Value,
     ) {
-        self.append_audit_with_sync(actor, action, resource, outcome, reason, details, true)
+        self.append_audit_event(actor, action, resource, outcome, reason, details)
             .await;
     }
 
@@ -143,7 +139,7 @@ impl AppState {
         reason: Option<String>,
         details: serde_json::Value,
     ) {
-        self.append_audit_with_sync(actor, action, resource, outcome, reason, details, false)
+        self.append_audit_event(actor, action, resource, outcome, reason, details)
             .await;
     }
 
@@ -171,12 +167,6 @@ impl AppState {
             .unwrap_or(false)
     }
 
-    pub(crate) fn metadata_network_strict_enabled() -> bool {
-        std::env::var("RUSTIO_METADATA_RAFT_NETWORK_STRICT")
-            .map(|value| value.eq_ignore_ascii_case("true") || value == "1")
-            .unwrap_or(false)
-    }
-
     pub(crate) fn metadata_heartbeat_interval() -> std::time::Duration {
         let ms = std::env::var("RUSTIO_METADATA_RAFT_HEARTBEAT_MS")
             .ok()
@@ -184,41 +174,6 @@ impl AppState {
             .unwrap_or(800)
             .clamp(200, 5_000);
         std::time::Duration::from_millis(ms)
-    }
-
-    pub(crate) fn metadata_election_timeout() -> std::time::Duration {
-        let ms = std::env::var("RUSTIO_METADATA_RAFT_ELECTION_TIMEOUT_MS")
-            .ok()
-            .and_then(|raw| raw.parse::<u64>().ok())
-            .unwrap_or(3_500)
-            .clamp(800, 20_000);
-        std::time::Duration::from_millis(ms)
-    }
-
-    pub(crate) fn metadata_election_cooldown() -> std::time::Duration {
-        let ms = std::env::var("RUSTIO_METADATA_RAFT_ELECTION_COOLDOWN_MS")
-            .ok()
-            .and_then(|raw| raw.parse::<u64>().ok())
-            .unwrap_or(1_500)
-            .clamp(300, 10_000);
-        std::time::Duration::from_millis(ms)
-    }
-
-    pub(crate) fn metadata_membership_change_timeout() -> std::time::Duration {
-        let ms = std::env::var("RUSTIO_METADATA_RAFT_MEMBERSHIP_CHANGE_TIMEOUT_MS")
-            .ok()
-            .and_then(|raw| raw.parse::<u64>().ok())
-            .unwrap_or(15_000)
-            .clamp(2_000, 600_000);
-        std::time::Duration::from_millis(ms)
-    }
-
-    pub(crate) fn metadata_wal_retain_entries() -> usize {
-        std::env::var("RUSTIO_METADATA_RAFT_WAL_RETAIN_ENTRIES")
-            .ok()
-            .and_then(|raw| raw.parse::<usize>().ok())
-            .unwrap_or(256)
-            .clamp(32, 20_000)
     }
 
     pub(crate) fn metadata_local_peer_id() -> String {

@@ -127,7 +127,7 @@ pub(crate) async fn s3_root_bucket_get(
     let delimiter = query.delimiter.unwrap_or_default();
     let max_keys = query.max_keys.unwrap_or(1000).clamp(1, 10_000);
     let mut objects = Vec::new();
-    if let Err(err) = collect_objects(&bucket_dir, &bucket_dir, &mut objects) {
+    if let Err(err) = collect_objects(&state, &bucket, &bucket_dir, &bucket_dir, &mut objects) {
         return s3_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "InternalError",
@@ -494,7 +494,7 @@ pub(crate) async fn s3_delete_object_single(
 
     if versioning_enabled {
         let marker =
-            build_object_meta_for_current_version(state, bucket, key, 0, String::new(), true).await;
+            build_object_meta_for_current_version(state, bucket, key, 0, String::new(), true, None).await;
         let marker_version_id = marker.version_id.clone();
         persist_current_object_meta(state, marker)
             .await
@@ -647,33 +647,10 @@ pub(crate) async fn s3_root_delete_bucket(
         );
     }
 
-    state.buckets.write().await.remove(&bucket);
-    state.bucket_object_locks.write().await.remove(&bucket);
-    state.bucket_retentions.write().await.remove(&bucket);
-    state.bucket_legal_holds.write().await.remove(&bucket);
-    state.bucket_notifications.write().await.remove(&bucket);
-    state.bucket_lifecycle_rules.write().await.remove(&bucket);
-    state.bucket_acls.write().await.remove(&bucket);
-    state
-        .bucket_public_access_blocks
-        .write()
+    if let Err(err) = state
+        .submit_metadata_command(MetadataCommand::DeleteBucket { name: bucket })
         .await
-        .remove(&bucket);
-    state.bucket_policies.write().await.remove(&bucket);
-    state.bucket_cors_rules.write().await.remove(&bucket);
-    state.bucket_tags.write().await.remove(&bucket);
-    state.bucket_encryptions.write().await.remove(&bucket);
-    state
-        .replications
-        .write()
-        .await
-        .retain(|rule| rule.source_bucket != bucket);
-    state
-        .replication_backlog
-        .write()
-        .await
-        .retain(|item| item.source_bucket != bucket);
-    if let Err(err) = state.sync_metadata_raft("s3-bucket-delete").await {
+    {
         return s3_error(
             StatusCode::SERVICE_UNAVAILABLE,
             "InternalError",
@@ -735,25 +712,43 @@ pub(crate) async fn s3_root_put_object(
         .unwrap_or_else(|response| response);
     }
 
-    // 其他分支（legal-hold/retention/tagging/单次PUT）：需先收集 body 验签
-    let body_bytes = match to_bytes(body, usize::MAX).await {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            return s3_error(
-                StatusCode::BAD_REQUEST,
-                "IncompleteBody",
-                &format!("Failed to read request body: {err}"),
-                &key,
-            );
-        }
-    };
+    // 单次 PUT 对象数据（非子资源/copy）走流式：不全量收集 body，验签后边读边写盘，内存恒定。
+    // 其余分支（legal-hold/retention/tagging/copy）body 小或为空，保持全量收集后验签。
+    let is_object_data_put = !query_has_key(uri.query(), "legal-hold")
+        && !query_has_key(uri.query(), "retention")
+        && !query_has_key(uri.query(), "tagging")
+        && !headers.contains_key("x-amz-copy-source");
 
-    // 非流式验签（需完整 body）
-    if let Err(response) =
-        ensure_s3_auth(&headers, &method, &uri, Some(body_bytes.as_ref()), &state)
-    {
-        return response;
-    }
+    let mut streaming_body: Option<axum::body::Body> = None;
+    let mut streaming_auth = S3AuthOutcome::default();
+    let body_bytes = if is_object_data_put {
+        // 流式分叉：先验签名（body=None，签名 HMAC 不依赖 body），body 留待流式消费
+        match ensure_s3_auth(&headers, &method, &uri, None, &state) {
+            Ok(outcome) => streaming_auth = outcome,
+            Err(response) => return response,
+        }
+        streaming_body = Some(body);
+        Bytes::new()
+    } else {
+        // 其他分支（legal-hold/retention/tagging/copy）：需先收集 body 验签
+        let bytes = match to_bytes(body, usize::MAX).await {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                return s3_error(
+                    StatusCode::BAD_REQUEST,
+                    "IncompleteBody",
+                    &format!("Failed to read request body: {err}"),
+                    &key,
+                );
+            }
+        };
+        // 非流式验签（需完整 body）
+        if let Err(response) = ensure_s3_auth(&headers, &method, &uri, Some(bytes.as_ref()), &state)
+        {
+            return response;
+        }
+        bytes
+    };
 
     if query_has_key(uri.query(), "legal-hold") {
         return s3_put_object_legal_hold(
@@ -1103,13 +1098,16 @@ pub(crate) async fn s3_root_put_object(
             Err(response) => return response,
         };
         if let Some(parent) = target_path.parent() {
+            // create_dir_all 忽略已存在错误:连续/重复 PUT 同一 key 时目录可能已在之前请求中创建
             if let Err(err) = tokio::fs::create_dir_all(parent).await {
-                return s3_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "InternalError",
-                    &format!("Failed to create object directory: {err}"),
-                    &key,
-                );
+                if err.kind() != std::io::ErrorKind::AlreadyExists {
+                    return s3_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "InternalError",
+                        &format!("Failed to create object directory: {err}"),
+                        &key,
+                    );
+                }
             }
         }
         let mut meta = build_object_meta_for_current_version(
@@ -1119,6 +1117,7 @@ pub(crate) async fn s3_root_put_object(
             source_bytes.len() as u64,
             source_etag.clone(),
             false,
+            None,
         )
         .await;
         meta.user_metadata = if metadata_directive == "COPY" {
@@ -1212,73 +1211,173 @@ pub(crate) async fn s3_root_put_object(
 
     if let Some(parent) = target_path.parent() {
         if let Err(err) = tokio::fs::create_dir_all(parent).await {
-            return s3_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "InternalError",
-                &format!("Failed to create object directory: {err}"),
-                &key,
-            );
+            if err.kind() != std::io::ErrorKind::AlreadyExists {
+                return s3_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "InternalError",
+                    &format!("Failed to create object directory: {err}"),
+                    &key,
+                );
+            }
         }
     }
 
-    let mut file = match tokio::fs::File::create(&target_path).await {
+    // 单次 PUT 对象数据：先流式写入唯一命名的临时文件，验证通过后原子 rename 到目标路径，
+    // 避免整个对象驻留内存，且新写入失败时不破坏旧对象明文（last-writer-wins 与原行为一致）。
+    use crate::routes::s3_chunked::{AwsChunkedDecoder, WeakEtagHasher};
+    let staging = {
+        let file_name = target_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("object");
+        target_path.with_file_name(format!(".{file_name}.{}.rustio_puttmp", Uuid::new_v4()))
+    };
+    let mut file = match tokio::fs::File::create(&staging).await {
         Ok(file) => file,
         Err(err) => {
             return s3_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "InternalError",
-                &format!("Failed to create object file: {err}"),
+                &format!("Failed to create object staging file: {err}"),
                 &key,
             );
         }
     };
 
-    let etag = weak_etag(&body_bytes);
-    let mut meta = build_object_meta_for_current_version(
-        &state,
-        &bucket,
-        &key,
-        body_bytes.len() as u64,
-        etag.clone(),
-        false,
-    )
-    .await;
+    let body = streaming_body
+        .take()
+        .expect("object data PUT must carry streaming body");
+    let mut etag_hasher = WeakEtagHasher::new();
+    let total: u64 = if let Some(ctx) = streaming_auth.streaming_context.take() {
+        // (a) aws-chunked（STREAMING-AWS4-HMAC-SHA256-PAYLOAD）：真流式解码 + 链式验签
+        use futures::TryStreamExt;
+        use tokio_util::io::StreamReader;
+        let reader = StreamReader::new(body.into_data_stream().map_err(std::io::Error::other));
+        let decoder = AwsChunkedDecoder::new(reader, ctx);
+        match decoder.decode_into(&mut file, &mut etag_hasher).await {
+            Ok(total) => total,
+            Err(err) => {
+                let _ = tokio::fs::remove_file(&staging).await;
+                let (code, message) = if err.kind() == std::io::ErrorKind::PermissionDenied {
+                    (
+                        "SignatureDoesNotMatch",
+                        "aws-chunked chunk signature does not match".to_string(),
+                    )
+                } else {
+                    (
+                        "IncompleteBody",
+                        format!("aws-chunked decode failed: {err}"),
+                    )
+                };
+                return s3_error(StatusCode::BAD_REQUEST, code, &message, &key);
+            }
+        }
+    } else {
+        // (b)/(c)：逐帧写盘 + 增量 weak_etag/sha256，EOF 后按需比对 x-amz-content-sha256
+        use futures::StreamExt;
+        let mut stream = body.into_data_stream();
+        let mut sha = Sha256::new();
+        let mut total: u64 = 0;
+        while let Some(result) = stream.next().await {
+            let frame = match result {
+                Ok(frame) => frame,
+                Err(err) => {
+                    let _ = tokio::fs::remove_file(&staging).await;
+                    return s3_error(
+                        StatusCode::BAD_REQUEST,
+                        "IncompleteBody",
+                        &format!("Failed to read request body: {err}"),
+                        &key,
+                    );
+                }
+            };
+            if let Err(err) = file.write_all(&frame).await {
+                let _ = tokio::fs::remove_file(&staging).await;
+                return s3_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "InternalError",
+                    &format!("Failed to write object: {err}"),
+                    &key,
+                );
+            }
+            etag_hasher.update(&frame);
+            sha.update(&frame);
+            total += frame.len() as u64;
+        }
+        // 普通 SigV4（声明 64 位 hex）：流式消费后比对 body SHA256 防篡改
+        if let Some(expected) = streaming_auth.expected_payload_sha256.as_deref() {
+            let computed = hex::encode(sha.finalize());
+            if !computed.eq_ignore_ascii_case(expected) {
+                let _ = tokio::fs::remove_file(&staging).await;
+                return s3_error(
+                    StatusCode::BAD_REQUEST,
+                    "XAmzContentSHA256Mismatch",
+                    "x-amz-content-sha256 does not match request body",
+                    &key,
+                );
+            }
+        }
+        total
+    };
+
+    if let Err(err) = file.sync_all().await {
+        let _ = tokio::fs::remove_file(&staging).await;
+        return s3_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "InternalError",
+            &format!("Failed to flush object staging file: {err}"),
+            &key,
+        );
+    }
+    drop(file);
+
+    // 原子替换：临时文件就位后 rename 到目标路径。target_path 明文供 replication 源读取
+    // 与热层读取 fallback 依赖（load_replication_payload / read_current_hot_object_payload）。
+    // 失败仅删临时文件，旧对象明文保持不变（比直接覆盖写目标文件更安全）。
+    if let Err(err) = tokio::fs::rename(&staging, &target_path).await {
+        let _ = tokio::fs::remove_file(&staging).await;
+        return s3_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "InternalError",
+            &format!("Failed to finalize object file: {err}"),
+            &key,
+        );
+    }
+
+    let etag = etag_hasher.finalize();
+    let content_type = parse_content_type(&headers);
+    let mut meta =
+        build_object_meta_for_current_version(&state, &bucket, &key, total, etag.clone(), false, content_type.clone())
+            .await;
     meta.user_metadata = request_user_metadata;
     meta.tags = request_tags;
     meta.encryption = requested_encryption;
 
-    // 非加密对象：先写临时文件再流式 EC 编码，避免把整个对象同时 hold 在内存
     if !encryption_enabled(&meta) {
-        if let Err(err) = file.write_all(&body_bytes).await {
-            return s3_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "InternalError",
-                &format!("Failed to write object: {err}"),
-                &key,
-            );
-        }
-        drop(file);
+        // 非加密：从已落盘的目标文件流式 EC 编码，内存恒定
         if let Err(response) =
-            write_ec_object_streaming(&state, &bucket, &key, &target_path, body_bytes.len() as u64)
-                .await
+            write_ec_object_streaming(&state, &bucket, &key, &target_path, total).await
         {
             return response;
         }
     } else {
-        // 加密对象：需整体 AES-GCM 加密，暂时走全量路径 TODO: 未来流式分块加密
-        if let Err(err) = file.write_all(&body_bytes).await {
-            return s3_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "InternalError",
-                &format!("Failed to write object: {err}"),
-                &key,
-            );
-        }
+        // 加密对象：需整体 AES-GCM 加密，读回明文后走全量路径 TODO: 未来流式分块加密
+        let plaintext = match tokio::fs::read(&target_path).await {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                return s3_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "InternalError",
+                    &format!("Failed to read object file: {err}"),
+                    &key,
+                );
+            }
+        };
         if let Err(response) = write_ec_object(
             &state,
             &bucket,
             &key,
-            body_bytes.as_ref(),
+            &plaintext,
             &mut meta,
             sse_customer_key.as_ref(),
         )
@@ -1323,6 +1422,13 @@ pub(crate) async fn s3_root_put_object(
             .headers_mut()
             .insert(axum::http::header::ETAG, value);
     }
+    if let Some(ref ct) = meta.content_type {
+        if let Ok(value) = axum::http::HeaderValue::from_str(ct) {
+            response
+                .headers_mut()
+                .insert(axum::http::header::CONTENT_TYPE, value);
+        }
+    }
     if let Ok(value) = axum::http::HeaderValue::from_str(&meta.version_id) {
         response.headers_mut().insert(
             axum::http::header::HeaderName::from_static("x-amz-version-id"),
@@ -1331,6 +1437,14 @@ pub(crate) async fn s3_root_put_object(
     }
     apply_object_encryption_headers(&mut response, &meta.encryption);
     response
+}
+
+pub(crate) fn parse_content_type(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 pub(crate) fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {

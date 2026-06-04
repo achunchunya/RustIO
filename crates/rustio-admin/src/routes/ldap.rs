@@ -412,7 +412,7 @@ pub(crate) async fn sync_external_identity_profile(
     Ok(())
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct IamRuntimeSnapshot {
     pub(crate) credentials: HashMap<String, LocalCredential>,
     pub(crate) users: Vec<IamUser>,

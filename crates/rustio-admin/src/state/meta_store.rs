@@ -67,9 +67,11 @@ impl MetaStore {
     }
 
     /// 点查:先查 LRU,未命中查 redb 并回填缓存。
+    /// LRU 锁持有极短(cache hit 仅一次 lookup),不可能在临界区内 panic,
+    /// 因此 unwrap 是安全的——Mutex 中毒的唯一路径是持锁线程 panic。
     pub(crate) fn get(&self, bucket: &str, key: &str) -> Result<Option<S3ObjectMeta>, String> {
         let cache_key = (bucket.to_string(), key.to_string());
-        if let Some(meta) = self.cache.lock().unwrap().get(&cache_key) {
+        if let Some(meta) = self.cache.lock().unwrap_or_else(|e| e.into_inner()).get(&cache_key) {
             return Ok(Some(meta.clone()));
         }
         let txn = self.db.begin_read().map_err(|err| err.to_string())?;
@@ -85,7 +87,7 @@ impl MetaStore {
         };
         let meta: S3ObjectMeta =
             serde_json::from_slice(guard.value()).map_err(|err| err.to_string())?;
-        self.cache.lock().unwrap().put(cache_key, meta.clone());
+        self.cache.lock().unwrap_or_else(|e| e.into_inner()).put(cache_key, meta.clone());
         Ok(Some(meta))
     }
 
@@ -221,7 +223,7 @@ impl MetaStore {
         }
         txn.commit().map_err(|err| err.to_string())?;
         // 淘汰缓存中属于该 bucket 的条目。
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         let evict: Vec<(String, String)> = cache
             .iter()
             .filter(|((cached_bucket, _), _)| cached_bucket == bucket)

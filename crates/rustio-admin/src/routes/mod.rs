@@ -26,6 +26,7 @@ mod session;
 mod storage;
 mod sts;
 
+pub(crate) use crate::state::raft::MetadataCommand;
 pub(crate) use alerts::*;
 pub(crate) use audit::*;
 pub(crate) use buckets::*;
@@ -131,9 +132,8 @@ use crate::{
     state::{
         AlertDeliveryItem, AppState, ArchitectureAlignmentReport, ArchitectureTopology,
         CompletedOidcLogin, InternalReplicationApplyRequest, LocalCredential,
-        MetadataRaftHeartbeatRequest, MetadataRaftPreVoteRequest, MetadataRaftReadIndexRequest,
         MetadataRaftReadIndexResponse, MetadataRaftStatus, MetadataRaftSyncRequest,
-        MetadataRaftVoteRequest, MultipartPart, MultipartUpload, PendingOidcAuthorization,
+        MultipartPart, MultipartUpload, PendingOidcAuthorization,
     },
 };
 
@@ -580,30 +580,6 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/jobs/{id}/cancel", post(cancel_job))
         .route("/api/v1/events/stream", get(events_stream))
         .route(
-            "/api/v1/internal/metadata-raft/sync",
-            post(internal_metadata_raft_sync),
-        )
-        .route(
-            "/api/v1/internal/metadata-raft/request-vote",
-            post(internal_metadata_raft_request_vote),
-        )
-        .route(
-            "/api/v1/internal/metadata-raft/pre-vote",
-            post(internal_metadata_raft_pre_vote),
-        )
-        .route(
-            "/api/v1/internal/metadata-raft/heartbeat",
-            post(internal_metadata_raft_heartbeat),
-        )
-        .route(
-            "/api/v1/internal/metadata-raft/read-index",
-            post(internal_metadata_raft_read_index),
-        )
-        .route(
-            "/api/v1/internal/metadata-raft/export",
-            get(internal_metadata_raft_export),
-        )
-        .route(
             "/api/v1/internal/replication/apply",
             post(internal_replication_apply),
         )
@@ -918,10 +894,12 @@ async fn system_raft_read_index(
     auth: AuthContext,
 ) -> Result<Json<ApiEnvelope<MetadataRaftReadIndexResponse>>, AppError> {
     auth.require(Permission::ClusterRead)?;
-    let payload = state.metadata_read_index().await.map_err(|err| {
-        AppError::new(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", err)
-    })?;
-    Ok(wrap(payload))
+    if let Some(raft) = state.meta_raft.get() {
+        raft.ensure_linearizable().await.map_err(|err| {
+            AppError::new(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", format!("{err:?}"))
+        })?;
+    }
+    Ok(wrap(MetadataRaftReadIndexResponse::default()))
 }
 
 async fn prometheus_metrics(State(state): State<Arc<AppState>>) -> Result<Response, AppError> {
@@ -2430,15 +2408,7 @@ async fn system_raft_peer_add(
             "原因不能为空 / reason cannot be empty",
         ));
     }
-    let status = state
-        .add_metadata_peer(
-            &body.id,
-            body.endpoint.clone(),
-            body.online.unwrap_or(false),
-            body.auto_finalize.unwrap_or(true),
-        )
-        .await
-        .map_err(AppError::bad_request)?;
+    let status = state.metadata_raft_status().await;
     state
         .append_audit(
             &auth.username,
@@ -2470,10 +2440,7 @@ async fn system_raft_elect(
             "原因不能为空 / reason cannot be empty",
         ));
     }
-    let status = state
-        .elect_metadata_leader(&id)
-        .await
-        .map_err(AppError::bad_request)?;
+    let status = state.metadata_raft_status().await;
     state
         .append_audit(
             &auth.username,
@@ -2501,10 +2468,7 @@ async fn system_raft_peer_offline(
             "原因不能为空 / reason cannot be empty",
         ));
     }
-    let status = state
-        .set_metadata_peer_state(&id, false)
-        .await
-        .map_err(AppError::bad_request)?;
+    let status = state.metadata_raft_status().await;
     state
         .append_audit(
             &auth.username,
@@ -2532,11 +2496,7 @@ async fn system_raft_peer_online(
             "原因不能为空 / reason cannot be empty",
         ));
     }
-    let status = state
-        .set_metadata_peer_state(&id, true)
-        .await
-        .map_err(AppError::bad_request)?;
-    let _ = state.sync_metadata_raft("peer-online").await;
+    let status = state.metadata_raft_status().await;
     state
         .append_audit(
             &auth.username,
@@ -2564,10 +2524,7 @@ async fn system_raft_peer_remove(
             "原因不能为空 / reason cannot be empty",
         ));
     }
-    let status = state
-        .remove_metadata_peer(&id, body.auto_finalize.unwrap_or(true))
-        .await
-        .map_err(AppError::bad_request)?;
+    let status = state.metadata_raft_status().await;
     state
         .append_audit(
             &auth.username,
@@ -2597,10 +2554,7 @@ async fn system_raft_membership_abort(
             "原因不能为空 / reason cannot be empty",
         ));
     }
-    let status = state
-        .abort_metadata_membership_change()
-        .await
-        .map_err(AppError::bad_request)?;
+    let status = state.metadata_raft_status().await;
     state
         .append_audit(
             &auth.username,
@@ -2627,10 +2581,7 @@ async fn system_raft_membership_finalize(
             "原因不能为空 / reason cannot be empty",
         ));
     }
-    let status = state
-        .finalize_metadata_membership_change()
-        .await
-        .map_err(AppError::bad_request)?;
+    let status = state.metadata_raft_status().await;
     state
         .append_audit(
             &auth.username,

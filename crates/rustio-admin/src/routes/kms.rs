@@ -754,6 +754,7 @@ pub(crate) async fn cleanup_ec_written_shards(shards: &[EcShardInfo]) -> usize {
 }
 
 /// 单个 EC 分片加密：base_nonce XOR shard_index 保证每个分片 nonce 唯一（AES-GCM 安全要求）。
+#[allow(dead_code)]
 pub(crate) async fn encrypt_shard(
     state: &AppState,
     resource: &str,
@@ -795,6 +796,7 @@ pub(crate) async fn encrypt_shard(
 }
 
 /// 单个 EC 分片解密。
+#[allow(dead_code)]
 pub(crate) async fn decrypt_shard(
     state: &AppState,
     resource: &str,
@@ -836,8 +838,8 @@ pub(crate) async fn decrypt_shard(
 }
 
 /// base_nonce XOR (shard_index_be_bytes)，保证每个分片 nonce 唯一。
-fn derive_shard_nonce(meta: &S3ObjectMeta, shard_index: usize) -> Result<[u8; 12], Response> {
-    let nonce_b64 = meta.encryption.nonce_base64.as_deref().ok_or_else(|| {
+#[allow(dead_code)]
+fn derive_shard_nonce(meta: &S3ObjectMeta, shard_index: usize) -> Result<[u8; 12], Response> {    let nonce_b64 = meta.encryption.nonce_base64.as_deref().ok_or_else(|| {
         s3_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "InternalError",

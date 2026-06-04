@@ -25,7 +25,8 @@ pub(crate) async fn s3_list_object_versions_xml(
 
     let mut keys = HashSet::new();
     let mut listed_objects = Vec::new();
-    if let Err(err) = collect_objects(&bucket_root, &bucket_root, &mut listed_objects) {
+    if let Err(err) = collect_objects(&state, bucket, &bucket_root, &bucket_root, &mut listed_objects)
+    {
         return s3_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "InternalError",
@@ -38,14 +39,11 @@ pub(crate) async fn s3_list_object_versions_xml(
     }
 
     let mut meta_files = Vec::new();
-    if let Err(err) = collect_json_files(&bucket_root.join(".rustio_meta"), &mut meta_files) {
-        return s3_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "InternalError",
-            &format!("Failed to enumerate object metadata files: {err}"),
-            bucket,
-        );
+    // current 对象元数据已下沉 redb,直接从 scan_bucket 收集 key(含 delete marker)。
+    for meta in state.meta_store.scan_bucket(bucket).unwrap_or_default() {
+        keys.insert(meta.key);
     }
+    // archived 历史版本仍扫 .rustio_versions JSON。
     if let Err(err) = collect_json_files(&bucket_root.join(".rustio_versions"), &mut meta_files) {
         return s3_error(
             StatusCode::INTERNAL_SERVER_ERROR,
