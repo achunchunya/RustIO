@@ -8,6 +8,7 @@ authors.workspace = true
 [dependencies]
 aes-gcm.workspace = true
 anyhow.workspace = true
+argon2.workspace = true
 async-stream.workspace = true
 axum.workspace = true
 base64.workspace = true

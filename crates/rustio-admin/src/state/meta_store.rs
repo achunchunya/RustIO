@@ -130,7 +130,7 @@ impl MetaStore {
         // 未来集群:此处提交增量 upsert op 到 openraft,复制到各节点本地 redb。
         self.cache
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .put((meta.bucket.clone(), meta.key.clone()), meta.clone());
         Ok(())
     }
@@ -151,7 +151,7 @@ impl MetaStore {
         // 未来集群:此处提交增量 delete op 到 openraft。
         self.cache
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .pop(&(bucket.to_string(), key.to_string()));
         Ok(())
     }

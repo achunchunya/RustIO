@@ -133,9 +133,33 @@ impl AppState {
         std::fs::rename(&temp_path, &path).map_err(|err| err.to_string())
     }
 
+    /// 打开 redb 元数据库,若文件损坏则自动删除重建(元数据可从 bucket 目录扫描恢复)。
+    fn open_meta_store_or_recover(data_dir: &Path) -> MetaStore {
+        let path = data_dir.join(".rustio_meta.redb");
+        match MetaStore::open(&path) {
+            Ok(store) => return store,
+            Err(err) => {
+                tracing::warn!("元数据库打开失败,尝试删除损坏文件重建: {err}");
+            }
+        }
+        // 尝试恢复:删除可能损坏的 redb 文件后重建。
+        if let Err(err) = std::fs::remove_file(&path) {
+            tracing::error!("无法删除损坏的元数据库文件 {path:?}: {err}");
+            panic!(
+                "元数据库文件损坏且无法自动删除,请手动删除后重启 / corrupted metadata db cannot be auto-removed: {path:?}"
+            );
+        }
+        MetaStore::open(&path).unwrap_or_else(|err| {
+            panic!(
+                "删除损坏文件后仍无法创建元数据库 {path:?}: {err}。请检查磁盘空间与权限 / cannot create metadata db after recovery"
+            )
+        })
+    }
+
     pub fn bootstrap() -> Arc<Self> {
-        // 首次启动安全检查:若使用默认 JWT secret/root 凭据,拒绝启动并要求设置环境变量。
-        // 生产部署必须通过环境变量覆盖所有默认值。
+        // 库级兜底警告:检测到全默认凭据时 warn。
+        // 真正的"拒绝启动"在 server 入口 ensure_secure_startup() 执行(库本身不退出进程,
+        // 以免集成测试无法构造 AppState)。
         let has_default_jwt = std::env::var("RUSTIO_JWT_SECRET").is_err();
         let has_default_root = std::env::var("RUSTIO_ROOT_USER").is_err()
             && std::env::var("MINIO_ROOT_USER").is_err();
@@ -344,8 +368,7 @@ impl AppState {
         let cluster_config_history = Self::load_cluster_config_history(&data_dir, &security);
         let console_sessions = Self::load_console_sessions(&data_dir);
 
-        let meta_store =
-            MetaStore::open(&data_dir.join(".rustio_meta.redb")).expect("打开元数据库 redb 失败");
+        let meta_store = Self::open_meta_store_or_recover(&data_dir);
         match meta_store.migrate_from_data_dir(&data_dir) {
             Ok(0) => {}
             Ok(count) => tracing::info!("已迁移 {count} 条对象元数据到 redb"),
@@ -840,6 +863,7 @@ impl AppState {
             object_access_heat: RwLock::new(HashMap::new()),
             storage_governance: RwLock::new(StorageGovernanceRuntimeState::default()),
             meta_store,
+            login_rate_limiter: crate::routes::rate_limit::LoginRateLimiter::default_policy(),
             multipart_uploads: RwLock::new(HashMap::new()),
             last_request_activity_at: AtomicI64::new(Utc::now().timestamp()),
             last_memory_trim_at: AtomicI64::new(0),

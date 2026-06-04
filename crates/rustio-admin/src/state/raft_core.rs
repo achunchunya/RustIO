@@ -185,12 +185,6 @@ impl AppState {
         Ok(hex::encode(hasher.finalize()))
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn metadata_snapshot_hash(snapshot: &MetadataRaftSnapshot) -> Result<String, String> {        let mut canonical = snapshot.clone();
-        canonical.generated_at = DateTime::<Utc>::from(std::time::SystemTime::UNIX_EPOCH);
-        Self::hash_json(&canonical)
-    }
-
     pub async fn elect_metadata_leader(&self, leader_id: &str) -> Result<MetadataRaftStatus, String> {
         let mut raft = self.metadata_raft.write().await;
         raft.leader_id = leader_id.to_string();
@@ -206,6 +200,3 @@ impl AppState {
     pub async fn process_metadata_raft_heartbeat_once(&self) {}
     pub async fn process_metadata_membership_watchdog_once(&self) {}
 }
-
-#[allow(dead_code)]
-pub(crate) fn metadata_peer_next_index_default() -> u64 { 1 }

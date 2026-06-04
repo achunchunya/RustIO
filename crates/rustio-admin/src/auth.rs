@@ -120,7 +120,8 @@ pub fn issue_tokens(session: &ConsoleSession, jwt_secret: &str) -> Result<LoginR
 }
 
 pub fn decode_token(token: &str, jwt_secret: &str) -> Result<AuthClaims, AppError> {
-    let validation = Validation::default();
+    let mut validation = Validation::default();
+    validation.validate_nbf = true;
     let data = decode::<AuthClaims>(
         token,
         &DecodingKey::from_secret(jwt_secret.as_bytes()),

@@ -1,6 +1,7 @@
 mod alerts;
 mod jobs;
 mod meta_store;
+mod password;
 mod persistence_bootstrap;
 pub(crate) mod raft;
 mod replication_workers;
@@ -9,6 +10,7 @@ mod raft_consensus;
 mod raft_core;
 
 use meta_store::MetaStore;
+pub(crate) use password::{hash_password, is_hashed as password_is_hashed, verify_password};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs::OpenOptions,
@@ -457,6 +459,7 @@ pub struct AppState {
     pub object_access_heat: RwLock<HashMap<(String, String), u64>>,
     pub storage_governance: RwLock<StorageGovernanceRuntimeState>,
     pub(crate) meta_store: MetaStore,
+    pub(crate) login_rate_limiter: crate::routes::rate_limit::LoginRateLimiter,
     pub multipart_uploads: RwLock<HashMap<String, MultipartUpload>>,
     pub last_request_activity_at: AtomicI64,
     pub last_memory_trim_at: AtomicI64,

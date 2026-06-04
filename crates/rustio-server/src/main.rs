@@ -1,3 +1,43 @@
+//! RustIO 服务器入口。
+//!
+//! ## 生产部署 TLS
+//!
+//! RustIO 仅监听 HTTP(TcpListener),不内置 TLS。生产环境必须在反向代理后部署:
+//!
+//! ### Caddy (推荐,自动 Let's Encrypt)
+//! ```text
+//! rustio.example.com {
+//!     reverse_proxy 127.0.0.1:9000
+//! }
+//! ```
+//!
+//! ### Nginx
+//! ```nginx
+//! server {
+//!     listen 443 ssl http2;
+//!     server_name rustio.example.com;
+//!     ssl_certificate     /etc/ssl/certs/rustio.pem;
+//!     ssl_certificate_key /etc/ssl/private/rustio.key;
+//!     location / {
+//!         proxy_pass http://127.0.0.1:9000;
+//!         proxy_set_header X-Forwarded-For $remote_addr;
+//!         proxy_set_header X-Real-IP $remote_addr;
+//!         proxy_set_header Host $host;
+//!     }
+//! }
+//! ```
+//!
+//! 注意:X-Forwarded-For / X-Real-IP 用于登录速率限制的客户端 IP 识别,必须转发。
+//!
+//! 生产环境变量:
+//! ```bash
+//! export RUSTIO_JWT_SECRET="$(openssl rand -base64 48)"
+//! export RUSTIO_ROOT_USER="admin"
+//! export RUSTIO_ROOT_PASSWORD="$(openssl rand -base64 32)"
+//! export RUSTIO_CONSOLE_PASSWORD="$(openssl rand -base64 32)"
+//! export RUSTIO_CORS_ORIGIN="https://rustio.example.com"
+//! ```
+
 use std::net::SocketAddr;
 
 use anyhow::Context;
@@ -26,11 +66,14 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    ensure_secure_startup()?;
+
     let state = AppState::bootstrap();
     // 启动单节点元数据 raft(集群基座);失败降级本地直写(单机仍可用)。
     if let Err(err) = state.init_metadata_raft(1).await {
         tracing::warn!("元数据 raft 启动失败,降级本地直写: {err}");
     }
+    let cors_layer = build_cors_layer()?;
     let app = build_router(state)
         .layer(
             TraceLayer::new_for_http()
@@ -51,34 +94,7 @@ async fn main() -> anyhow::Result<()> {
                     },
                 ),
         )
-        .layer(
-            std::env::var("RUSTIO_CORS_ORIGIN")
-                .ok()
-                .map(|origin| {
-                    CorsLayer::new()
-                        .allow_origin(
-                            origin
-                                .parse::<axum::http::HeaderValue>()
-                                .expect("RUSTIO_CORS_ORIGIN 无效"),
-                        )
-                        .allow_methods([
-                            axum::http::Method::GET,
-                            axum::http::Method::PUT,
-                            axum::http::Method::POST,
-                            axum::http::Method::DELETE,
-                            axum::http::Method::HEAD,
-                        ])
-                        .allow_headers([
-                            axum::http::header::CONTENT_TYPE,
-                            axum::http::header::AUTHORIZATION,
-                            axum::http::header::HeaderName::from_static(
-                                "x-amz-content-sha256",
-                            ),
-                            axum::http::header::HeaderName::from_static("x-amz-date"),
-                        ])
-                })
-                .unwrap_or_else(CorsLayer::permissive),
-        );
+        .layer(cors_layer);
 
     let addr = resolve_listen_addr()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -86,13 +102,103 @@ async fn main() -> anyhow::Result<()> {
     info!("管理端 Web: http://{}", addr);
     info!("管理 API: http://{}", addr);
     info!("S3 兼容端点: http://{}", addr);
-    info!("默认账号: admin / rustio-admin");
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
 
     Ok(())
+}
+
+/// 启动期安全校验:生产环境必须显式配置 JWT 密钥与 root 凭据,否则拒绝启动。
+/// 设置 `RUSTIO_ALLOW_INSECURE=1` 可显式降级为开发模式(仅本地/测试使用)。
+fn ensure_secure_startup() -> anyhow::Result<()> {
+    if env_flag_enabled("RUSTIO_ALLOW_INSECURE") {
+        tracing::warn!(
+            "⚠ RUSTIO_ALLOW_INSECURE 已启用:跳过启动安全校验,使用默认凭据/弱密钥。仅限本地开发"
+        );
+        return Ok(());
+    }
+
+    let mut missing = Vec::new();
+    if std::env::var("RUSTIO_JWT_SECRET")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .is_none()
+    {
+        missing.push("RUSTIO_JWT_SECRET");
+    }
+    let has_root_user = ["RUSTIO_ROOT_USER", "MINIO_ROOT_USER"]
+        .iter()
+        .any(|key| std::env::var(key).is_ok_and(|v| !v.trim().is_empty()));
+    if !has_root_user {
+        missing.push("RUSTIO_ROOT_USER");
+    }
+    let has_root_password = ["RUSTIO_ROOT_PASSWORD", "MINIO_ROOT_PASSWORD"]
+        .iter()
+        .any(|key| std::env::var(key).is_ok_and(|v| !v.trim().is_empty()));
+    if !has_root_password {
+        missing.push("RUSTIO_ROOT_PASSWORD");
+    }
+    if std::env::var("RUSTIO_CONSOLE_PASSWORD")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .is_none()
+    {
+        missing.push("RUSTIO_CONSOLE_PASSWORD");
+    }
+
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    Err(anyhow::anyhow!(
+        "拒绝以默认凭据启动:缺少环境变量 {} / refusing to start with default credentials: missing {}。\
+         生产部署请设置上述变量;本地开发可设 RUSTIO_ALLOW_INSECURE=1 显式降级",
+        missing.join(", "),
+        missing.join(", ")
+    ))
+}
+
+fn env_flag_enabled(key: &str) -> bool {
+    std::env::var(key)
+        .map(|v| matches!(v.trim(), "1" | "true" | "TRUE" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
+/// 构建 CORS 层:未配置 `RUSTIO_CORS_ORIGIN` 时默认仅允许 localhost(拒绝任意跨域),
+/// 而非全放开。配置无效值时返回错误而非 panic。
+fn build_cors_layer() -> anyhow::Result<CorsLayer> {
+    let methods = [
+        axum::http::Method::GET,
+        axum::http::Method::PUT,
+        axum::http::Method::POST,
+        axum::http::Method::DELETE,
+        axum::http::Method::HEAD,
+    ];
+    let headers = [
+        axum::http::header::CONTENT_TYPE,
+        axum::http::header::AUTHORIZATION,
+        axum::http::header::HeaderName::from_static("x-amz-content-sha256"),
+        axum::http::header::HeaderName::from_static("x-amz-date"),
+    ];
+
+    let origin = std::env::var("RUSTIO_CORS_ORIGIN")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "http://localhost:9000".to_string());
+
+    let header_value = origin
+        .trim()
+        .parse::<axum::http::HeaderValue>()
+        .with_context(|| {
+            format!("RUSTIO_CORS_ORIGIN 无效 / invalid RUSTIO_CORS_ORIGIN value: {origin}")
+        })?;
+
+    Ok(CorsLayer::new()
+        .allow_origin(header_value)
+        .allow_methods(methods)
+        .allow_headers(headers))
 }
 
 async fn shutdown_signal() {

@@ -211,6 +211,7 @@ pub(crate) async fn list_auth_providers(
 
 pub(crate) async fn login(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(body): Json<LoginRequest>,
 ) -> Result<Json<ApiEnvelope<rustio_core::LoginResponse>>, AppError> {
     let provider = body
@@ -275,13 +276,49 @@ pub(crate) async fn login(
         )));
     }
 
-    let credentials = state.credentials.read().await;
-    let found = credentials
-        .get(&body.username)
-        .ok_or_else(|| AppError::unauthorized("凭证无效 / invalid credentials"))?;
+    // 本地认证:速率限制检查,防止暴力破解。
+    let client_ip = extract_client_ip(&headers);
+    if let Err(retry_secs) = state.login_rate_limiter.check(&client_ip, &body.username) {
+        return Err(AppError::unauthorized(format!(
+            "登录过于频繁,请在 {retry_secs}s 后重试 / too many login attempts, retry in {retry_secs}s"
+        )));
+    }
 
-    if found.password != body.password {
+    let (stored_password, found_role) = {
+        let credentials = state.credentials.read().await;
+        let found = credentials
+            .get(&body.username)
+            .ok_or_else(|| {
+                state
+                    .login_rate_limiter
+                    .record_failure(&client_ip, &body.username);
+                AppError::unauthorized("凭证无效 / invalid credentials")
+            })?;
+        (found.password.clone(), found.role.clone())
+    };
+
+    if !verify_password(&body.password, &stored_password) {
+        state
+            .login_rate_limiter
+            .record_failure(&client_ip, &body.username);
         return Err(AppError::unauthorized("凭证无效 / invalid credentials"));
+    }
+
+    // 登录成功:重置该用户失败计数。
+    state
+        .login_rate_limiter
+        .record_success(&client_ip, &body.username);
+
+    // 渐进迁移:历史明文凭据在验证成功后升级为 Argon2 哈希。
+    if !crate::state::password_is_hashed(&stored_password) {
+        if let Ok(hashed) = hash_password(&body.password) {
+            let mut credentials = state.credentials.write().await;
+            if let Some(cred) = credentials.get_mut(&body.username) {
+                if cred.password == stored_password {
+                    cred.password = hashed;
+                }
+            }
+        }
     }
 
     if let Some(user) = state
@@ -298,7 +335,7 @@ pub(crate) async fn login(
     }
 
     let (response, session) =
-        create_console_login_response(state.as_ref(), &body.username, &found.role, "local").await?;
+        create_console_login_response(state.as_ref(), &body.username, &found_role, "local").await?;
     state
         .append_runtime_audit(
             &body.username,
@@ -306,7 +343,7 @@ pub(crate) async fn login(
             "session",
             "success",
             None,
-            json!({ "role": found.role, "session_id": session.session_id }),
+            json!({ "role": found_role, "session_id": session.session_id }),
         )
         .await;
     Ok(wrap(response))
@@ -475,4 +512,22 @@ pub(crate) async fn delete_console_session(
         "already_revoked": already_revoked,
         "session_id": session_id
     })))
+}
+
+/// 从请求头提取客户端真实 IP(优先 X-Forwarded-For,次选 X-Real-IP)。
+fn extract_client_ip(headers: &HeaderMap) -> String {
+    for header in ["x-forwarded-for", "x-real-ip"] {
+        if let Some(value) = headers
+            .get(header)
+            .and_then(|v| v.to_str().ok())
+            .filter(|v| !v.trim().is_empty())
+        {
+            return value
+                .split(',')
+                .next()
+                .map(|s| s.trim().to_lowercase())
+                .unwrap_or_else(|| value.to_lowercase());
+        }
+    }
+    "unknown".to_string()
 }

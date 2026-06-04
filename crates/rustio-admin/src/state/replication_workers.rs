@@ -113,6 +113,14 @@ impl AppState {
             backlog.push(item.clone());
         }
         self.persist_replication_runtime_state().await;
+        tracing::debug!(
+            target_site = %target_site,
+            bucket = %source_bucket,
+            key = %object_key,
+            operation = %operation,
+            checkpoint,
+            "复制任务入队 / replication task enqueued"
+        );
         item
     }
 
@@ -452,6 +460,16 @@ impl AppState {
             .map(|site| site.endpoint.clone())
     }
 
+    #[tracing::instrument(
+        name = "replication_apply_remote",
+        skip(self, item, payload_base64, object_meta),
+        fields(
+            target_site = %item.target_site,
+            bucket = %item.source_bucket,
+            key = %item.object_key,
+            operation = %item.operation
+        )
+    )]
     pub(crate) async fn apply_replication_item_remote(
         &self,
         item: &ReplicationBacklogItem,
@@ -510,14 +528,32 @@ impl AppState {
                 )
             };
             let err = bilingual_runtime_error("远端复制请求失败", detail);
-            if Self::replication_remote_failure_retryable(status) {
+            let retryable = Self::replication_remote_failure_retryable(status);
+            tracing::warn!(
+                %status,
+                retryable,
+                "远端复制请求失败 / remote replication request failed"
+            );
+            if retryable {
                 return Err(err);
             }
             return Err(Self::replication_mark_non_retryable(err));
         }
+        tracing::info!(%endpoint, "远端复制应用成功 / remote replication applied");
         Ok(true)
     }
 
+    #[tracing::instrument(
+        name = "replication_apply",
+        skip(self, item),
+        fields(
+            target_site = %item.target_site,
+            bucket = %item.source_bucket,
+            key = %item.object_key,
+            operation = %item.operation,
+            checkpoint = item.checkpoint
+        )
+    )]
     pub(crate) async fn apply_replication_item(
         &self,
         item: &ReplicationBacklogItem,
@@ -824,6 +860,7 @@ impl AppState {
         Ok(())
     }
 
+    #[tracing::instrument(name = "replication_queue", skip(self), fields(worker_id = %worker_id))]
     pub async fn process_replication_queue_once(&self, worker_id: &str) -> usize {
         let now = Utc::now();
         let max_attempts = Self::replication_max_attempts();
@@ -897,12 +934,28 @@ impl AppState {
                         entry.lease_owner = None;
                         entry.lease_until = None;
                         entry.last_error = Self::replication_dead_letter_non_retryable_error(&err);
+                        tracing::error!(
+                            target_site = %item.target_site,
+                            bucket = %item.source_bucket,
+                            key = %item.object_key,
+                            reason = "non_retryable",
+                            "复制任务进入死信队列 / replication item dead-lettered"
+                        );
                     } else if entry.attempts >= max_attempts {
                         entry.status = "dead_letter".to_string();
                         entry.lease_owner = None;
                         entry.lease_until = None;
                         entry.last_error =
                             Self::replication_dead_letter_error(entry.attempts, max_attempts, &err);
+                        tracing::error!(
+                            target_site = %item.target_site,
+                            bucket = %item.source_bucket,
+                            key = %item.object_key,
+                            attempts = entry.attempts,
+                            max_attempts,
+                            reason = "max_attempts_exceeded",
+                            "复制任务进入死信队列 / replication item dead-lettered"
+                        );
                     } else {
                         entry.status = "failed".to_string();
                         entry.lease_owner = None;

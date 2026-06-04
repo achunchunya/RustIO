@@ -45,10 +45,12 @@ pub(crate) async fn create_user(
         return Err(AppError::bad_request("用户已存在 / user already exists"));
     }
 
+    let hashed_password = hash_password(&body.password)
+        .map_err(|err| AppError::internal(format!("密码哈希失败 / failed to hash password: {err}")))?;
     state.credentials.write().await.insert(
         body.username.clone(),
         LocalCredential {
-            password: body.password,
+            password: hashed_password,
             role: body.role.clone(),
         },
     );

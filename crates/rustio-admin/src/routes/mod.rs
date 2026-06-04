@@ -12,6 +12,7 @@ mod kms;
 mod kms_rotate;
 mod ldap;
 mod oidc;
+pub(crate) mod rate_limit;
 mod replication;
 mod s3_bucket_ops;
 mod s3_chunked;
@@ -130,10 +131,11 @@ use crate::{
     },
     error::AppError,
     state::{
-        AlertDeliveryItem, AppState, ArchitectureAlignmentReport, ArchitectureTopology,
-        CompletedOidcLogin, InternalReplicationApplyRequest, LocalCredential,
-        MetadataRaftReadIndexResponse, MetadataRaftStatus, MetadataRaftSyncRequest,
-        MultipartPart, MultipartUpload, PendingOidcAuthorization,
+        hash_password, verify_password, AlertDeliveryItem, AppState,
+        ArchitectureAlignmentReport, ArchitectureTopology, CompletedOidcLogin,
+        InternalReplicationApplyRequest, LocalCredential, MetadataRaftReadIndexResponse,
+        MetadataRaftStatus, MetadataRaftSyncRequest, MultipartPart, MultipartUpload,
+        PendingOidcAuthorization,
     },
 };
 
@@ -1295,6 +1297,7 @@ where
 async fn mark_kms_health_failure(state: &AppState, message: impl Into<String>) {
     let now = Utc::now();
     let message = message.into();
+    tracing::warn!(error = %message, "KMS 健康检查失败 / kms health marked unhealthy");
     update_security_runtime(state, move |security| {
         security.kms_healthy = false;
         security.kms_last_checked_at = Some(now);
@@ -1307,6 +1310,7 @@ async fn mark_kms_health_success(state: &AppState) {
     let now = Utc::now();
     update_security_runtime(state, move |security| {
         if !security.kms_healthy {
+            tracing::info!("KMS 恢复健康 / kms recovered to healthy");
             security.kms_last_recovered_at = Some(now);
         }
         security.kms_healthy = true;

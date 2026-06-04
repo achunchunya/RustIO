@@ -54,14 +54,59 @@ impl AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let message = bilingual_message(self.code, &self.message);
+        let request_id = Uuid::new_v4().to_string();
+        let client_message = if self.status.is_server_error() {
+            // 5xx:脱敏,不向客户端暴露内部错误细节(文件路径/数据库错误等)。
+            // 完整原始消息只进服务端日志,客户端仅得到开发者显式提供的双语语义。
+            tracing::warn!(
+                %request_id,
+                original_message = %self.message,
+                "内部错误已脱敏 / internal error sanitized"
+            );
+            sanitize_server_error(self.code, &self.message)
+        } else {
+            bilingual_message(self.code, &self.message)
+        };
+
         let error = ApiError {
             code: self.code.to_string(),
-            message,
-            request_id: Uuid::new_v4().to_string(),
+            message: client_message,
+            request_id,
         };
         (self.status, Json(json!({ "error": error }))).into_response()
     }
+}
+
+/// 5xx 错误脱敏:保留开发者显式提供的双语语义短语,剥离 `: {err}` 动态细节尾巴
+/// (文件路径/数据库/底层库错误)。无双语语义的裸错误整体替换为通用文案。
+fn sanitize_server_error(code: &str, message: &str) -> String {
+    let fallback = generic_server_message(code);
+    // 仅信任开发者写的双语消息(含 " / "),其余视为内部裸错误,整体脱敏。
+    if !message.contains(" / ") {
+        return fallback;
+    }
+    // 剥离 ": detail" 细节尾巴:取最后一个 ": " 之前的语义部分。
+    // 例:"LDAP 管理绑定被拒绝 / ldap administrative bind was rejected: <err>"
+    //  → "LDAP 管理绑定被拒绝 / ldap administrative bind was rejected"
+    let semantic = match message.rsplit_once(": ") {
+        Some((head, _detail)) if head.contains(" / ") => head,
+        _ => message,
+    };
+    let trimmed = semantic.trim();
+    if trimmed.is_empty() {
+        fallback
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn generic_server_message(code: &str) -> String {
+    let (zh, en) = match code {
+        "internal_error" => ("服务器内部错误", "internal server error"),
+        "service_unavailable" => ("服务暂不可用", "service unavailable"),
+        _ => ("请求处理失败", "request failed"),
+    };
+    format!("{zh} / {en}")
 }
 
 fn bilingual_message(code: &str, message: &str) -> String {

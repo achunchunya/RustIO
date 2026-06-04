@@ -3,6 +3,11 @@
 use super::*;
 use tokio::io::AsyncSeekExt;
 
+#[tracing::instrument(
+    name = "ec_write",
+    skip(state, payload, meta, customer_key),
+    fields(bucket = %bucket, key = %key, size = payload.len())
+)]
 pub(crate) async fn write_ec_object(
     state: &AppState,
     bucket: &str,
@@ -97,6 +102,13 @@ pub(crate) async fn write_ec_object(
     }
     if successful_shards < data_shards {
         let cleanup_failed = cleanup_ec_written_shards(&shard_infos).await;
+        tracing::warn!(
+            successful_shards,
+            data_shards,
+            total_shards,
+            cleanup_failed,
+            "纠删码写入未达法定票数,已回滚 / ec write quorum not reached, rolled back"
+        );
         return Err(s3_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "InternalError",
@@ -150,6 +162,12 @@ pub(crate) async fn write_ec_object(
             key,
         ));
     }
+    tracing::info!(
+        successful_shards,
+        total_shards,
+        shard_size,
+        "纠删码对象写入完成 / ec object written"
+    );
     Ok(())
 }
 
@@ -158,6 +176,11 @@ pub(crate) async fn write_ec_object(
 /// 仅用于**非加密**对象（加密对象由调用方走 `write_ec_object` 全内存路径）。
 /// 产出的分片布局、`shard_size`、校验和与 `write_ec_object` **逐字节一致**，因此与既有
 /// `read_ec_object` 完全向后兼容（Reed-Solomon 编码逐字节独立，整体编码与分块编码结果相同）。
+#[tracing::instrument(
+    name = "ec_write_streaming",
+    skip(state, src_path),
+    fields(bucket = %bucket, key = %key, size = total)
+)]
 pub(crate) async fn write_ec_object_streaming(
     state: &AppState,
     bucket: &str,
@@ -342,6 +365,12 @@ pub(crate) async fn write_ec_object_streaming(
 
     if successful < data_shards {
         cleanup_streaming_shards(&shard_paths).await;
+        tracing::warn!(
+            successful_shards = successful,
+            data_shards,
+            total_shards,
+            "纠删码流式写入未达法定票数,已回滚 / ec streaming write quorum not reached, rolled back"
+        );
         return Err(s3_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "InternalError",
@@ -395,6 +424,12 @@ pub(crate) async fn write_ec_object_streaming(
             key,
         ));
     }
+    tracing::info!(
+        successful_shards = successful,
+        total_shards,
+        shard_size,
+        "纠删码流式对象写入完成 / ec object written (streaming)"
+    );
     Ok(())
 }
 
@@ -404,6 +439,11 @@ async fn cleanup_streaming_shards(paths: &[PathBuf]) {
     }
 }
 
+#[tracing::instrument(
+    name = "ec_read",
+    skip(state, meta, customer_key),
+    fields(bucket = %bucket, key = %key)
+)]
 pub(crate) async fn read_ec_object(
     state: &AppState,
     bucket: &str,
@@ -560,6 +600,13 @@ pub(crate) async fn read_ec_object(
             "pending",
         )
         .await;
+        tracing::error!(
+            available_shards,
+            required_shards = manifest.data_shards,
+            total_shards,
+            failed_shards = failed.len(),
+            "纠删码读取未达法定票数,已排重建任务 / ec read quorum not reached, rebuild job queued"
+        );
         return Err(s3_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "InternalError",
@@ -601,6 +648,11 @@ pub(crate) async fn read_ec_object(
             "pending",
         )
         .await;
+        tracing::error!(
+            failed_shards = failed.len(),
+            parity_shards = manifest.parity_shards,
+            "纠删码分片损坏超出奇偶恢复能力,已排重建任务 / ec shards corrupted beyond parity, rebuild job queued"
+        );
         return Err(s3_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "InternalError",
@@ -609,6 +661,11 @@ pub(crate) async fn read_ec_object(
         ));
     }
     if !failed.is_empty() {
+        tracing::warn!(
+            failed_shards = failed.len(),
+            parity_shards = manifest.parity_shards,
+            "纠删码降级读取,触发分片重建 / ec degraded read, reconstructing shards"
+        );
         reed_solomon.reconstruct(&mut loaded).map_err(|err| {
             s3_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -694,6 +751,11 @@ pub(crate) async fn read_ec_object(
 /// 仅在**非加密**且**所有 data 分片完好**（存在且大小匹配）时返回 `Some(Body)`；
 /// 否则返回 `None`，由调用方回退到 `read_ec_object` 的全量加载 + 校验 + 重建路径。
 /// 这样保证流式过程中途不会因缺数据失败（前置已确认 data 分片齐全）。
+#[tracing::instrument(
+    name = "ec_read_streaming",
+    skip(state, meta, _customer_key),
+    fields(bucket = %bucket, key = %key)
+)]
 pub(crate) async fn read_ec_object_streaming(
     state: &AppState,
     bucket: &str,
@@ -777,6 +839,7 @@ pub(crate) async fn read_ec_object_streaming(
     Ok(Some(axum::body::Body::from_stream(stream)))
 }
 
+#[tracing::instrument(name = "ec_remove", skip(state), fields(bucket = %bucket, key = %key))]
 pub(crate) async fn remove_ec_object(
     state: &AppState,
     bucket: &str,

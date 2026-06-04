@@ -47,6 +47,11 @@ pub(crate) fn kms_request_builder(client: &Client, url: String) -> reqwest::Requ
     request
 }
 
+#[tracing::instrument(
+    name = "kms_encrypt_dek",
+    skip(state, meta, data_key),
+    fields(resource = %resource, algorithm = %meta.encryption.algorithm)
+)]
 pub(crate) async fn kms_encrypt_data_key_remote(
     state: &AppState,
     resource: &str,
@@ -281,6 +286,11 @@ pub(crate) async fn kms_encrypt_data_key_remote(
     Ok(Some(wrapped))
 }
 
+#[tracing::instrument(
+    name = "kms_decrypt_dek",
+    skip(state, meta, wrapped_key_base64),
+    fields(resource = %resource, algorithm = %meta.encryption.algorithm)
+)]
 pub(crate) async fn kms_decrypt_data_key_remote(
     state: &AppState,
     resource: &str,
@@ -751,126 +761,6 @@ pub(crate) async fn cleanup_ec_written_shards(shards: &[EcShardInfo]) -> usize {
         }
     }
     cleanup_failed
-}
-
-/// 单个 EC 分片加密：base_nonce XOR shard_index 保证每个分片 nonce 唯一（AES-GCM 安全要求）。
-#[allow(dead_code)]
-pub(crate) async fn encrypt_shard(
-    state: &AppState,
-    resource: &str,
-    shard_data: &[u8],
-    meta: &S3ObjectMeta,
-    shard_index: usize,
-    customer_key: Option<&[u8; 32]>,
-) -> Result<Vec<u8>, Response> {
-    let nonce = derive_shard_nonce(meta, shard_index)?;
-    let data_key = if let Some(wrapped) = meta.encryption.wrapped_key_base64.as_deref() {
-        if !wrapped.is_empty() {
-            unwrap_object_data_key(state, resource, meta, wrapped, customer_key)
-                .await?
-                .to_vec()
-        } else {
-            derive_object_encryption_key(state, meta).to_vec()
-        }
-    } else {
-        derive_object_encryption_key(state, meta).to_vec()
-    };
-    let cipher = Aes256Gcm::new_from_slice(&data_key).map_err(|err| {
-        s3_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "InternalError",
-            &format!("Failed to initialize shard encryption cipher: {err}"),
-            resource,
-        )
-    })?;
-    cipher
-        .encrypt(Nonce::from_slice(&nonce), shard_data)
-        .map_err(|_| {
-            s3_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "InternalError",
-                "Failed to encrypt shard payload",
-                resource,
-            )
-        })
-}
-
-/// 单个 EC 分片解密。
-#[allow(dead_code)]
-pub(crate) async fn decrypt_shard(
-    state: &AppState,
-    resource: &str,
-    shard_data: Vec<u8>,
-    meta: &S3ObjectMeta,
-    shard_index: usize,
-    customer_key: Option<&[u8; 32]>,
-) -> Result<Vec<u8>, Response> {
-    let nonce = derive_shard_nonce(meta, shard_index)?;
-    let data_key = if let Some(wrapped) = meta.encryption.wrapped_key_base64.as_deref() {
-        if !wrapped.is_empty() {
-            unwrap_object_data_key(state, resource, meta, wrapped, customer_key)
-                .await?
-                .to_vec()
-        } else {
-            derive_object_encryption_key(state, meta).to_vec()
-        }
-    } else {
-        derive_object_encryption_key(state, meta).to_vec()
-    };
-    let cipher = Aes256Gcm::new_from_slice(&data_key).map_err(|err| {
-        s3_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "InternalError",
-            &format!("Failed to initialize shard decryption cipher: {err}"),
-            resource,
-        )
-    })?;
-    cipher
-        .decrypt(Nonce::from_slice(&nonce), shard_data.as_ref())
-        .map_err(|_| {
-            s3_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "InternalError",
-                "Failed to decrypt shard payload",
-                resource,
-            )
-        })
-}
-
-/// base_nonce XOR (shard_index_be_bytes)，保证每个分片 nonce 唯一。
-#[allow(dead_code)]
-fn derive_shard_nonce(meta: &S3ObjectMeta, shard_index: usize) -> Result<[u8; 12], Response> {    let nonce_b64 = meta.encryption.nonce_base64.as_deref().ok_or_else(|| {
-        s3_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "InternalError",
-            "Missing object encryption nonce metadata",
-            &meta.key,
-        )
-    })?;
-    let base = BASE64.decode(nonce_b64).map_err(|err| {
-        s3_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "InternalError",
-            &format!("Failed to decode encryption nonce: {err}"),
-            &meta.key,
-        )
-    })?;
-    if base.len() != 12 {
-        return Err(s3_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "InternalError",
-            "Encryption nonce length is invalid",
-            &meta.key,
-        ));
-    }
-    let mut nonce = [0u8; 12];
-    nonce.copy_from_slice(&base);
-    let idx_bytes = (shard_index as u32).to_be_bytes();
-    nonce[8] ^= idx_bytes[0];
-    nonce[9] ^= idx_bytes[1];
-    nonce[10] ^= idx_bytes[2];
-    nonce[11] ^= idx_bytes[3];
-    Ok(nonce)
 }
 
 /// SSE-C 客户密钥本地包装 DEK (AES-256-GCM)。

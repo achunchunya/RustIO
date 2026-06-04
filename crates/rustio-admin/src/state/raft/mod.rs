@@ -2,9 +2,6 @@
 //!
 //! NodeId 用 u64(openraft 要求 Copy,String 不行);peer 的 "meta-1" 地址塞进 BasicNode。
 
-// 阶段②接线中;接线完成后移除本行。
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
 use std::io::Cursor;
 use std::sync::{Arc, OnceLock, Weak};

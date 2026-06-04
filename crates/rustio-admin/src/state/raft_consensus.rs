@@ -208,9 +208,4 @@ impl AppState {
             peers: raft.peers.clone(),
         }
     }
-
-    #[allow(dead_code)]
-    pub(crate) fn local_peer_in_membership(raft: &MetadataRaftState, local_peer_id: &str) -> bool {
-        raft.peers.iter().any(|p| p.id == local_peer_id && p.online)
-    }
 }
