@@ -188,7 +188,56 @@ impl AppState {
         for disk in &data_disks {
             let _ = std::fs::create_dir_all(disk);
         }
-        let metadata_raft = Self::bootstrap_metadata_raft(&data_dir);
+
+        let cluster_config = crate::state::cluster::ClusterConfig::parse();
+        let local_node_id = cluster_config.local_node_id;
+        let mut cluster_peers = HashMap::new();
+        if cluster_config.is_cluster() {
+            let mut disks = Vec::new();
+            for (idx, path) in data_disks.iter().enumerate() {
+                disks.push(crate::state::cluster::ClusterDiskInfo {
+                    global_id: cluster_config.global_disk_id(idx),
+                    local_index: idx,
+                    local_path: path.clone(),
+                });
+            }
+            cluster_peers.insert(
+                local_node_id,
+                crate::state::cluster::ClusterPeerInfo {
+                    node_id: local_node_id,
+                    node_name: cluster_config.local_node_name.clone(),
+                    api_addr: cluster_config.local_api_addr.clone(),
+                    zone: cluster_config.local_zone.clone(),
+                    disks,
+                },
+            );
+            // Seed peers:同构集群假设(磁盘数与本地相同)。远程节点的 local_path 仅占位,
+            // 远程节点收到分片 RPC 后用自身 resolve_data_disks + disk_index 重建真实路径。
+            let local_disk_count = data_disks.len();
+            for (&seed_id, seed_addr) in &cluster_config.seed_peers {
+                if seed_id == local_node_id {
+                    continue;
+                }
+                let seed_name = format!("node-{seed_id}");
+                let disks = (0..local_disk_count)
+                    .map(|idx| crate::state::cluster::ClusterDiskInfo {
+                        global_id: format!("{seed_name}-disk-{idx}"),
+                        local_index: idx,
+                        local_path: PathBuf::new(), // 远程占位
+                    })
+                    .collect();
+                cluster_peers.insert(
+                    seed_id,
+                    crate::state::cluster::ClusterPeerInfo {
+                        node_id: seed_id,
+                        node_name: seed_name,
+                        api_addr: seed_addr.clone(),
+                        zone: "unknown".to_string(),
+                        disks,
+                    },
+                );
+            }
+        }
 
         let s3_access_key = std::env::var("RUSTIO_ROOT_USER")
             .or_else(|_| std::env::var("MINIO_ROOT_USER"))
@@ -382,6 +431,8 @@ impl AppState {
             s3_secret_key: s3_secret_key.clone(),
             data_dir,
             data_disks,
+            local_node_id,
+            cluster_peers: RwLock::new(cluster_peers),
             architecture: ArchitectureTopology {
                 version: "m0-architecture-aligned".to_string(),
                 aligned_at: now,
@@ -492,7 +543,6 @@ impl AppState {
                     },
                 ],
             },
-            metadata_raft: RwLock::new(metadata_raft),
             credentials: RwLock::new(credentials),
             nodes: RwLock::new(vec![
                 ClusterNode {

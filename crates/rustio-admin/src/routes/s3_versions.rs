@@ -162,6 +162,12 @@ pub(crate) struct EcShardInfo {
     pub(crate) disk_index: usize,
     pub(crate) path: PathBuf,
     pub(crate) checksum: String,
+    /// 分片所在节点 ID(集群模式)。None/0=本地(单机或向后兼容旧 manifest)。
+    #[serde(default)]
+    pub(crate) node_id: Option<u64>,
+    /// 分片所在节点的 API 地址(集群模式远程读取用)。None=本地。
+    #[serde(default)]
+    pub(crate) node_addr: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -194,6 +200,37 @@ pub(crate) fn ec_layout() -> (usize, usize) {
         .filter(|value| *value > 0)
         .unwrap_or(1);
     (data_shards, parity_shards)
+}
+
+/// 集群模式按节点数派生 EC 布局:**每节点恰好 1 个分片**(total_shards = node_count),
+/// 因此丢失任意 `parity` 个节点都可由 Reed-Solomon 重建,实现节点级容错。
+///
+/// parity 取 `RUSTIO_EC_PARITY_SHARDS`(默认 1),clamp 到 `[1, node_count-1]`;data = node_count - parity。
+/// node_count ≤ 1 时回退到磁盘级 `ec_layout()`(单节点无节点级容错可言)。
+pub(crate) fn cluster_ec_layout(node_count: usize) -> (usize, usize) {
+    if node_count <= 1 {
+        return ec_layout();
+    }
+    let parity = std::env::var("RUSTIO_EC_PARITY_SHARDS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(1)
+        .clamp(1, node_count - 1);
+    let data = node_count - parity;
+    (data, parity)
+}
+
+/// 解析当前对象写入应使用的 EC 布局。
+///
+/// - 集群模式(`local_node_id > 0`):按集群节点数派生节点级容错布局(见 [`cluster_ec_layout`])。
+/// - 单机模式:沿用磁盘级 `ec_layout()`(默认 4+1,提供单机多盘冗余)。
+pub(crate) async fn ec_layout_for(state: &AppState) -> (usize, usize) {
+    if state.local_node_id == 0 {
+        return ec_layout();
+    }
+    let node_count = state.cluster_peers.read().await.len();
+    cluster_ec_layout(node_count)
 }
 
 pub(crate) fn encryption_enabled(meta: &S3ObjectMeta) -> bool {
@@ -522,3 +559,4 @@ pub(crate) fn s3_kms_not_configured(resource: &str, message: &str) -> Response {
         resource,
     )
 }
+

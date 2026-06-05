@@ -982,6 +982,82 @@ impl AppState {
         1
     }
 
+    /// 探测一轮集群 peer 健康(GET `/minio/health/live`),更新 `peer_health`。
+    ///
+    /// 仅集群模式(`local_node_id > 0`)生效。任一 peer 由在线跳变为离线时,触发一次
+    /// 远程感知扫描——离线节点上的分片会被识别为缺失并自动排出重建任务。
+    pub(crate) async fn process_peer_health_probe_once(self: &Arc<Self>) -> Result<(), String> {
+        if self.local_node_id == 0 {
+            return Ok(());
+        }
+        let peers = {
+            let guard = self.cluster_peers.read().await;
+            guard
+                .values()
+                .filter(|peer| peer.node_id != self.local_node_id)
+                .map(|peer| (peer.node_id, peer.api_addr.clone()))
+                .collect::<Vec<_>>()
+        };
+        if peers.is_empty() {
+            return Ok(());
+        }
+        let client = Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+            .map_err(|err| err.to_string())?;
+
+        let mut went_offline = false;
+        for (node_id, api_addr) in peers {
+            let now = Utc::now();
+            let healthy = client
+                .get(format!("{api_addr}/minio/health/live"))
+                .send()
+                .await
+                .map(|resp| resp.status().is_success())
+                .unwrap_or(false);
+
+            let mut runtime = self.storage_governance.write().await;
+            let was_online = runtime
+                .peer_health
+                .get(&node_id)
+                .map(|state| state.online)
+                .unwrap_or(true);
+            let entry = runtime
+                .peer_health
+                .entry(node_id)
+                .or_insert_with(|| PeerHealthState {
+                    online: true,
+                    last_check_at: now,
+                    last_ok_at: None,
+                    consecutive_failures: 0,
+                });
+            entry.online = healthy;
+            entry.last_check_at = now;
+            if healthy {
+                entry.last_ok_at = Some(now);
+                entry.consecutive_failures = 0;
+            } else {
+                entry.consecutive_failures = entry.consecutive_failures.saturating_add(1);
+            }
+            drop(runtime);
+
+            if was_online && !healthy {
+                went_offline = true;
+                tracing::warn!(
+                    node_id,
+                    node = %api_addr,
+                    "集群节点离线,触发重建扫描 / cluster peer offline, triggering rebuild scan"
+                );
+            }
+        }
+
+        if went_offline {
+            let state = Arc::clone(self);
+            let _ = process_storage_governance_scan_once(&state).await;
+        }
+        Ok(())
+    }
+
     pub(crate) fn start_background_workers(self: &Arc<Self>) {
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
             return;
@@ -1043,6 +1119,15 @@ impl AppState {
                 tokio::time::sleep(Self::storage_heal_worker_interval()).await;
             }
         });
+        if self.local_node_id > 0 {
+            let peer_health_state = Arc::clone(self);
+            handle.spawn(async move {
+                loop {
+                    let _ = peer_health_state.process_peer_health_probe_once().await;
+                    tokio::time::sleep(Self::peer_health_probe_interval()).await;
+                }
+            });
+        }
         let managed_async_state = Arc::clone(self);
         let managed_async_worker_id = format!("async-worker-{}", Uuid::new_v4().simple());
         handle.spawn(async move {
@@ -1051,16 +1136,6 @@ impl AppState {
                     .process_managed_async_jobs_once(&managed_async_worker_id)
                     .await;
                 tokio::time::sleep(Self::managed_async_job_worker_interval()).await;
-            }
-        });
-        let metadata_state = Arc::clone(self);
-        handle.spawn(async move {
-            loop {
-                let _ = metadata_state.process_metadata_raft_heartbeat_once().await;
-                let _ = metadata_state
-                    .process_metadata_membership_watchdog_once()
-                    .await;
-                tokio::time::sleep(Self::metadata_heartbeat_interval()).await;
             }
         });
         let memory_trim_state = Arc::clone(self);

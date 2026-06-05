@@ -429,6 +429,259 @@ pub(crate) async fn internal_console_session_delete(
     }
 }
 
+// ── openraft 内部 RPC 端点 ──
+
+use crate::state::raft::TypeConfig;
+
+pub(crate) async fn raft_append_entries(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<openraft::raft::AppendEntriesRequest<TypeConfig>>,
+) -> Response {
+    if let Err(response) = ensure_internal_token(&headers) {
+        return response;
+    }
+    let Some(raft) = state.meta_raft.get() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":"raft not initialized"})))
+            .into_response();
+    };
+    match raft.append_entries(req).await {
+        Ok(resp) => Json(resp).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("append_entries: {err:?}")})),
+        )
+            .into_response(),
+    }
+}
+
+pub(crate) async fn raft_vote(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<openraft::raft::VoteRequest<u64>>,
+) -> Response {
+    if let Err(response) = ensure_internal_token(&headers) {
+        return response;
+    }
+    let Some(raft) = state.meta_raft.get() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":"raft not initialized"})))
+            .into_response();
+    };
+    match raft.vote(req).await {
+        Ok(resp) => Json(resp).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("vote: {err:?}")})),
+        )
+            .into_response(),
+    }
+}
+
+pub(crate) async fn raft_install_snapshot(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(req): Json<openraft::raft::InstallSnapshotRequest<TypeConfig>>,
+) -> Response {
+    if let Err(response) = ensure_internal_token(&headers) {
+        return response;
+    }
+    let Some(raft) = state.meta_raft.get() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":"raft not initialized"})))
+            .into_response();
+    };
+    match raft.install_snapshot(req).await {
+        Ok(resp) => Json(resp).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("install_snapshot: {err:?}")})),
+        )
+            .into_response(),
+    }
+}
+
+// ── 跨节点 EC 分片 RPC 端点 ──
+
+/// 校验对象哈希为 64 位十六进制(SHA-256),防止路径穿越。
+fn valid_ec_object_hash(hash: &str) -> bool {
+    hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// 解析并校验分片 RPC 路径参数,返回该节点本地的分片落盘路径。
+fn ec_shard_local_path(
+    state: &AppState,
+    bucket: &str,
+    object_hash: &str,
+    disk_index: usize,
+    shard_index: usize,
+) -> Result<PathBuf, Response> {
+    if !valid_bucket_name(bucket) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": bilingual_text("存储桶名称无效", "invalid bucket name") })),
+        )
+            .into_response());
+    }
+    if !valid_ec_object_hash(object_hash) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": bilingual_text("对象哈希无效", "invalid object hash") })),
+        )
+            .into_response());
+    }
+    if disk_index >= state.data_disks.len() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": bilingual_text("磁盘索引越界", "disk index out of range") })),
+        )
+            .into_response());
+    }
+    Ok(state.data_disks[disk_index]
+        .join(bucket)
+        .join(".rustio_ec")
+        .join(object_hash)
+        .join(format!("{shard_index}.bin")))
+}
+
+/// 接收远程节点发来的 EC 分片并落本地磁盘,返回分片校验和。
+pub(crate) async fn internal_ec_shard_put(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((bucket, object_hash, disk_index, shard_index)): Path<(String, String, usize, usize)>,
+    body: Bytes,
+) -> Response {
+    if let Err(response) = ensure_internal_token(&headers) {
+        return response;
+    }
+    let shard_path = match ec_shard_local_path(&state, &bucket, &object_hash, disk_index, shard_index)
+    {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
+    if let Some(parent) = shard_path.parent() {
+        if let Err(err) = tokio::fs::create_dir_all(parent).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": bilingual_text("创建分片目录失败", &format!("failed to create shard dir: {err}"))
+                })),
+            )
+                .into_response();
+        }
+    }
+    if let Err(err) = atomic_write(&shard_path, &body).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": bilingual_text("写入分片失败", &format!("failed to write shard: {err}"))
+            })),
+        )
+            .into_response();
+    }
+    let checksum = sha256_hex(&body);
+    (StatusCode::OK, Json(json!({ "checksum": checksum }))).into_response()
+}
+
+/// 向远程请求方返回本地 EC 分片原始字节。
+pub(crate) async fn internal_ec_shard_get(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((bucket, object_hash, disk_index, shard_index)): Path<(String, String, usize, usize)>,
+) -> Response {
+    if let Err(response) = ensure_internal_token(&headers) {
+        return response;
+    }
+    let shard_path = match ec_shard_local_path(&state, &bucket, &object_hash, disk_index, shard_index)
+    {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
+    match tokio::fs::read(&shard_path).await {
+        Ok(bytes) => (StatusCode::OK, bytes).into_response(),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": bilingual_text("分片不存在", "shard not found") })),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": bilingual_text("读取分片失败", &format!("failed to read shard: {err}"))
+            })),
+        )
+            .into_response(),
+    }
+}
+
+/// 返回本地 EC 分片的存在性 / 大小 / 校验和(供属主节点远程感知扫描调用)。
+///
+/// 与 `internal_ec_shard_get` 的区别:分片不存在时返回 `200 {"exists":false}`(而非 404),
+/// 让扫描客户端按 `exists` 字段判定 missing,网络/RPC 失败才视为不可达。
+pub(crate) async fn internal_ec_shard_stat(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((bucket, object_hash, disk_index, shard_index)): Path<(String, String, usize, usize)>,
+) -> Response {
+    if let Err(response) = ensure_internal_token(&headers) {
+        return response;
+    }
+    let shard_path = match ec_shard_local_path(&state, &bucket, &object_hash, disk_index, shard_index)
+    {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
+    match tokio::fs::read(&shard_path).await {
+        Ok(bytes) => (
+            StatusCode::OK,
+            Json(json!({
+                "exists": true,
+                "size": bytes.len(),
+                "checksum": sha256_hex(&bytes),
+            })),
+        )
+            .into_response(),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            (StatusCode::OK, Json(json!({ "exists": false }))).into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": bilingual_text("读取分片失败", &format!("failed to read shard: {err}"))
+            })),
+        )
+            .into_response(),
+    }
+}
+
+/// 删除本地 EC 分片(对象删除 / 写入回滚时由属主节点调用)。
+pub(crate) async fn internal_ec_shard_delete(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((bucket, object_hash, disk_index, shard_index)): Path<(String, String, usize, usize)>,
+) -> Response {
+    if let Err(response) = ensure_internal_token(&headers) {
+        return response;
+    }
+    let shard_path = match ec_shard_local_path(&state, &bucket, &object_hash, disk_index, shard_index)
+    {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
+    match tokio::fs::remove_file(&shard_path).await {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": bilingual_text("删除分片失败", &format!("failed to delete shard: {err}"))
+                })),
+            )
+                .into_response();
+        }
+    }
+    (StatusCode::OK, Json(json!({ "status": "deleted" }))).into_response()
+}
+
 #[derive(Debug)]
 pub(crate) struct ExternalIdentityProfile {
     pub(crate) username: String,
@@ -483,3 +736,4 @@ pub(crate) struct LdapIdentityRecord {
     pub(crate) display_name: String,
     pub(crate) groups: Vec<String>,
 }
+

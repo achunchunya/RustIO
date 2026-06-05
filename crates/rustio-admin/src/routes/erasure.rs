@@ -3,6 +3,192 @@
 use super::*;
 use tokio::io::AsyncSeekExt;
 
+/// 拼接远程 EC 分片端点 URL。
+fn remote_shard_url(
+    node_addr: &str,
+    bucket: &str,
+    object_hash: &str,
+    disk_index: usize,
+    shard_index: usize,
+) -> String {
+    format!("{node_addr}/api/v1/internal/ec/shard/{bucket}/{object_hash}/{disk_index}/{shard_index}")
+}
+
+/// 判断 manifest 中某分片是否落在远程节点(集群模式)。
+pub(crate) fn shard_is_remote(shard: &EcShardInfo, local_node_id: u64) -> bool {
+    matches!(shard.node_id, Some(id) if id != 0 && id != local_node_id)
+}
+
+/// 将分片字节 PUT 到远程节点,返回远程计算的校验和。
+async fn put_remote_shard(
+    node_addr: &str,
+    bucket: &str,
+    object_hash: &str,
+    disk_index: usize,
+    shard_index: usize,
+    bytes: Vec<u8>,
+) -> Result<String, String> {
+    let url = remote_shard_url(node_addr, bucket, object_hash, disk_index, shard_index);
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|err| err.to_string())?;
+    let resp = client
+        .put(&url)
+        .header("x-rustio-internal-token", AppState::internal_control_token())
+        .body(bytes)
+        .send()
+        .await
+        .map_err(|err| format!("remote shard put to {node_addr} failed: {err}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("remote shard put status {} from {node_addr}", resp.status()));
+    }
+    let value: Value = resp
+        .json()
+        .await
+        .map_err(|err| format!("remote shard put decode from {node_addr}: {err}"))?;
+    value
+        .get("checksum")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| format!("remote shard put missing checksum from {node_addr}"))
+}
+
+/// 以流式 body 将本地分片文件 PUT 到远程节点(内存恒定,供流式写入路径用)。
+async fn put_remote_shard_file(
+    node_addr: &str,
+    bucket: &str,
+    object_hash: &str,
+    disk_index: usize,
+    shard_index: usize,
+    path: &FsPath,
+) -> Result<(), String> {
+    let url = remote_shard_url(node_addr, bucket, object_hash, disk_index, shard_index);
+    let file = tokio::fs::File::open(path)
+        .await
+        .map_err(|err| format!("open shard for remote put: {err}"))?;
+    let stream = tokio_util::io::ReaderStream::new(file);
+    let body = reqwest::Body::wrap_stream(stream);
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .map_err(|err| err.to_string())?;
+    let resp = client
+        .put(&url)
+        .header("x-rustio-internal-token", AppState::internal_control_token())
+        .body(body)
+        .send()
+        .await
+        .map_err(|err| format!("remote shard stream put to {node_addr} failed: {err}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("remote shard stream put status {} from {node_addr}", resp.status()));
+    }
+    Ok(())
+}
+
+/// 从远程节点 GET 分片原始字节。
+async fn get_remote_shard(
+    node_addr: &str,
+    bucket: &str,
+    object_hash: &str,
+    disk_index: usize,
+    shard_index: usize,
+) -> Result<Vec<u8>, String> {
+    let url = remote_shard_url(node_addr, bucket, object_hash, disk_index, shard_index);
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|err| err.to_string())?;
+    let resp = client
+        .get(&url)
+        .header("x-rustio-internal-token", AppState::internal_control_token())
+        .send()
+        .await
+        .map_err(|err| format!("remote shard get from {node_addr} failed: {err}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("remote shard get status {} from {node_addr}", resp.status()));
+    }
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|err| format!("remote shard get read body from {node_addr}: {err}"))?;
+    Ok(bytes.to_vec())
+}
+
+/// 远程分片探测结果(供治理扫描远程感知)。
+pub(crate) struct RemoteShardStat {
+    pub(crate) size: usize,
+    pub(crate) checksum: String,
+}
+
+/// 探测远程节点上某分片的存在性与校验和(治理扫描用,不拉取分片字节)。
+///
+/// 返回 `Ok(None)` 表示远程明确报告分片不存在(`exists:false`);
+/// `Ok(Some(_))` 表示存在并附大小/校验和;`Err` 表示 RPC/网络失败(扫描方按不可达=missing 处理)。
+pub(crate) async fn stat_remote_shard(
+    node_addr: &str,
+    bucket: &str,
+    object_hash: &str,
+    disk_index: usize,
+    shard_index: usize,
+) -> Result<Option<RemoteShardStat>, String> {
+    let url = format!(
+        "{node_addr}/api/v1/internal/ec/shard-stat/{bucket}/{object_hash}/{disk_index}/{shard_index}"
+    );
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|err| err.to_string())?;
+    let resp = client
+        .get(&url)
+        .header("x-rustio-internal-token", AppState::internal_control_token())
+        .send()
+        .await
+        .map_err(|err| format!("remote shard stat from {node_addr} failed: {err}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("remote shard stat status {} from {node_addr}", resp.status()));
+    }
+    let value: Value = resp
+        .json()
+        .await
+        .map_err(|err| format!("remote shard stat decode from {node_addr}: {err}"))?;
+    if !value.get("exists").and_then(Value::as_bool).unwrap_or(false) {
+        return Ok(None);
+    }
+    let size = value.get("size").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let checksum = value
+        .get("checksum")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    Ok(Some(RemoteShardStat { size, checksum }))
+}
+
+/// 通知远程节点删除分片(对象删除 / 写入回滚)。
+pub(crate) async fn delete_remote_shard(
+    node_addr: &str,
+    bucket: &str,
+    object_hash: &str,
+    disk_index: usize,
+    shard_index: usize,
+) -> Result<(), String> {
+    let url = remote_shard_url(node_addr, bucket, object_hash, disk_index, shard_index);
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|err| err.to_string())?;
+    let resp = client
+        .delete(&url)
+        .header("x-rustio-internal-token", AppState::internal_control_token())
+        .send()
+        .await
+        .map_err(|err| format!("remote shard delete to {node_addr} failed: {err}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("remote shard delete status {} from {node_addr}", resp.status()));
+    }
+    Ok(())
+}
+
 #[tracing::instrument(
     name = "ec_write",
     skip(state, payload, meta, customer_key),
@@ -17,9 +203,10 @@ pub(crate) async fn write_ec_object(
     customer_key: Option<&[u8; 32]>,
 ) -> Result<(), Response> {
     let payload = encrypt_payload_for_storage(state, key, payload, meta, customer_key).await?;
-    let (data_shards, parity_shards) = ec_layout();
+    let (data_shards, parity_shards) = ec_layout_for(state).await;
     let total_shards = data_shards + parity_shards;
-    if state.data_disks.len() < total_shards {
+    // 单机模式分片全部落本地盘,需本地盘数 ≥ total;集群模式由 resolve_shard_placements 校验全局磁盘池。
+    if state.local_node_id == 0 && state.data_disks.len() < total_shards {
         return Err(s3_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "InternalError",
@@ -27,17 +214,16 @@ pub(crate) async fn write_ec_object(
             key,
         ));
     }
-    let placement =
-        preferred_storage_disk_indices_for_key(state, key, total_shards, &HashSet::new())
-            .await
-            .map_err(|message| {
-                s3_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "InternalError",
-                    &message,
-                    key,
-                )
-            })?;
+    let placement = resolve_shard_placements(state, key, total_shards)
+        .await
+        .map_err(|message| {
+            s3_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "InternalError",
+                &message,
+                key,
+            )
+        })?;
 
     let bucket_root = bucket_path(state, bucket)?;
     let shard_size = payload.len().div_ceil(data_shards).max(1);
@@ -70,38 +256,74 @@ pub(crate) async fn write_ec_object(
     let mut shard_infos = Vec::with_capacity(total_shards);
     let mut successful_shards = 0usize;
     for shard_index in 0..total_shards {
-        let disk_index = placement[shard_index];
-        let shard_path = state.data_disks[disk_index]
-            .join(bucket)
-            .join(".rustio_ec")
-            .join(&object_hash)
-            .join(format!("{shard_index}.bin"));
+        let place = &placement[shard_index];
+        let disk_index = place.local_disk_index;
+        let is_remote = place.node_id != 0 && place.node_id != state.local_node_id;
         let mut checksum = String::new();
-        let mut write_failed = false;
-        if let Some(parent) = shard_path.parent() {
-            if tokio::fs::create_dir_all(parent).await.is_err() {
+        let shard_path;
+        if is_remote {
+            // 远程分片:RPC 发到目标节点落盘;manifest 仅记录节点信息,本地 path 留空。
+            match put_remote_shard(
+                &place.node_addr,
+                bucket,
+                &object_hash,
+                disk_index,
+                shard_index,
+                shards[shard_index].clone(),
+            )
+            .await
+            {
+                Ok(remote_checksum) => {
+                    checksum = remote_checksum;
+                    successful_shards += 1;
+                }
+                Err(message) => {
+                    tracing::warn!(
+                        shard_index,
+                        node = %place.node_addr,
+                        error = %message,
+                        "远程分片写入失败 / remote shard write failed"
+                    );
+                }
+            }
+            shard_path = PathBuf::new();
+        } else {
+            // 本地分片:落本地磁盘。
+            let path = place
+                .local_disk_path
+                .join(bucket)
+                .join(".rustio_ec")
+                .join(&object_hash)
+                .join(format!("{shard_index}.bin"));
+            let mut write_failed = false;
+            if let Some(parent) = path.parent() {
+                if tokio::fs::create_dir_all(parent).await.is_err() {
+                    write_failed = true;
+                }
+            } else {
                 write_failed = true;
             }
-        } else {
-            write_failed = true;
-        }
-        if !write_failed
-            && atomic_write(&shard_path, &shards[shard_index])
-                .await
-                .is_ok()
-        {
-            checksum = sha256_hex(&shards[shard_index]);
-            successful_shards += 1;
+            if !write_failed && atomic_write(&path, &shards[shard_index]).await.is_ok() {
+                checksum = sha256_hex(&shards[shard_index]);
+                successful_shards += 1;
+            }
+            shard_path = path;
         }
         shard_infos.push(EcShardInfo {
             shard_index,
             disk_index,
             path: shard_path,
             checksum,
+            node_id: if is_remote { Some(place.node_id) } else { None },
+            node_addr: if is_remote {
+                Some(place.node_addr.clone())
+            } else {
+                None
+            },
         });
     }
     if successful_shards < data_shards {
-        let cleanup_failed = cleanup_ec_written_shards(&shard_infos).await;
+        let cleanup_failed = cleanup_ec_written_shards(&shard_infos, bucket, &object_hash).await;
         tracing::warn!(
             successful_shards,
             data_shards,
@@ -132,7 +354,7 @@ pub(crate) async fn write_ec_object(
     let manifest_path = ec_manifest_path(&bucket_root, key);
     if let Some(parent) = manifest_path.parent() {
         if let Err(err) = tokio::fs::create_dir_all(parent).await {
-            let cleanup_failed = cleanup_ec_written_shards(&shard_infos).await;
+            let cleanup_failed = cleanup_ec_written_shards(&shard_infos, bucket, &object_hash).await;
             return Err(s3_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "InternalError",
@@ -152,7 +374,7 @@ pub(crate) async fn write_ec_object(
         )
     })?;
     if let Err(err) = atomic_write(&manifest_path, &bytes).await {
-        let cleanup_failed = cleanup_ec_written_shards(&shard_infos).await;
+        let cleanup_failed = cleanup_ec_written_shards(&shard_infos, bucket, &object_hash).await;
         return Err(s3_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "InternalError",
@@ -188,9 +410,10 @@ pub(crate) async fn write_ec_object_streaming(
     src_path: &FsPath,
     total: u64,
 ) -> Result<(), Response> {
-    let (data_shards, parity_shards) = ec_layout();
+    let (data_shards, parity_shards) = ec_layout_for(state).await;
     let total_shards = data_shards + parity_shards;
-    if state.data_disks.len() < total_shards {
+    // 单机模式分片全部落本地盘,需本地盘数 ≥ total;集群模式由 resolve_shard_placements 校验全局磁盘池。
+    if state.local_node_id == 0 && state.data_disks.len() < total_shards {
         return Err(s3_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "InternalError",
@@ -198,17 +421,16 @@ pub(crate) async fn write_ec_object_streaming(
             key,
         ));
     }
-    let placement =
-        preferred_storage_disk_indices_for_key(state, key, total_shards, &HashSet::new())
-            .await
-            .map_err(|message| {
-                s3_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "InternalError",
-                    &message,
-                    key,
-                )
-            })?;
+    let placement = resolve_shard_placements(state, key, total_shards)
+        .await
+        .map_err(|message| {
+            s3_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "InternalError",
+                &message,
+                key,
+            )
+        })?;
     let bucket_root = bucket_path(state, bucket)?;
     let shard_size = (total as usize).div_ceil(data_shards).max(1);
     let object_hash = sha256_hex(key.as_bytes());
@@ -228,8 +450,8 @@ pub(crate) async fn write_ec_object_streaming(
     let mut shard_ok: Vec<bool> = Vec::with_capacity(total_shards);
     #[allow(clippy::needless_range_loop)]
     for shard_index in 0..total_shards {
-        let disk_index = placement[shard_index];
-        let shard_path = state.data_disks[disk_index]
+        let shard_path = placement[shard_index]
+            .local_disk_path
             .join(bucket)
             .join(".rustio_ec")
             .join(&object_hash)
@@ -336,7 +558,9 @@ pub(crate) async fn write_ec_object_streaming(
         .zip(shard_ok.iter().copied())
         .enumerate()
     {
-        let disk_index = placement[shard_index];
+        let place = &placement[shard_index];
+        let disk_index = place.local_disk_index;
+        let is_remote = place.node_id != 0 && place.node_id != state.local_node_id;
         let path = shard_paths[shard_index].clone();
         let mut checksum = String::new();
         let mut ok = ok_flag;
@@ -352,23 +576,62 @@ pub(crate) async fn write_ec_object_streaming(
                 ok = false;
             }
         }
+        // 远程分片:本地临时文件定稿后流式 PUT 到目标节点,成功则删除本地副本(manifest path 留空)。
+        let mut manifest_path = path.clone();
+        if ok && is_remote {
+            match put_remote_shard_file(
+                &place.node_addr,
+                bucket,
+                &object_hash,
+                disk_index,
+                shard_index,
+                &path,
+            )
+            .await
+            {
+                Ok(()) => {
+                    let _ = tokio::fs::remove_file(&path).await;
+                    manifest_path = PathBuf::new();
+                }
+                Err(message) => {
+                    tracing::warn!(
+                        shard_index,
+                        node = %place.node_addr,
+                        error = %message,
+                        "远程分片流式写入失败 / remote shard streaming write failed"
+                    );
+                    ok = false;
+                    successful -= 1;
+                    checksum = String::new();
+                }
+            }
+        }
         if !ok {
             let _ = tokio::fs::remove_file(&path).await;
         }
         shard_infos.push(EcShardInfo {
             shard_index,
             disk_index,
-            path,
+            path: manifest_path,
             checksum,
+            node_id: if is_remote { Some(place.node_id) } else { None },
+            node_addr: if is_remote {
+                Some(place.node_addr.clone())
+            } else {
+                None
+            },
         });
     }
 
     if successful < data_shards {
+        let remote_cleanup_failed =
+            cleanup_ec_written_shards(&shard_infos, bucket, &object_hash).await;
         cleanup_streaming_shards(&shard_paths).await;
         tracing::warn!(
             successful_shards = successful,
             data_shards,
             total_shards,
+            remote_cleanup_failed,
             "纠删码流式写入未达法定票数,已回滚 / ec streaming write quorum not reached, rolled back"
         );
         return Err(s3_error(
@@ -526,6 +789,8 @@ pub(crate) async fn read_ec_object(
                 disk_index,
                 path: shard_path,
                 checksum: String::new(),
+                node_id: None,
+                node_addr: None,
             });
         }
     }
@@ -540,15 +805,42 @@ pub(crate) async fn read_ec_object(
         })?;
     let mut loaded = vec![None::<Vec<u8>>; total_shards];
     let mut failed = HashSet::new();
+    let read_object_hash = sha256_hex(key.as_bytes());
     for shard in &manifest.shards {
         if shard.shard_index >= total_shards {
             continue;
         }
-        let bytes = match tokio::fs::read(&shard.path).await {
-            Ok(bytes) => bytes,
-            Err(_) => {
-                failed.insert(shard.shard_index);
-                continue;
+        let bytes = if shard_is_remote(shard, state.local_node_id) {
+            // 远程分片:RPC 从目标节点 GET。
+            let node_addr = shard.node_addr.as_deref().unwrap_or_default();
+            match get_remote_shard(
+                node_addr,
+                bucket,
+                &read_object_hash,
+                shard.disk_index,
+                shard.shard_index,
+            )
+            .await
+            {
+                Ok(bytes) => bytes,
+                Err(message) => {
+                    tracing::warn!(
+                        shard_index = shard.shard_index,
+                        node = %node_addr,
+                        error = %message,
+                        "远程分片读取失败,降级重建 / remote shard read failed, will reconstruct"
+                    );
+                    failed.insert(shard.shard_index);
+                    continue;
+                }
+            }
+        } else {
+            match tokio::fs::read(&shard.path).await {
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    failed.insert(shard.shard_index);
+                    continue;
+                }
             }
         };
         if bytes.len() != manifest.shard_size || sha256_hex(&bytes) != shard.checksum {
@@ -684,6 +976,30 @@ pub(crate) async fn read_ec_object(
             else {
                 continue;
             };
+            if shard_is_remote(shard_info, state.local_node_id) {
+                // 远程分片:重建结果 RPC 回写目标节点。失败仅记日志,不阻断本次读取
+                // (data 已由 RS 重建出,治理任务会再排重建)。
+                let node_addr = shard_info.node_addr.clone().unwrap_or_default();
+                match put_remote_shard(
+                    &node_addr,
+                    bucket,
+                    &read_object_hash,
+                    shard_info.disk_index,
+                    shard_info.shard_index,
+                    recovered.clone(),
+                )
+                .await
+                {
+                    Ok(remote_checksum) => shard_info.checksum = remote_checksum,
+                    Err(message) => tracing::warn!(
+                        shard_index = shard_info.shard_index,
+                        node = %node_addr,
+                        error = %message,
+                        "远程分片重建回写失败 / remote shard recovery write-back failed"
+                    ),
+                }
+                continue;
+            }
             if let Some(parent) = shard_info.path.parent() {
                 tokio::fs::create_dir_all(parent).await.map_err(|err| {
                     s3_error(
@@ -784,6 +1100,15 @@ pub(crate) async fn read_ec_object_streaming(
         return Ok(None);
     }
 
+    // 任一 data 分片落远程节点时,本地无文件可流式读,回退到 read_ec_object 的 RPC 拉取路径。
+    if manifest
+        .shards
+        .iter()
+        .any(|shard| shard.shard_index < manifest.data_shards && shard_is_remote(shard, state.local_node_id))
+    {
+        return Ok(None);
+    }
+
     // 收集 data 分片路径（shard_index 0..data_shards），逐一确认存在且大小等于 shard_size。
     // 仅做元数据检查（不读内容），任一异常即回退，确保后续流式读不会缺数据。
     let mut data_paths: Vec<Option<PathBuf>> = vec![None; manifest.data_shards];
@@ -860,8 +1185,30 @@ pub(crate) async fn remove_ec_object(
         }
     };
     if let Ok(manifest) = serde_json::from_slice::<EcObjectManifest>(&manifest_bytes) {
+        let object_hash = sha256_hex(key.as_bytes());
         for shard in manifest.shards {
-            let _ = tokio::fs::remove_file(shard.path).await;
+            if shard_is_remote(&shard, state.local_node_id) {
+                // 远程分片:RPC 通知目标节点删除。
+                let node_addr = shard.node_addr.as_deref().unwrap_or_default();
+                if let Err(message) = delete_remote_shard(
+                    node_addr,
+                    bucket,
+                    &object_hash,
+                    shard.disk_index,
+                    shard.shard_index,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        shard_index = shard.shard_index,
+                        node = %node_addr,
+                        error = %message,
+                        "远程分片删除失败 / remote shard delete failed"
+                    );
+                }
+            } else {
+                let _ = tokio::fs::remove_file(shard.path).await;
+            }
         }
     }
     let _ = tokio::fs::remove_file(&manifest_path).await;

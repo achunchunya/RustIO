@@ -167,15 +167,6 @@ impl AppState {
             .unwrap_or(false)
     }
 
-    pub(crate) fn metadata_heartbeat_interval() -> std::time::Duration {
-        let ms = std::env::var("RUSTIO_METADATA_RAFT_HEARTBEAT_MS")
-            .ok()
-            .and_then(|raw| raw.parse::<u64>().ok())
-            .unwrap_or(800)
-            .clamp(200, 5_000);
-        std::time::Duration::from_millis(ms)
-    }
-
     pub(crate) fn metadata_local_peer_id() -> String {
         std::env::var("RUSTIO_METADATA_RAFT_NODE_ID").unwrap_or_else(|_| "meta-1".to_string())
     }
@@ -184,6 +175,32 @@ impl AppState {
         std::env::var("RUSTIO_REPLICATION_REMOTE_ENABLED")
             .map(|value| value.eq_ignore_ascii_case("true") || value == "1")
             .unwrap_or(false)
+    }
+
+    pub(crate) fn internal_control_token() -> String {
+        std::env::var("RUSTIO_INTERNAL_TOKEN")
+            .unwrap_or_else(|_| "rustio-internal-token".to_string())
+    }
+
+    pub(crate) fn metadata_peer_endpoints() -> HashMap<String, String> {
+        use std::collections::HashMap;
+        let mut endpoints = HashMap::new();
+        let raw = std::env::var("RUSTIO_METADATA_RAFT_PEERS").unwrap_or_default();
+        for item in raw.split(',') {
+            let token = item.trim();
+            if token.is_empty() {
+                continue;
+            }
+            let mut pair = token.splitn(2, '=');
+            let Some(peer_id) = pair.next().map(str::trim).filter(|v| !v.is_empty()) else {
+                continue;
+            };
+            let Some(endpoint) = pair.next().map(str::trim).filter(|v| !v.is_empty()) else {
+                continue;
+            };
+            endpoints.insert(peer_id.to_string(), endpoint.to_string());
+        }
+        endpoints
     }
 
     pub(crate) fn replication_worker_interval() -> std::time::Duration {
@@ -496,6 +513,16 @@ impl AppState {
             .and_then(|raw| raw.parse::<u64>().ok())
             .unwrap_or(1_000)
             .clamp(100, 60_000);
+        std::time::Duration::from_millis(ms)
+    }
+
+    /// 集群 peer 健康探测间隔(仅集群模式生效)。
+    pub(crate) fn peer_health_probe_interval() -> std::time::Duration {
+        let ms = std::env::var("RUSTIO_PEER_PROBE_INTERVAL_MS")
+            .ok()
+            .and_then(|raw| raw.parse::<u64>().ok())
+            .unwrap_or(15_000)
+            .clamp(2_000, 600_000);
         std::time::Duration::from_millis(ms)
     }
 

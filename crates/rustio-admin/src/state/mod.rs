@@ -1,4 +1,5 @@
 mod alerts;
+pub(crate) mod cluster;
 mod jobs;
 mod meta_store;
 mod password;
@@ -6,8 +7,7 @@ mod persistence_bootstrap;
 pub(crate) mod raft;
 mod replication_workers;
 mod runtime_config;
-mod raft_consensus;
-mod raft_core;
+mod session_sync;
 
 use meta_store::MetaStore;
 pub(crate) use password::{hash_password, is_hashed as password_is_hashed, verify_password};
@@ -82,6 +82,17 @@ pub struct StorageGovernanceRuntimeState {
     pub disk_last_anomaly_at: HashMap<String, DateTime<Utc>>,
     pub draining_disks: HashSet<String>,
     pub decommissioned_disks: HashSet<String>,
+    /// 集群 peer 健康探测结果(node_id → 健康态),仅集群模式填充。
+    pub peer_health: HashMap<u64, PeerHealthState>,
+}
+
+/// 单个 peer 的健康探测状态(由后台 heartbeat worker 维护)。
+#[derive(Debug, Clone)]
+pub struct PeerHealthState {
+    pub online: bool,
+    pub last_check_at: DateTime<Utc>,
+    pub last_ok_at: Option<DateTime<Utc>>,
+    pub consecutive_failures: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -209,17 +220,6 @@ pub struct MetadataRaftLogEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct MetadataRaftPeer {
-    pub id: String,
-    pub path: PathBuf,
-    pub endpoint: Option<String>,
-    pub online: bool,
-    pub match_index: u64,
-    pub next_index: u64,
-    pub last_index: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MetadataRaftStatus {
     pub cluster_id: String,
     pub leader_id: String,
@@ -237,39 +237,7 @@ pub struct MetadataRaftStatus {
     #[serde(default)]
     pub joint_elapsed_seconds: Option<u64>,
     pub joint_timeout_seconds: u64,
-    pub peers: Vec<MetadataRaftPeer>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MetadataRaftState {
-    pub cluster_id: String,
-    pub leader_id: String,
-    pub term: u64,
-    #[serde(default)]
-    pub voted_for: Option<String>,
-    pub commit_index: u64,
-    #[serde(default)]
-    pub last_commit_term: u64,
-    #[serde(default)]
-    pub last_heartbeat_at: Option<DateTime<Utc>>,
-    #[serde(default)]
-    pub last_election_at: Option<DateTime<Utc>>,
-    #[serde(default)]
-    pub last_quorum_at: Option<DateTime<Utc>>,
-    #[serde(default = "metadata_membership_phase_default")]
-    pub membership_phase: String,
-    #[serde(default)]
-    pub joint_old_members: Vec<String>,
-    #[serde(default)]
-    pub joint_new_members: Vec<String>,
-    pub last_snapshot_hash: String,
-    pub last_error: Option<String>,
-    pub last_commit_at: Option<DateTime<Utc>>,
-    pub peers: Vec<MetadataRaftPeer>,
-}
-
-pub(crate) fn metadata_membership_phase_default() -> String {
-    "stable".to_string()
+    pub peers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -289,84 +257,10 @@ pub struct MetadataRaftSyncRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MetadataRaftVoteRequest {
-    pub cluster_id: String,
-    pub candidate_id: String,
-    pub term: u64,
-    pub last_log_index: u64,
-    #[serde(default)]
-    pub last_log_term: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MetadataRaftVoteResponse {
-    pub term: u64,
-    pub vote_granted: bool,
-    #[serde(default)]
-    pub reason: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MetadataRaftPreVoteRequest {
-    pub cluster_id: String,
-    pub candidate_id: String,
-    pub term: u64,
-    pub last_log_index: u64,
-    #[serde(default)]
-    pub last_log_term: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MetadataRaftPreVoteResponse {
-    pub term: u64,
-    pub pre_vote_granted: bool,
-    #[serde(default)]
-    pub reason: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MetadataRaftReadIndexRequest {
-    pub cluster_id: String,
-    pub requester_id: String,
-    #[serde(default)]
-    pub request_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct MetadataRaftReadIndexResponse {
-    pub term: u64,
-    pub leader_id: String,
-    pub read_index: u64,
-    pub success: bool,
-    #[serde(default)]
-    pub request_id: String,
-    #[serde(default)]
-    pub members: Vec<String>,
-    #[serde(default)]
-    pub reason: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetadataRaftSyncResponse {
     pub term: u64,
     pub success: bool,
     pub match_index: u64,
-    #[serde(default)]
-    pub reason: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MetadataRaftHeartbeatRequest {
-    pub cluster_id: String,
-    pub leader_id: String,
-    pub term: u64,
-    pub leader_commit: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MetadataRaftHeartbeatResponse {
-    pub term: u64,
-    pub accepted: bool,
     #[serde(default)]
     pub reason: Option<String>,
 }
@@ -413,8 +307,10 @@ pub struct AppState {
     pub s3_secret_key: String,
     pub data_dir: PathBuf,
     pub data_disks: Vec<PathBuf>,
+    /// 集群：本节点 ID(0=单机模式) + peer 拓扑。
+    pub local_node_id: u64,
+    pub cluster_peers: RwLock<HashMap<u64, cluster::ClusterPeerInfo>>,
     pub architecture: ArchitectureTopology,
-    pub metadata_raft: RwLock<MetadataRaftState>,
     pub credentials: RwLock<HashMap<String, LocalCredential>>,
     pub nodes: RwLock<Vec<ClusterNode>>,
     pub quotas: RwLock<Vec<ClusterQuota>>,
@@ -774,24 +670,226 @@ pub(crate) fn default_cluster_config_payload(security: &SecurityConfig) -> Value
 }
 
 impl AppState {
-    /// 元数据 Raft 状态视图(从旧自研 Raft 字段构建)。
-    pub async fn metadata_raft_status_from_old(&self) -> MetadataRaftStatus {
-    let raft = self.metadata_raft.read().await;
-    MetadataRaftStatus {
-        cluster_id: raft.cluster_id.clone(),
-        leader_id: raft.leader_id.clone(),
-        term: raft.term,
-        quorum: 1,
-        online_peers: raft.peers.iter().filter(|p| p.online).count(),
-        commit_index: raft.commit_index,
-        last_error: raft.last_error.clone(),
-        last_commit_at: raft.last_commit_at,
-        membership_phase: raft.membership_phase.clone(),
-        joint_old_members: raft.joint_old_members.clone(),
-        joint_new_members: raft.joint_new_members.clone(),
-        joint_elapsed_seconds: None,
-        joint_timeout_seconds: 0,
-        peers: raft.peers.clone(),
+    /// Raft 状态视图(从 openraft metrics 构建)。
+    pub async fn metadata_raft_status(&self) -> MetadataRaftStatus {
+        if let Some(raft) = self.meta_raft.get() {
+            let metrics_guard = raft.metrics();
+            let metrics = metrics_guard.borrow();
+            let peer_ids: Vec<String> = metrics
+                .membership_config
+                .nodes()
+                .map(|(id, _node)| id.to_string())
+                .collect();
+            MetadataRaftStatus {
+                cluster_id: "raft-meta-cluster".to_string(),
+                leader_id: metrics.current_leader.map(|id| id.to_string()).unwrap_or_default(),
+                term: metrics.current_term,
+                commit_index: metrics.last_log_index.unwrap_or(0),
+                quorum: peer_ids.len().max(1),
+                online_peers: peer_ids.len(),
+                last_error: None,
+                last_commit_at: None,
+                membership_phase: "stable".to_string(),
+                joint_old_members: vec![],
+                joint_new_members: vec![],
+                joint_elapsed_seconds: None,
+                joint_timeout_seconds: 0,
+                peers: peer_ids,
+            }
+        } else {
+            MetadataRaftStatus {
+                cluster_id: "rustio-standalone".to_string(),
+                leader_id: "standalone".to_string(),
+                term: 0,
+                commit_index: 0,
+                quorum: 1,
+                online_peers: 1,
+                last_error: None,
+                last_commit_at: None,
+                membership_phase: "stable".to_string(),
+                ..Default::default()
+            }
+        }
     }
-}
+
+    /// 构建元数据快照（集群备份导出用）。
+    pub(crate) async fn build_metadata_snapshot(&self) -> MetadataRaftSnapshot {
+        let mut buckets = self.buckets.read().await.values().cloned().collect::<Vec<_>>();
+        buckets.sort_by(|left, right| left.name.cmp(&right.name));
+        let remote_tiers = Self::sorted_map_entries(&self.remote_tiers.read().await.clone());
+        let bucket_object_locks = Self::sorted_map_entries(&self.bucket_object_locks.read().await.clone());
+        let bucket_retentions = Self::sorted_map_entries(&self.bucket_retentions.read().await.clone());
+        let bucket_legal_holds = Self::sorted_map_entries(&self.bucket_legal_holds.read().await.clone());
+        let bucket_notifications = Self::sorted_map_entries(&self.bucket_notifications.read().await.clone());
+        let bucket_lifecycle_rules = Self::sorted_map_entries(&self.bucket_lifecycle_rules.read().await.clone());
+        let bucket_acls = Self::sorted_map_entries(&self.bucket_acls.read().await.clone());
+        let bucket_public_access_blocks = Self::sorted_map_entries(&self.bucket_public_access_blocks.read().await.clone());
+        let bucket_policies = Self::sorted_map_entries(&self.bucket_policies.read().await.clone());
+        let bucket_cors_rules = Self::sorted_map_entries(&self.bucket_cors_rules.read().await.clone());
+        let bucket_tags = Self::sorted_map_entries(&self.bucket_tags.read().await.clone());
+        let bucket_encryptions = Self::sorted_map_entries(&self.bucket_encryptions.read().await.clone());
+        let mut iam_users = self.users.read().await.clone(); iam_users.sort_by(|l, r| l.username.cmp(&r.username));
+        let credentials = Self::sorted_map_entries(&self.credentials.read().await.clone());
+        let mut iam_groups = self.groups.read().await.clone(); iam_groups.sort_by(|l, r| l.name.cmp(&r.name));
+        let mut iam_policies = self.policies.read().await.clone(); iam_policies.sort_by(|l, r| l.name.cmp(&r.name));
+        let mut service_accounts = self.service_accounts.read().await.clone(); service_accounts.sort_by(|l, r| l.access_key.cmp(&r.access_key));
+        let mut admin_sessions = self.admin_sessions.read().await.clone(); admin_sessions.sort_by(|l, r| l.session_id.cmp(&r.session_id));
+        let mut sts_sessions = self.sts_sessions.read().await.clone(); sts_sessions.sort_by(|l, r| l.session_id.cmp(&r.session_id));
+        let mut replications = self.replications.read().await.clone();
+        replications.sort_by(|l, r| l.source_bucket.cmp(&r.source_bucket).then_with(|| l.target_site.cmp(&r.target_site)).then_with(|| l.rule_id.cmp(&r.rule_id)));
+        let mut site_replications = self.site_replications.read().await.clone(); site_replications.sort_by(|l, r| l.site_id.cmp(&r.site_id));
+        let mut replication_backlog = self.replication_backlog.read().await.clone(); replication_backlog.sort_by(|l, r| l.id.cmp(&r.id));
+        let replication_checkpoints = Self::sorted_map_entries(&self.replication_checkpoints.read().await.clone());
+        let cluster_config_history = self.cluster_config_history.read().await.clone();
+        let security = self.security.read().await.clone();
+        let mut jobs = self.jobs.read().await.clone(); jobs.sort_by(|l, r| l.id.cmp(&r.id));
+        MetadataRaftSnapshot {
+            generated_at: Utc::now(), buckets, remote_tiers, bucket_object_locks, bucket_retentions,
+            bucket_legal_holds, bucket_notifications, bucket_lifecycle_rules, bucket_acls,
+            bucket_public_access_blocks, bucket_policies, bucket_cors_rules, bucket_tags, bucket_encryptions,
+            objects: Vec::new(), credentials, iam_users, iam_groups, iam_policies, service_accounts,
+            admin_sessions, sts_sessions, replications, site_replications, replication_backlog,
+            replication_checkpoints, cluster_config_history, security, jobs,
+        }
+    }
+
+    /// 导出元数据快照同步请求（集群备份用）。
+    pub async fn export_metadata_raft_sync_request(&self, reason: &str) -> Result<MetadataRaftSyncRequest, String> {
+        let snapshot = self.build_metadata_snapshot().await;
+        let (commit_index, term) = if let Some(raft) = self.meta_raft.get() {
+            let metrics_guard = raft.metrics();
+            let metrics = metrics_guard.borrow();
+            (metrics.last_log_index.unwrap_or(0), metrics.current_term)
+        } else {
+            (0, 1)
+        };
+        Ok(MetadataRaftSyncRequest {
+            cluster_id: "raft-meta-cluster".to_string(),
+            peer_id: std::env::var("RUSTIO_METADATA_RAFT_NODE_ID")
+                .unwrap_or_else(|_| "meta-1".to_string()),
+            entry: MetadataRaftLogEntry {
+                index: commit_index, term, reason: reason.to_string(), written_at: Utc::now(),
+                snapshot_hash: String::new(),
+            },
+            prev_log_index: 0, prev_log_term: 0, install_snapshot: true, leader_commit: commit_index,
+            snapshot,
+        })
+    }
+
+    pub(crate) fn sorted_map_entries<T: Clone>(map: &HashMap<String, T>) -> Vec<(String, T)> {
+        let mut entries = map.iter().map(|(k, v)| (k.clone(), v.clone())).collect::<Vec<_>>();
+        entries.sort_by(|l, r| l.0.cmp(&r.0));
+        entries
+    }
+
+    pub async fn persist_replication_runtime_state(&self) {
+        let runtime = ReplicationRuntimeState {
+            version: 1,
+            sequence: self.replication_sequence.load(Ordering::SeqCst),
+            backlog: self.replication_backlog.read().await.clone(),
+            checkpoints: self.replication_checkpoints.read().await.clone(),
+        };
+        let path = self.replication_state_path();
+        if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
+        if let Ok(bytes) = serde_json::to_vec_pretty(&runtime) {
+            let temp_path = path.with_extension("tmp");
+            if std::fs::write(&temp_path, bytes).is_ok() { let _ = std::fs::rename(temp_path, &path); }
+        }
+    }
+
+    pub(crate) fn restore_replication_runtime_state(&self) {
+        let state_path = self.replication_state_path();
+        let bytes = match std::fs::read(&state_path) { Ok(b) => b, Err(_) => return };
+        let runtime = match serde_json::from_slice::<ReplicationRuntimeState>(&bytes) { Ok(v) => v, Err(_) => return };
+        if let Ok(mut backlog) = self.replication_backlog.try_write() { *backlog = runtime.backlog; }
+        if let Ok(mut checkpoints) = self.replication_checkpoints.try_write() { *checkpoints = runtime.checkpoints; }
+        let mut next_sequence = runtime.sequence.max(1);
+        if let Ok(backlog) = self.replication_backlog.try_read() {
+            for item in backlog.iter() { next_sequence = next_sequence.max(item.checkpoint.saturating_add(1)); }
+        }
+        if let Ok(checkpoints) = self.replication_checkpoints.try_read() {
+            for checkpoint in checkpoints.values() { next_sequence = next_sequence.max(checkpoint.saturating_add(1)); }
+        }
+        self.replication_sequence.store(next_sequence.max(1), Ordering::SeqCst);
+    }
+
+    pub(crate) fn replication_state_path(&self) -> PathBuf {
+        self.replication_root_dir().join("runtime-state.json")
+    }
+
+    pub(crate) fn hash_json(value: &impl Serialize) -> Result<String, String> {
+        let bytes = serde_json::to_vec(value).map_err(|err| err.to_string())?;
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        Ok(hex::encode(hasher.finalize()))
+    }
+
+    /// 应用远程元数据快照（集群备份恢复用）。
+    pub async fn apply_remote_metadata_raft_sync(
+        &self,
+        request: MetadataRaftSyncRequest,
+    ) -> Result<MetadataRaftSyncResponse, String> {
+        let snapshot = request.snapshot;
+        {
+            let mut buckets = self.buckets.write().await;
+            *buckets = snapshot.buckets.into_iter().map(|s| (s.name.clone(), s)).collect();
+        }
+        {
+            let mut tiers = self.remote_tiers.write().await;
+            *tiers = snapshot.remote_tiers.into_iter().collect();
+        }
+        {
+            let mut service_accounts = self.service_accounts.write().await;
+            *service_accounts = snapshot.service_accounts;
+        }
+        {
+            let mut replications = self.replications.write().await;
+            *replications = snapshot.replications;
+        }
+        {
+            let mut policies = self.policies.write().await;
+            *policies = snapshot.iam_policies;
+        }
+        {
+            let mut users = self.users.write().await;
+            *users = snapshot.iam_users;
+        }
+        {
+            let mut groups = self.groups.write().await;
+            *groups = snapshot.iam_groups;
+        }
+        {
+            let mut credentials = self.credentials.write().await;
+            *credentials = snapshot.credentials.into_iter().collect();
+        }
+        {
+            let mut admin_sessions = self.admin_sessions.write().await;
+            *admin_sessions = snapshot.admin_sessions;
+        }
+        {
+            let mut sts_sessions = self.sts_sessions.write().await;
+            *sts_sessions = snapshot.sts_sessions;
+        }
+        {
+            let mut security = self.security.write().await;
+            *security = snapshot.security;
+        }
+        {
+            let mut history = self.cluster_config_history.write().await;
+            *history = snapshot.cluster_config_history;
+        }
+        {
+            let mut jobs = self.jobs.write().await;
+            *jobs = snapshot.jobs;
+        }
+        {
+            let mut checkpoints = self.replication_checkpoints.write().await;
+            *checkpoints = snapshot.replication_checkpoints.into_iter().collect();
+        }
+        {
+            let mut backlog = self.replication_backlog.write().await;
+            *backlog = snapshot.replication_backlog;
+        }
+        Ok(MetadataRaftSyncResponse { term: request.entry.term, success: true, match_index: request.entry.index, reason: None })
+    }
 }

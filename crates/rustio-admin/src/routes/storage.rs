@@ -137,6 +137,7 @@ pub(crate) async fn inspect_storage_manifest(
     let mut missing_shards = 0usize;
     let mut corrupted_shards = 0usize;
     let mut affected_disks = HashSet::new();
+    let object_hash = sha256_hex(manifest.key.as_bytes());
     for shard_index in 0..total_shards {
         let shard = shard_map.get(&shard_index).cloned().or_else(|| {
             derived_ec_shard_path(state, bucket, &manifest.key, shard_index).map(
@@ -145,6 +146,8 @@ pub(crate) async fn inspect_storage_manifest(
                     disk_index,
                     path: shard_path,
                     checksum: String::new(),
+                    node_id: None,
+                    node_addr: None,
                 },
             )
         });
@@ -152,6 +155,39 @@ pub(crate) async fn inspect_storage_manifest(
             missing_shards += 1;
             continue;
         };
+        // 集群模式:远程分片 path 为空,必须经 RPC 探测目标节点,而非读本地空路径。
+        if shard_is_remote(&shard, state.local_node_id) {
+            let disk_id = format!(
+                "node-{}-disk-{}",
+                shard.node_id.unwrap_or_default(),
+                shard.disk_index
+            );
+            let node_addr = shard.node_addr.as_deref().unwrap_or_default();
+            match stat_remote_shard(
+                node_addr,
+                bucket,
+                &object_hash,
+                shard.disk_index,
+                shard.shard_index,
+            )
+            .await
+            {
+                Ok(Some(stat)) => {
+                    let checksum_matches =
+                        shard.checksum.is_empty() || stat.checksum == shard.checksum;
+                    if stat.size != manifest.shard_size || !checksum_matches {
+                        corrupted_shards += 1;
+                        affected_disks.insert(disk_id);
+                    }
+                }
+                // 不存在 / 节点不可达 均按缺失处理,交由重建恢复。
+                Ok(None) | Err(_) => {
+                    missing_shards += 1;
+                    affected_disks.insert(disk_id);
+                }
+            }
+            continue;
+        }
         let disk_id = format!("disk-{}", shard.disk_index);
         match tokio::fs::read(&shard.path).await {
             Ok(bytes) => {
@@ -397,6 +433,120 @@ pub(crate) async fn preferred_storage_disk_indices_for_key(
 ) -> Result<Vec<usize>, String> {
     let candidates = active_storage_disk_indices_for_write(state, extra_avoid_disk_ids).await?;
     preferred_disk_indices_for_key(key, &candidates, total_shards)
+}
+
+/// 单个分片的放置目标(跨节点感知)。
+#[derive(Debug, Clone)]
+pub(crate) struct ShardPlacement {
+    /// 目标节点 ID。0 = 本地(单机模式或本节点)。
+    pub(crate) node_id: u64,
+    /// 目标节点 API 地址。空 = 本地(无需 RPC)。
+    pub(crate) node_addr: String,
+    /// 目标节点上的本地磁盘索引。
+    pub(crate) local_disk_index: usize,
+    /// 本地分片落盘路径(仅当目标是本节点时有意义)。
+    pub(crate) local_disk_path: PathBuf,
+}
+
+/// 解析对象各分片的放置目标。
+///
+/// - 单机模式(`local_node_id == 0`):全部落本地,行为与 `preferred_storage_disk_indices_for_key` 一致。
+/// - 集群模式:从全集群在线磁盘池按 SHA-256(key) 确定性轮询,尽量让每个分片落到不同节点。
+pub(crate) async fn resolve_shard_placements(
+    state: &AppState,
+    key: &str,
+    total_shards: usize,
+) -> Result<Vec<ShardPlacement>, String> {
+    // 单机模式:复用既有本地放置算法。
+    if state.local_node_id == 0 {
+        let indices =
+            preferred_storage_disk_indices_for_key(state, key, total_shards, &HashSet::new())
+                .await?;
+        return Ok(indices
+            .into_iter()
+            .map(|idx| ShardPlacement {
+                node_id: 0,
+                node_addr: String::new(),
+                local_disk_index: idx,
+                local_disk_path: state.data_disks[idx].clone(),
+            })
+            .collect());
+    }
+
+    // 集群模式:构建全局磁盘候选池 (node_id, node_addr, local_disk_index, local_path)。
+    let peers = state.cluster_peers.read().await;
+    let mut candidates: Vec<(u64, String, usize, PathBuf)> = Vec::new();
+    // 按 node_id 排序保证各节点候选池顺序确定(放置算法可复现)。
+    let mut sorted_peers: Vec<_> = peers.values().collect();
+    sorted_peers.sort_by_key(|p| p.node_id);
+    for peer in sorted_peers {
+        for disk in &peer.disks {
+            candidates.push((
+                peer.node_id,
+                peer.api_addr.clone(),
+                disk.local_index,
+                disk.local_path.clone(),
+            ));
+        }
+    }
+    if candidates.len() < total_shards {
+        return Err(format!(
+            "集群可用磁盘不足，至少需要 {total_shards} 个，当前 {} 个 / not enough cluster disks: need {total_shards}, have {}",
+            candidates.len(),
+            candidates.len()
+        ));
+    }
+
+    // SHA-256(key) 确定性起点 + 跨节点优先轮询:同 shard 尽量落不同节点。
+    let digest = Sha256::digest(key.as_bytes());
+    let mut seed_bytes = [0u8; 8];
+    seed_bytes.copy_from_slice(&digest[..8]);
+    let start = u64::from_le_bytes(seed_bytes) as usize % candidates.len();
+
+    // 先按 node 分组,轮询节点取盘,保证分片跨节点分散。
+    let mut by_node: std::collections::BTreeMap<u64, Vec<&(u64, String, usize, PathBuf)>> =
+        std::collections::BTreeMap::new();
+    for cand in &candidates {
+        by_node.entry(cand.0).or_default().push(cand);
+    }
+    let node_ids: Vec<u64> = by_node.keys().copied().collect();
+    let node_start = start % node_ids.len();
+
+    let mut placements = Vec::with_capacity(total_shards);
+    let mut per_node_cursor: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
+    let mut assigned = 0usize;
+    let mut round = 0usize;
+    // 轮询节点列表,每轮每节点取一块盘,直到凑齐 total_shards。
+    while assigned < total_shards {
+        let node_id = node_ids[(node_start + round) % node_ids.len()];
+        let disks = &by_node[&node_id];
+        let cursor = per_node_cursor.entry(node_id).or_insert(0);
+        if *cursor < disks.len() {
+            let (nid, addr, disk_idx, path) = disks[*cursor];
+            // 远程节点磁盘 path 为占位空值时,落盘回退本节点磁盘(同 disk_index 取模);
+            // 实际远程分片经 RPC 写到对端,不在本地落盘。
+            let write_path = if path.as_os_str().is_empty() {
+                let local_len = state.data_disks.len().max(1);
+                state.data_disks[*disk_idx % local_len].clone()
+            } else {
+                path.clone()
+            };
+            placements.push(ShardPlacement {
+                node_id: *nid,
+                node_addr: addr.clone(),
+                local_disk_index: *disk_idx,
+                local_disk_path: write_path,
+            });
+            *cursor += 1;
+            assigned += 1;
+        }
+        round += 1;
+        // 防御:所有节点磁盘耗尽(理论上 candidates.len() >= total_shards 已保证不会发生)。
+        if round > candidates.len() * 2 {
+            return Err("分片放置轮询异常 / shard placement round overflow".to_string());
+        }
+    }
+    Ok(placements)
 }
 
 pub(crate) fn manifest_disk_index_for_shard(
@@ -686,6 +836,8 @@ pub(crate) async fn execute_storage_migration_job(
             disk_index: desired_disk_index,
             path: desired_path,
             checksum: sha256_hex(&bytes),
+            node_id: None,
+            node_addr: None,
         });
     }
 
@@ -1199,3 +1351,4 @@ pub(crate) async fn events_stream(
 
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(10))))
 }
+

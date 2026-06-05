@@ -133,7 +133,7 @@ use crate::{
     state::{
         hash_password, verify_password, AlertDeliveryItem, AppState,
         ArchitectureAlignmentReport, ArchitectureTopology, CompletedOidcLogin,
-        InternalReplicationApplyRequest, LocalCredential, MetadataRaftReadIndexResponse,
+        InternalReplicationApplyRequest, LocalCredential,
         MetadataRaftStatus, MetadataRaftSyncRequest, MultipartPart, MultipartUpload,
         PendingOidcAuthorization,
     },
@@ -206,6 +206,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/api/v1/cluster/health", get(cluster_health))
         .route("/api/v1/cluster/nodes", get(list_nodes))
+        .route("/api/v1/cluster/peers", get(list_cluster_peers))
         .route("/api/v1/cluster/nodes/{id}/offline", post(set_node_offline))
         .route("/api/v1/cluster/nodes/{id}/online", post(set_node_online))
         .route("/api/v1/cluster/quotas", get(list_quotas))
@@ -593,6 +594,19 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/api/v1/internal/auth/sessions/sync/{session_id}",
             axum::routing::delete(internal_console_session_delete),
         )
+        .route("/api/v1/internal/metadata-raft/append", post(raft_append_entries))
+        .route("/api/v1/internal/metadata-raft/vote", post(raft_vote))
+        .route("/api/v1/internal/metadata-raft/install-snapshot", post(raft_install_snapshot))
+        .route(
+            "/api/v1/internal/ec/shard/{bucket}/{object_hash}/{disk_index}/{shard_index}",
+            put(internal_ec_shard_put)
+                .get(internal_ec_shard_get)
+                .delete(internal_ec_shard_delete),
+        )
+        .route(
+            "/api/v1/internal/ec/shard-stat/{bucket}/{object_hash}/{disk_index}/{shard_index}",
+            get(internal_ec_shard_stat),
+        )
         .route(
             "/{bucket}",
             put(s3_root_create_bucket)
@@ -709,6 +723,16 @@ struct StorageGovernanceStatusResponse {
     draining_disks: Vec<String>,
     decommissioned_disks: Vec<String>,
     disks: Vec<SystemStorageDiskMetricsSummary>,
+    peer_health: Vec<PeerHealthStatus>,
+}
+
+#[derive(Debug, Serialize)]
+struct PeerHealthStatus {
+    node_id: u64,
+    online: bool,
+    last_check_at: chrono::DateTime<chrono::Utc>,
+    last_ok_at: Option<chrono::DateTime<chrono::Utc>>,
+    consecutive_failures: u32,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -738,6 +762,18 @@ async fn get_storage_governance_status(
     draining_disks.sort();
     let mut decommissioned_disks = runtime.decommissioned_disks.into_iter().collect::<Vec<_>>();
     decommissioned_disks.sort();
+    let mut peer_health = runtime
+        .peer_health
+        .into_iter()
+        .map(|(node_id, state)| PeerHealthStatus {
+            node_id,
+            online: state.online,
+            last_check_at: state.last_check_at,
+            last_ok_at: state.last_ok_at,
+            consecutive_failures: state.consecutive_failures,
+        })
+        .collect::<Vec<_>>();
+    peer_health.sort_by_key(|item| item.node_id);
     Ok(wrap(StorageGovernanceStatusResponse {
         summary: governance_summary,
         scan_running: runtime.scan_running,
@@ -745,6 +781,7 @@ async fn get_storage_governance_status(
         draining_disks,
         decommissioned_disks,
         disks,
+        peer_health,
     }))
 }
 
@@ -894,14 +931,22 @@ async fn system_raft_status(
 async fn system_raft_read_index(
     State(state): State<Arc<AppState>>,
     auth: AuthContext,
-) -> Result<Json<ApiEnvelope<MetadataRaftReadIndexResponse>>, AppError> {
+) -> Result<Json<ApiEnvelope<serde_json::Value>>, AppError> {
     auth.require(Permission::ClusterRead)?;
     if let Some(raft) = state.meta_raft.get() {
         raft.ensure_linearizable().await.map_err(|err| {
             AppError::new(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", format!("{err:?}"))
         })?;
     }
-    Ok(wrap(MetadataRaftReadIndexResponse::default()))
+    Ok(wrap(serde_json::json!({
+        "term": 0u64,
+        "leader_id": "",
+        "read_index": 0u64,
+        "success": true,
+        "request_id": "",
+        "members": [],
+        "reason": null
+    })))
 }
 
 async fn prometheus_metrics(State(state): State<Arc<AppState>>) -> Result<Response, AppError> {
@@ -1078,7 +1123,7 @@ async fn build_system_storage_metrics(
         capacity_used_bytes as f64 / capacity_total_bytes as f64
     };
 
-    let (ec_data_shards, ec_parity_shards) = ec_layout();
+    let (ec_data_shards, ec_parity_shards) = ec_layout_for(state).await;
     if state.data_disks.is_empty() {
         return SystemStorageMetricsSummary {
             capacity_total_bytes,
@@ -1155,6 +1200,8 @@ async fn build_system_storage_metrics(
                             disk_index,
                             path: shard_path,
                             checksum: String::new(),
+                            node_id: None,
+                            node_addr: None,
                         },
                     )
                 });

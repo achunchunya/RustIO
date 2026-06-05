@@ -748,10 +748,30 @@ pub(crate) async fn decrypt_payload_from_storage(
         })
 }
 
-pub(crate) async fn cleanup_ec_written_shards(shards: &[EcShardInfo]) -> usize {
+pub(crate) async fn cleanup_ec_written_shards(
+    shards: &[EcShardInfo],
+    bucket: &str,
+    object_hash: &str,
+) -> usize {
     let mut cleanup_failed = 0usize;
     for shard in shards {
         if shard.checksum.is_empty() {
+            continue;
+        }
+        if let Some(node_addr) = shard.node_addr.as_deref() {
+            // 远程分片:RPC 通知目标节点删除。
+            if delete_remote_shard(
+                node_addr,
+                bucket,
+                object_hash,
+                shard.disk_index,
+                shard.shard_index,
+            )
+            .await
+            .is_err()
+            {
+                cleanup_failed += 1;
+            }
             continue;
         }
         if let Err(err) = tokio::fs::remove_file(&shard.path).await {

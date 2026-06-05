@@ -2242,3 +2242,19 @@ pub(crate) async fn restore_cluster_backup(
         reason,
     }))
 }
+
+/// 列出集群拓扑 peers。
+pub(crate) async fn list_cluster_peers(
+    State(state): State<Arc<AppState>>,
+    auth: AuthContext,
+) -> Result<Json<ApiEnvelope<Vec<crate::state::cluster::ClusterPeerInfo>>>, AppError> {
+    auth.require(Permission::ClusterRead)?;
+    let peers: Vec<crate::state::cluster::ClusterPeerInfo> = state
+        .cluster_peers
+        .read()
+        .await
+        .values()
+        .cloned()
+        .collect();
+    Ok(wrap(peers))
+}
