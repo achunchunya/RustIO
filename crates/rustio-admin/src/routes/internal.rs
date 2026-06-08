@@ -21,30 +21,53 @@ pub(crate) fn ensure_internal_token(headers: &HeaderMap) -> Result<(), Response>
     }
 }
 
+/// 元数据强一致读屏障(API 读路径,按需接入)。当前读默认走本地高可用,
+/// 此函数保留供未来对关键强一致查询显式启用(leader 上执行 linearizable)。
+#[allow(dead_code)]
 pub(crate) async fn ensure_metadata_read_barrier_api(
     state: &Arc<AppState>,
 ) -> Result<(), AppError> {
     if let Some(raft) = state.meta_raft.get() {
-        let _ = raft.ensure_linearizable().await.map_err(|err| {
-            AppError::new(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", format!("{err:?}"))
-        })?;
+        let is_leader = {
+            let metrics = raft.metrics();
+            let m = metrics.borrow();
+            m.current_leader == Some(state.local_node_id)
+        };
+        if is_leader {
+            raft.ensure_linearizable().await.map_err(|err| {
+                AppError::new(StatusCode::SERVICE_UNAVAILABLE, "service_unavailable", format!("{err:?}"))
+            })?;
+        }
     }
     Ok(())
 }
 
+/// 元数据读屏障(S3 读路径)。
+///
+/// 读一致性策略(Stage D):默认 follower 读本地状态,高可用、接受 stale;
+/// 仅当本节点是 leader 时执行 linearizable 屏障(leader 本地状态最新,屏障几乎无成本)。
+/// follower 上不调 `ensure_linearizable`——否则会因需向 leader 确认 read-index 而阻塞甚至超时,
+/// 牺牲可用性。强一致读如有需要,由调用方显式选择 leader 节点。
 pub(crate) async fn ensure_metadata_read_barrier_s3(
     state: &Arc<AppState>,
     resource: &str,
 ) -> Result<(), Response> {
     if let Some(raft) = state.meta_raft.get() {
-        let _ = raft.ensure_linearizable().await.map_err(|err| {
-            s3_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "ServiceUnavailable",
-                &format!("元数据线性读屏障失败 / metadata linearizable read barrier failed: {err:?}"),
-                resource,
-            )
-        })?;
+        let is_leader = {
+            let metrics = raft.metrics();
+            let m = metrics.borrow();
+            m.current_leader == Some(state.local_node_id)
+        };
+        if is_leader {
+            raft.ensure_linearizable().await.map_err(|err| {
+                s3_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "ServiceUnavailable",
+                    &format!("元数据线性读屏障失败 / metadata linearizable read barrier failed: {err:?}"),
+                    resource,
+                )
+            })?;
+        }
     }
     Ok(())
 }
@@ -497,6 +520,29 @@ pub(crate) async fn raft_install_snapshot(
         Err(err) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": format!("install_snapshot: {err:?}")})),
+        )
+            .into_response(),
+    }
+}
+
+/// follower 转发来的元数据写:本节点须为 leader,经 client_write 提交复制。
+pub(crate) async fn raft_metadata_write(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(cmd): Json<crate::state::raft::MetadataCommand>,
+) -> Response {
+    if let Err(response) = ensure_internal_token(&headers) {
+        return response;
+    }
+    let Some(raft) = state.meta_raft.get() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":"raft not initialized"})))
+            .into_response();
+    };
+    match raft.client_write(cmd).await {
+        Ok(_) => (StatusCode::OK, Json(json!({"ok": true}))).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("metadata write: {err:?}")})),
         )
             .into_response(),
     }

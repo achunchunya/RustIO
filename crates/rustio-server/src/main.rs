@@ -69,8 +69,14 @@ async fn main() -> anyhow::Result<()> {
     ensure_secure_startup()?;
 
     let state = AppState::bootstrap();
-    // 启动单节点元数据 raft(集群基座);失败降级本地直写(单机仍可用)。
-    if let Err(err) = state.init_metadata_raft(1).await {
+    // 启动元数据 raft:集群模式用配置的 node_id(RUSTIO_CLUSTER_NODE_ID),单机用 1。
+    // 失败降级本地直写(单机仍可用)。
+    let raft_node_id = if state.local_node_id > 0 {
+        state.local_node_id
+    } else {
+        1
+    };
+    if let Err(err) = state.init_metadata_raft(raft_node_id).await {
         tracing::warn!("元数据 raft 启动失败,降级本地直写: {err}");
     }
     let cors_layer = build_cors_layer()?;

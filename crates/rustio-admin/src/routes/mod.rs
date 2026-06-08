@@ -597,6 +597,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/internal/metadata-raft/append", post(raft_append_entries))
         .route("/api/v1/internal/metadata-raft/vote", post(raft_vote))
         .route("/api/v1/internal/metadata-raft/install-snapshot", post(raft_install_snapshot))
+        .route("/api/v1/internal/metadata-raft/write", post(raft_metadata_write))
         .route(
             "/api/v1/internal/ec/shard/{bucket}/{object_hash}/{disk_index}/{shard_index}",
             put(internal_ec_shard_put)
@@ -924,7 +925,8 @@ async fn system_raft_status(
     auth: AuthContext,
 ) -> Result<Json<ApiEnvelope<MetadataRaftStatus>>, AppError> {
     auth.require(Permission::ClusterRead)?;
-    ensure_metadata_read_barrier_api(&state).await?;
+    // 状态查询读本地 raft metrics(诊断用途),不走 linearizable 读屏障——
+    // 否则在 follower 上会因 ForwardToLeader 返回 503,无法观测各节点 raft 状态。
     Ok(wrap(state.metadata_raft_status().await))
 }
 

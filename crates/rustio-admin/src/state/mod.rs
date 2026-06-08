@@ -892,4 +892,47 @@ impl AppState {
         }
         Ok(MetadataRaftSyncResponse { term: request.entry.term, success: true, match_index: request.entry.index, reason: None })
     }
+
+    /// 安装 openraft 快照业务态(follower 经快照追赶时调用)。
+    /// 全字段整体替换 AppState 控制面状态,并物化各 bucket 数据目录,使本节点状态与 leader 一致。
+    pub(crate) async fn install_metadata_business_snapshot(&self, snapshot: MetadataRaftSnapshot) {
+        // bucket 目录物化:确保快照中每个 bucket 在本节点有数据目录(幂等)。
+        for spec in &snapshot.buckets {
+            let dir = self.data_dir.join(&spec.name);
+            if let Err(err) = tokio::fs::create_dir_all(&dir).await {
+                tracing::warn!(bucket = %spec.name, "快照安装创建 bucket 目录失败: {err}");
+            }
+        }
+        *self.buckets.write().await =
+            snapshot.buckets.into_iter().map(|s| (s.name.clone(), s)).collect();
+        *self.remote_tiers.write().await = snapshot.remote_tiers.into_iter().collect();
+        *self.bucket_object_locks.write().await = snapshot.bucket_object_locks.into_iter().collect();
+        *self.bucket_retentions.write().await = snapshot.bucket_retentions.into_iter().collect();
+        *self.bucket_legal_holds.write().await = snapshot.bucket_legal_holds.into_iter().collect();
+        *self.bucket_notifications.write().await = snapshot.bucket_notifications.into_iter().collect();
+        *self.bucket_lifecycle_rules.write().await =
+            snapshot.bucket_lifecycle_rules.into_iter().collect();
+        *self.bucket_acls.write().await = snapshot.bucket_acls.into_iter().collect();
+        *self.bucket_public_access_blocks.write().await =
+            snapshot.bucket_public_access_blocks.into_iter().collect();
+        *self.bucket_policies.write().await = snapshot.bucket_policies.into_iter().collect();
+        *self.bucket_cors_rules.write().await = snapshot.bucket_cors_rules.into_iter().collect();
+        *self.bucket_tags.write().await = snapshot.bucket_tags.into_iter().collect();
+        *self.bucket_encryptions.write().await = snapshot.bucket_encryptions.into_iter().collect();
+        *self.credentials.write().await = snapshot.credentials.into_iter().collect();
+        *self.users.write().await = snapshot.iam_users;
+        *self.groups.write().await = snapshot.iam_groups;
+        *self.policies.write().await = snapshot.iam_policies;
+        *self.service_accounts.write().await = snapshot.service_accounts;
+        *self.admin_sessions.write().await = snapshot.admin_sessions;
+        *self.sts_sessions.write().await = snapshot.sts_sessions;
+        *self.replications.write().await = snapshot.replications;
+        *self.site_replications.write().await = snapshot.site_replications;
+        *self.replication_backlog.write().await = snapshot.replication_backlog;
+        *self.replication_checkpoints.write().await =
+            snapshot.replication_checkpoints.into_iter().collect();
+        *self.cluster_config_history.write().await = snapshot.cluster_config_history;
+        *self.security.write().await = snapshot.security;
+        *self.jobs.write().await = snapshot.jobs;
+    }
 }

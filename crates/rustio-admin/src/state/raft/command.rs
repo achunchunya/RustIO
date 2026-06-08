@@ -53,6 +53,12 @@ impl MetadataCommand {
                 let spec = spec.as_ref().clone();
                 let name = spec.name.clone();
                 let lock_cfg = default_object_lock_config(&spec);
+                // 数据面物化:确保 bucket 目录存在(幂等)。leader 的 handler 已建则 no-op;
+                // follower apply 复制命令时必需,否则 bucket 仅存在于内存、重启丢失(靠扫目录恢复)。
+                let bucket_dir = app.data_dir.join(&name);
+                if let Err(err) = tokio::fs::create_dir_all(&bucket_dir).await {
+                    tracing::error!(bucket = %name, "apply CreateBucket 创建目录失败: {err}");
+                }
                 app.buckets.write().await.insert(name.clone(), spec);
                 app.bucket_object_locks
                     .write()
@@ -84,6 +90,13 @@ impl MetadataCommand {
                     .insert(name, default_bucket_public_access_block_config());
             }
             MetadataCommand::DeleteBucket { name } => {
+                // 数据面物化:移除 bucket 目录(幂等)。leader handler 已删则 no-op;follower 必需。
+                let bucket_dir = app.data_dir.join(name);
+                if let Err(err) = tokio::fs::remove_dir_all(&bucket_dir).await {
+                    if err.kind() != std::io::ErrorKind::NotFound {
+                        tracing::error!(bucket = %name, "apply DeleteBucket 移除目录失败: {err}");
+                    }
+                }
                 app.buckets.write().await.remove(name);
                 app.bucket_object_locks.write().await.remove(name);
                 app.bucket_retentions.write().await.remove(name);
