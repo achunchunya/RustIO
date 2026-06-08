@@ -182,10 +182,20 @@ pub(crate) async fn inspect_storage_manifest(
                         affected_disks.insert(disk_id);
                     }
                 }
-                // 不存在 / 节点不可达 均按缺失处理,交由重建恢复。
-                Ok(None) | Err(_) => {
+                // 分片确实不存在(目标节点明确返回 not-found)→ 计缺失,交由重建恢复。
+                Ok(None) => {
                     missing_shards += 1;
                     affected_disks.insert(disk_id);
+                }
+                // 节点不可达(超时/连接失败等瞬时故障)→ 不计缺失,避免网络抖动把健康对象
+                // 误判为缺失而触发重建风暴。本轮跳过该分片,下次扫描节点恢复后再判定。
+                Err(message) => {
+                    tracing::debug!(
+                        shard_index = shard.shard_index,
+                        node = %node_addr,
+                        error = %message,
+                        "治理扫描:远程分片探测失败(节点不可达),本轮跳过不计缺失"
+                    );
                 }
             }
             continue;

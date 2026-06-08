@@ -339,7 +339,11 @@ pub(crate) async fn s3_root_get_object(
     } {
         status = StatusCode::PARTIAL_CONTENT;
         content_range = Some(format!("bytes {start}-{end}/{}", payload.len()));
-        payload = payload[start as usize..=end as usize].to_vec();
+        // 原地裁剪到 [start, end],避免再分配一份 range 大小的拷贝。
+        // 注:此路径仍全量加载对象到内存(Range 流式化需改造 EC 流读,属后续优化项);
+        // 此处仅消除切片时的额外拷贝。
+        payload.truncate(end as usize + 1);
+        payload.drain(..start as usize);
     }
 
     let payload_len = payload.len();
@@ -686,7 +690,6 @@ pub(crate) async fn s3_root_head_object(
         Err(response) => return response,
     };
     let mut selected_meta = current_meta.clone();
-    let mut selected_is_current = true;
     if let Some(version_id) = requested_version_id.as_deref() {
         let resolved = match resolve_object_version_meta(
             &state,
@@ -700,11 +703,10 @@ pub(crate) async fn s3_root_head_object(
             Ok(value) => value,
             Err(response) => return response,
         };
-        let Some((meta, is_current)) = resolved else {
+        let Some((meta, _is_current)) = resolved else {
             return StatusCode::NOT_FOUND.into_response();
         };
         selected_meta = Some(meta);
-        selected_is_current = is_current;
     }
 
     if selected_meta
@@ -722,7 +724,6 @@ pub(crate) async fn s3_root_head_object(
             Ok(value) => value,
             Err(response) => return response,
         };
-    let customer_key = sse_customer_request.as_ref().map(|req| &req.key_bytes);
     if let Some(meta) = selected_meta.as_ref() {
         if let Err(response) = ensure_sse_customer_access(
             &key,
@@ -734,41 +735,15 @@ pub(crate) async fn s3_root_head_object(
         }
     }
 
-    let bytes = if selected_is_current {
-        match read_current_object_payload(
-            &state,
-            &bucket,
-            &key,
-            selected_meta.as_ref(),
-            customer_key,
-        )
-        .await
-        {
-            Ok(Some(bytes)) => bytes,
-            Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-            Err(response) => return response,
-        }
-    } else {
-        let Some(meta) = selected_meta.as_ref() else {
-            return StatusCode::NOT_FOUND.into_response();
-        };
-        match read_archived_object_payload_by_meta(&state, meta).await {
-            Ok(Some(bytes)) => bytes,
-            Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-            Err(response) => return response,
-        }
+    // HEAD 只返回头部,不需要对象 body。直接用 meta 的 size/etag,避免读取整个对象进内存
+    // (大对象 HEAD 原会全量加载导致 OOM)。
+    let Some(meta_ref) = selected_meta.as_ref() else {
+        return StatusCode::NOT_FOUND.into_response();
     };
-
-    let etag = selected_meta
-        .as_ref()
-        .map(|meta| meta.etag.clone())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| weak_etag(&bytes));
+    let content_length = meta_ref.size;
+    let etag = meta_ref.etag.clone();
     let etag_quoted = format!("\"{etag}\"");
-    let last_modified = selected_meta
-        .as_ref()
-        .map(|meta| meta.created_at)
-        .unwrap_or_else(Utc::now);
+    let last_modified = meta_ref.created_at;
     if let Some(response) =
         evaluate_object_preconditions(&method, &headers, &etag, &etag_quoted, last_modified, &key)
     {
@@ -788,7 +763,7 @@ pub(crate) async fn s3_root_head_object(
             .headers_mut()
             .insert(axum::http::header::LAST_MODIFIED, value);
     }
-    if let Ok(length) = axum::http::HeaderValue::from_str(&bytes.len().to_string()) {
+    if let Ok(length) = axum::http::HeaderValue::from_str(&content_length.to_string()) {
         response
             .headers_mut()
             .insert(axum::http::header::CONTENT_LENGTH, length);

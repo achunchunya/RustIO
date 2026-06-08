@@ -1462,6 +1462,15 @@ pub(crate) fn ensure_s3_auth(
                 uri.path(),
             ));
         }
+        // 拒绝签名时间明显在未来(超过时钟偏移容差),防止伪造未来时间变相延长有效期。
+        if signed_at > Utc::now() + Duration::seconds(SIGV4_CLOCK_SKEW_SECS) {
+            return Err(s3_error(
+                StatusCode::FORBIDDEN,
+                "AccessDenied",
+                "Request signature date is too far in the future",
+                uri.path(),
+            ));
+        }
 
         let payload_hash = sig
             .payload_hash
@@ -1648,6 +1657,28 @@ pub(crate) fn ensure_s3_auth(
             StatusCode::FORBIDDEN,
             "AuthorizationHeaderMalformed",
             "x-amz-date does not match credential scope date",
+            uri.path(),
+        ));
+    }
+    // 请求时效窗口校验:x-amz-date 须在当前时间 ±SIGV4_CLOCK_SKEW_SECS 内,
+    // 防止已签名请求在当天被无限重放(header 路径原无任何过期校验)。
+    let signed_at = chrono::NaiveDateTime::parse_from_str(amz_date, "%Y%m%dT%H%M%SZ")
+        .map(|value| value.and_utc())
+        .map_err(|_| {
+            s3_error(
+                StatusCode::FORBIDDEN,
+                "AuthorizationHeaderMalformed",
+                "x-amz-date must be in YYYYMMDD'T'HHMMSS'Z' format",
+                uri.path(),
+            )
+        })?;
+    let skew = Duration::seconds(SIGV4_CLOCK_SKEW_SECS);
+    let now = Utc::now();
+    if signed_at < now - skew || signed_at > now + skew {
+        return Err(s3_error(
+            StatusCode::FORBIDDEN,
+            "RequestTimeTooSkewed",
+            "The difference between the request time and the server's time is too large",
             uri.path(),
         ));
     }
@@ -2125,6 +2156,10 @@ pub(crate) fn parse_copy_source_header(
 
 pub(crate) const EMPTY_SHA256: &str =
     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+/// SigV4 请求时效容差(秒)。请求签名时间须在服务器当前时间 ±此值内,与 AWS 默认 15 分钟一致。
+/// 用于 header 路径防重放与 presigned 未来时间下界。
+pub(crate) const SIGV4_CLOCK_SKEW_SECS: i64 = 900;
 
 pub(crate) const AWS_QUERY_ENCODE_SET: AsciiSet = NON_ALPHANUMERIC
     .remove(b'-')
