@@ -80,6 +80,77 @@ impl AppState {
         trimmed
     }
 
+    /// 周期裁剪仅存活于内存、无自然上界的运行态集合,防止长跑 OOM。
+    /// 由后台内存维护 worker 周期调用。
+    pub(crate) async fn prune_unbounded_runtime_state(&self) {
+        // object_access_heat:仅作对象热度提示,超过上限时保留热度最高的若干项
+        // (被裁剪的冷对象后续按热度 0 读取,语义无损)。
+        let heat_cap = Self::object_access_heat_max_entries();
+        {
+            let mut heat = self.object_access_heat.write().await;
+            if heat.len() > heat_cap {
+                let mut entries: Vec<((String, String), u64)> = heat.drain().collect();
+                entries.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.1));
+                entries.truncate(heat_cap);
+                *heat = entries.into_iter().collect();
+            }
+        }
+        // alert_history:仅保留最近 N 条(队首最旧)。
+        let history_cap = Self::alert_history_max_entries();
+        {
+            let mut history = self.alert_history.write().await;
+            if history.len() > history_cap {
+                let remove = history.len() - history_cap;
+                history.drain(0..remove);
+            }
+        }
+        // alert_delivery_queue:非终态项全部保留;终态(done/dead_letter)仅保留最近若干条,
+        // 从最旧开始回收,避免投递记录无限堆积。
+        let terminal_cap = Self::alert_delivery_terminal_retain();
+        {
+            let mut queue = self.alert_delivery_queue.write().await;
+            let terminal_total = queue
+                .iter()
+                .filter(|item| matches!(item.status.as_str(), "done" | "dead_letter"))
+                .count();
+            if terminal_total > terminal_cap {
+                let mut to_remove = terminal_total - terminal_cap;
+                queue.retain(|item| {
+                    if to_remove > 0 && matches!(item.status.as_str(), "done" | "dead_letter") {
+                        to_remove -= 1;
+                        false
+                    } else {
+                        true
+                    }
+                });
+            }
+        }
+    }
+
+    fn object_access_heat_max_entries() -> usize {
+        std::env::var("RUSTIO_OBJECT_HEAT_MAX_ENTRIES")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(100_000)
+    }
+
+    fn alert_history_max_entries() -> usize {
+        std::env::var("RUSTIO_ALERT_HISTORY_MAX_ENTRIES")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(5_000)
+    }
+
+    fn alert_delivery_terminal_retain() -> usize {
+        std::env::var("RUSTIO_ALERT_DELIVERY_TERMINAL_RETAIN")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(2_000)
+    }
+
     pub(crate) async fn append_audit_event(
         &self,
         actor: &str,
@@ -178,8 +249,31 @@ impl AppState {
     }
 
     pub(crate) fn internal_control_token() -> String {
-        std::env::var("RUSTIO_INTERNAL_TOKEN")
-            .unwrap_or_else(|_| "rustio-internal-token".to_string())
+        use std::sync::OnceLock;
+        // 显式配置优先;空值视同未配置。
+        if let Ok(token) = std::env::var("RUSTIO_INTERNAL_TOKEN") {
+            if !token.trim().is_empty() {
+                return token;
+            }
+        }
+        // 未配置时生成进程级随机令牌(缓存,保证同进程内 RPC 客户端与服务端一致),
+        // 避免历史公开默认值被外部利用直读写对象分片。集群部署必须显式设置相同令牌,
+        // 否则节点间内部通信将因令牌不一致而失败(fail-loud,优于静默使用公开默认值)。
+        static GENERATED: OnceLock<String> = OnceLock::new();
+        GENERATED
+            .get_or_init(|| {
+                let token = format!(
+                    "{}{}",
+                    uuid::Uuid::new_v4().simple(),
+                    uuid::Uuid::new_v4().simple()
+                );
+                tracing::warn!(
+                    "RUSTIO_INTERNAL_TOKEN 未设置,已生成进程级随机内部令牌;\
+                     集群部署必须为所有节点显式设置相同的 RUSTIO_INTERNAL_TOKEN"
+                );
+                token
+            })
+            .clone()
     }
 
     pub(crate) fn metadata_peer_endpoints() -> HashMap<String, String> {

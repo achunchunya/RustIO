@@ -7,7 +7,10 @@ pub(crate) fn ensure_internal_token(headers: &HeaderMap) -> Result<(), Response>
     let provided = headers
         .get("x-rustio-internal-token")
         .and_then(|value| value.to_str().ok());
-    if provided == Some(expected.as_str()) {
+    let matches = provided.is_some_and(|value| {
+        crate::state::password::constant_time_eq(value.as_bytes(), expected.as_bytes())
+    });
+    if matches {
         Ok(())
     } else {
         Err((

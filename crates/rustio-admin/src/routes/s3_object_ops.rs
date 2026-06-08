@@ -2132,20 +2132,23 @@ pub(crate) async fn s3_complete_multipart_upload(
         }
     }
 
-    let mut target_file = match tokio::fs::File::create(&target_path).await {
-        Ok(file) => file,
-        Err(err) => {
-            return s3_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "InternalError",
-                &format!("Failed to create final object file: {err}"),
-                &key,
-            );
-        }
-    };
-
-    let mut hasher = Sha256::new();
+    // 先校验所有 part(存在性 / ETag / 顺序严格递增),全部通过后再落盘,
+    // 避免缺片或非法请求截断并损坏已存在的对象。
+    let mut etag_md5_concat: Vec<u8> = Vec::with_capacity(request.parts.len() * 16);
+    let mut last_part_number: Option<u32> = None;
     for part in &request.parts {
+        if let Some(prev) = last_part_number {
+            if part.part_number <= prev {
+                return s3_error(
+                    StatusCode::BAD_REQUEST,
+                    "InvalidPartOrder",
+                    "The list of parts was not in ascending order; parts must be ordered by part number",
+                    &key,
+                );
+            }
+        }
+        last_part_number = Some(part.part_number);
+
         let Some(part_meta) = upload.parts.get(&part.part_number) else {
             return s3_error(
                 StatusCode::BAD_REQUEST,
@@ -2167,9 +2170,56 @@ pub(crate) async fn s3_complete_multipart_upload(
             }
         }
 
+        // part_meta.etag 是该 part 内容的 MD5 hex,解码为原始 16 字节用于计算 multipart ETag。
+        match hex::decode(&part_meta.etag) {
+            Ok(raw) => etag_md5_concat.extend_from_slice(&raw),
+            Err(_) => {
+                return s3_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "InternalError",
+                    &format!("Invalid stored ETag for part {}", part.part_number),
+                    &key,
+                );
+            }
+        }
+    }
+
+    // 合并到唯一命名的临时文件,sync 后原子 rename 覆盖目标对象;中途任何失败只删临时文件,
+    // 不破坏原有对象(对齐单次 PUT 的写入语义)。
+    let staging = {
+        let file_name = target_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("object");
+        target_path.with_file_name(format!(".{file_name}.{upload_id}.rustio_mpu"))
+    };
+    let mut target_file = match tokio::fs::File::create(&staging).await {
+        Ok(file) => file,
+        Err(err) => {
+            return s3_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "InternalError",
+                &format!("Failed to create final object file: {err}"),
+                &key,
+            );
+        }
+    };
+
+    for part in &request.parts {
+        let Some(part_meta) = upload.parts.get(&part.part_number) else {
+            let _ = tokio::fs::remove_file(&staging).await;
+            return s3_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidPart",
+                &format!("Missing uploaded part {}", part.part_number),
+                &key,
+            );
+        };
+
         let mut part_file = match tokio::fs::File::open(&part_meta.path).await {
             Ok(file) => file,
             Err(err) => {
+                let _ = tokio::fs::remove_file(&staging).await;
                 return s3_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "InternalError",
@@ -2185,6 +2235,7 @@ pub(crate) async fn s3_complete_multipart_upload(
                 Ok(0) => break,
                 Ok(size) => size,
                 Err(err) => {
+                    let _ = tokio::fs::remove_file(&staging).await;
                     return s3_error(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         "InternalError",
@@ -2195,6 +2246,7 @@ pub(crate) async fn s3_complete_multipart_upload(
             };
 
             if let Err(err) = target_file.write_all(&buffer[..read]).await {
+                let _ = tokio::fs::remove_file(&staging).await;
                 return s3_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "InternalError",
@@ -2202,11 +2254,31 @@ pub(crate) async fn s3_complete_multipart_upload(
                     &key,
                 );
             }
-            hasher.update(&buffer[..read]);
         }
     }
 
-    let final_etag = hex::encode(hasher.finalize());
+    if let Err(err) = target_file.sync_all().await {
+        let _ = tokio::fs::remove_file(&staging).await;
+        return s3_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "InternalError",
+            &format!("Failed to flush final object: {err}"),
+            &key,
+        );
+    }
+    drop(target_file);
+    if let Err(err) = tokio::fs::rename(&staging, &target_path).await {
+        let _ = tokio::fs::remove_file(&staging).await;
+        return s3_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "InternalError",
+            &format!("Failed to finalize object: {err}"),
+            &key,
+        );
+    }
+
+    // multipart 对象 ETag = MD5(各 part MD5 原始字节拼接) + "-<part 数>"(符合 S3 规范)。
+    let final_etag = format!("{:x}-{}", Md5::digest(&etag_md5_concat), request.parts.len());
     uploads.remove(&upload_id);
     drop(uploads);
 

@@ -2,7 +2,7 @@ mod alerts;
 pub(crate) mod cluster;
 mod jobs;
 mod meta_store;
-mod password;
+pub(crate) mod password;
 mod persistence_bootstrap;
 pub(crate) mod raft;
 mod replication_workers;

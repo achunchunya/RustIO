@@ -1062,12 +1062,29 @@ impl AppState {
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
             return;
         };
+        use futures::FutureExt;
+        // 后台常驻 worker 的单轮执行包一层 catch_unwind:某轮 panic 时记录日志并继续下一轮,
+        // 避免 panic 沿 future 展开导致整个 worker task 静默永久退出。
+        macro_rules! supervised {
+            ($label:expr, $fut:expr) => {
+                if std::panic::AssertUnwindSafe($fut)
+                    .catch_unwind()
+                    .await
+                    .is_err()
+                {
+                    tracing::error!(worker = $label, "后台 worker 单轮执行 panic,已捕获并继续");
+                }
+            };
+        }
         for _ in 0..Self::replication_worker_concurrency() {
             let state = Arc::clone(self);
             let worker_id = format!("replication-worker-{}", Uuid::new_v4().simple());
             handle.spawn(async move {
                 loop {
-                    let _ = state.process_replication_queue_once(&worker_id).await;
+                    supervised!(
+                        worker_id.as_str(),
+                        state.process_replication_queue_once(&worker_id)
+                    );
                     tokio::time::sleep(Self::replication_worker_interval()).await;
                 }
             });
@@ -1075,16 +1092,17 @@ impl AppState {
         let replication_alert_state = Arc::clone(self);
         handle.spawn(async move {
             loop {
-                let _ = replication_alert_state
-                    .process_replication_backlog_sla_watchdog_once()
-                    .await;
+                supervised!(
+                    "replication-backlog-sla",
+                    replication_alert_state.process_replication_backlog_sla_watchdog_once()
+                );
                 tokio::time::sleep(Self::replication_backlog_alert_interval()).await;
             }
         });
         let alert_rule_state = Arc::clone(self);
         handle.spawn(async move {
             loop {
-                let _ = alert_rule_state.process_alert_rules_once().await;
+                supervised!("alert-rule-eval", alert_rule_state.process_alert_rules_once());
                 tokio::time::sleep(Self::alert_rule_eval_interval()).await;
             }
         });
@@ -1092,30 +1110,40 @@ impl AppState {
         let alert_delivery_worker_id = format!("alert-worker-{}", Uuid::new_v4().simple());
         handle.spawn(async move {
             loop {
-                let _ = alert_delivery_state
-                    .process_alert_delivery_queue_once(&alert_delivery_worker_id)
-                    .await;
+                supervised!(
+                    alert_delivery_worker_id.as_str(),
+                    alert_delivery_state.process_alert_delivery_queue_once(&alert_delivery_worker_id)
+                );
                 tokio::time::sleep(Self::alert_delivery_interval()).await;
             }
         });
         let lifecycle_state = Arc::clone(self);
         handle.spawn(async move {
             loop {
-                let _ = lifecycle_state.process_bucket_lifecycle_once().await;
+                supervised!(
+                    "bucket-lifecycle",
+                    lifecycle_state.process_bucket_lifecycle_once()
+                );
                 tokio::time::sleep(Self::lifecycle_interval()).await;
             }
         });
         let storage_scan_state = Arc::clone(self);
         handle.spawn(async move {
             loop {
-                let _ = process_storage_governance_scan_once(&storage_scan_state).await;
+                supervised!(
+                    "storage-governance-scan",
+                    process_storage_governance_scan_once(&storage_scan_state)
+                );
                 tokio::time::sleep(Self::storage_scan_interval()).await;
             }
         });
         let storage_heal_state = Arc::clone(self);
         handle.spawn(async move {
             loop {
-                let _ = process_storage_governance_heal_queue_once(&storage_heal_state).await;
+                supervised!(
+                    "storage-governance-heal",
+                    process_storage_governance_heal_queue_once(&storage_heal_state)
+                );
                 tokio::time::sleep(Self::storage_heal_worker_interval()).await;
             }
         });
@@ -1123,7 +1151,10 @@ impl AppState {
             let peer_health_state = Arc::clone(self);
             handle.spawn(async move {
                 loop {
-                    let _ = peer_health_state.process_peer_health_probe_once().await;
+                    supervised!(
+                        "peer-health-probe",
+                        peer_health_state.process_peer_health_probe_once()
+                    );
                     tokio::time::sleep(Self::peer_health_probe_interval()).await;
                 }
             });
@@ -1132,9 +1163,10 @@ impl AppState {
         let managed_async_worker_id = format!("async-worker-{}", Uuid::new_v4().simple());
         handle.spawn(async move {
             loop {
-                let _ = managed_async_state
-                    .process_managed_async_jobs_once(&managed_async_worker_id)
-                    .await;
+                supervised!(
+                    managed_async_worker_id.as_str(),
+                    managed_async_state.process_managed_async_jobs_once(&managed_async_worker_id)
+                );
                 tokio::time::sleep(Self::managed_async_job_worker_interval()).await;
             }
         });
@@ -1142,7 +1174,18 @@ impl AppState {
         handle.spawn(async move {
             loop {
                 tokio::time::sleep(Self::memory_trim_interval()).await;
-                memory_trim_state.maybe_trim_memory();
+                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    memory_trim_state.maybe_trim_memory()
+                }))
+                .is_err()
+                {
+                    tracing::error!(worker = "memory-trim", "内存回收单轮 panic,已捕获并继续");
+                }
+                // 周期裁剪仅存内存、无自然上界的运行态集合,防止长跑 OOM。
+                supervised!(
+                    "runtime-state-prune",
+                    memory_trim_state.prune_unbounded_runtime_state()
+                );
             }
         });
     }

@@ -114,7 +114,6 @@ pub(crate) enum S3IdentityKind {
 pub(crate) enum S3AuthType {
     Anonymous,
     Basic,
-    AwsLegacy,
     AwsSigV4Header,
     AwsSigV4Query,
 }
@@ -714,7 +713,6 @@ pub(crate) fn request_auth_type_label(auth_type: S3AuthType) -> &'static str {
     match auth_type {
         S3AuthType::Anonymous => "REST-ANONYMOUS",
         S3AuthType::Basic => "REST-BASIC",
-        S3AuthType::AwsLegacy => "REST-HEADER",
         S3AuthType::AwsSigV4Header => "REST-HEADER",
         S3AuthType::AwsSigV4Query => "REST-QUERY-STRING",
     }
@@ -723,7 +721,7 @@ pub(crate) fn request_auth_type_label(auth_type: S3AuthType) -> &'static str {
 pub(crate) fn request_signature_version_label(auth_type: S3AuthType) -> &'static str {
     match auth_type {
         S3AuthType::Anonymous => "ANONYMOUS",
-        S3AuthType::Basic | S3AuthType::AwsLegacy => "AWS",
+        S3AuthType::Basic => "AWS",
         S3AuthType::AwsSigV4Header | S3AuthType::AwsSigV4Query => "AWS4-HMAC-SHA256",
     }
 }
@@ -1596,32 +1594,13 @@ pub(crate) fn ensure_s3_auth(
         ));
     }
 
-    if let Some(rest) = auth.strip_prefix("AWS ") {
-        if let Some(access_key) = rest.split(':').next() {
-            let identity = resolve_s3_identity_or_error(
-                state,
-                access_key,
-                "/",
-                "InvalidAccessKeyId",
-                "The Access Key Id you provided does not exist in our records.",
-            )?;
-            ensure_session_token(&identity, headers, uri)?;
-            ensure_s3_policy_allowed(
-                state,
-                &S3PolicyRequest {
-                    method,
-                    uri,
-                    headers,
-                    identity: Some(&identity),
-                    auth_type: S3AuthType::AwsLegacy,
-                },
-            )?;
-            return Ok(S3AuthOutcome::default());
-        }
+    if auth.starts_with("AWS ") {
+        // SigV2(`Authorization: AWS <key>:<sig>`)不再受支持:历史实现仅解析 access key
+        // 而从不校验签名,构成认证绕过。现代 SDK 默认使用 SigV4,直接拒绝该认证方式。
         return Err(s3_error(
             StatusCode::FORBIDDEN,
-            "InvalidAccessKeyId",
-            "The Access Key Id you provided does not exist in our records.",
+            "InvalidRequest",
+            "AWS Signature Version 2 is not supported; use Signature Version 4",
             "/",
         ));
     }

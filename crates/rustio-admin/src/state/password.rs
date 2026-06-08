@@ -33,8 +33,8 @@ pub(crate) fn verify_password(plain: &str, stored: &str) -> bool {
     }
 }
 
-/// 恒定时间字节比较,避免明文比较的时序侧信道。
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+/// 恒定时间字节比较,避免明文/令牌比较的时序侧信道。
+pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
