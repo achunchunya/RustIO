@@ -208,6 +208,8 @@ pub struct MetadataRaftSnapshot {
     pub cluster_config_history: Vec<ClusterConfigSnapshot>,
     pub security: SecurityConfig,
     pub jobs: Vec<JobStatus>,
+    #[serde(default)]
+    pub cluster_peers: Vec<cluster::ClusterPeerInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -743,13 +745,15 @@ impl AppState {
         let cluster_config_history = self.cluster_config_history.read().await.clone();
         let security = self.security.read().await.clone();
         let mut jobs = self.jobs.read().await.clone(); jobs.sort_by(|l, r| l.id.cmp(&r.id));
+        let mut cluster_peers = self.cluster_peers.read().await.values().cloned().collect::<Vec<_>>();
+        cluster_peers.sort_by_key(|peer| peer.node_id);
         MetadataRaftSnapshot {
             generated_at: Utc::now(), buckets, remote_tiers, bucket_object_locks, bucket_retentions,
             bucket_legal_holds, bucket_notifications, bucket_lifecycle_rules, bucket_acls,
             bucket_public_access_blocks, bucket_policies, bucket_cors_rules, bucket_tags, bucket_encryptions,
             objects: Vec::new(), credentials, iam_users, iam_groups, iam_policies, service_accounts,
             admin_sessions, sts_sessions, replications, site_replications, replication_backlog,
-            replication_checkpoints, cluster_config_history, security, jobs,
+            replication_checkpoints, cluster_config_history, security, jobs, cluster_peers,
         }
     }
 
@@ -934,5 +938,13 @@ impl AppState {
         *self.cluster_config_history.write().await = snapshot.cluster_config_history;
         *self.security.write().await = snapshot.security;
         *self.jobs.write().await = snapshot.jobs;
+        // 合并集群拓扑:快照里的 peers 整体更新本地视图(含通过动态成员变更加入的新节点),
+        // 使经快照追赶的节点拿到完整拓扑,EC 放置/布局与全集群一致。
+        if !snapshot.cluster_peers.is_empty() {
+            let mut peers = self.cluster_peers.write().await;
+            for peer in snapshot.cluster_peers {
+                peers.insert(peer.node_id, peer);
+            }
+        }
     }
 }

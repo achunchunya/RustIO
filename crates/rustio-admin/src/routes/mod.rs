@@ -207,6 +207,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/cluster/health", get(cluster_health))
         .route("/api/v1/cluster/nodes", get(list_nodes))
         .route("/api/v1/cluster/peers", get(list_cluster_peers))
+        .route("/api/v1/cluster/membership/add", post(add_cluster_member))
         .route("/api/v1/cluster/nodes/{id}/offline", post(set_node_offline))
         .route("/api/v1/cluster/nodes/{id}/online", post(set_node_online))
         .route("/api/v1/cluster/quotas", get(list_quotas))
@@ -598,6 +599,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/internal/metadata-raft/vote", post(raft_vote))
         .route("/api/v1/internal/metadata-raft/install-snapshot", post(raft_install_snapshot))
         .route("/api/v1/internal/metadata-raft/write", post(raft_metadata_write))
+        .route("/api/v1/internal/cluster/membership/add", post(raft_membership_add))
         .route(
             "/api/v1/internal/ec/shard/{bucket}/{object_hash}/{disk_index}/{shard_index}",
             put(internal_ec_shard_put)

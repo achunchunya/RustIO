@@ -2258,3 +2258,103 @@ pub(crate) async fn list_cluster_peers(
         .collect();
     Ok(wrap(peers))
 }
+
+/// 动态成员变更:加节点请求体。
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct AddClusterMemberRequest {
+    pub node_id: u64,
+    #[serde(default)]
+    pub node_name: Option<String>,
+    pub api_addr: String,
+    #[serde(default)]
+    pub zone: Option<String>,
+    #[serde(default)]
+    pub disks: Vec<crate::state::cluster::ClusterDiskInfo>,
+}
+
+/// 把新节点加入集群(动态成员变更,leader-only;非 leader 自动转发到 leader)。
+/// 管理员显式调用此端点;新节点启动自动 join 也复用同一 leader 侧逻辑。
+pub(crate) async fn add_cluster_member(
+    State(state): State<Arc<AppState>>,
+    auth: AuthContext,
+    headers: HeaderMap,
+    Json(body): Json<AddClusterMemberRequest>,
+) -> Result<Json<ApiEnvelope<Vec<crate::state::cluster::ClusterPeerInfo>>>, AppError> {
+    auth.require(Permission::ClusterWrite)?;
+    ensure_confirm_header(&headers)?;
+
+    if body.api_addr.trim().is_empty() {
+        return Err(AppError::bad_request("api_addr 不能为空 / api_addr is required"));
+    }
+    if body.node_id == 0 {
+        return Err(AppError::bad_request("node_id 必须 > 0 / node_id must be > 0"));
+    }
+
+    let peer = crate::state::cluster::ClusterPeerInfo {
+        node_id: body.node_id,
+        node_name: body.node_name.unwrap_or_else(|| format!("node-{}", body.node_id)),
+        api_addr: body.api_addr.clone(),
+        zone: body.zone.unwrap_or_else(|| "default".to_string()),
+        disks: body.disks.clone(),
+    };
+
+    // 非 leader:把加节点请求转发到 leader(add_learner/change_membership 是 leader-only)。
+    if !state.is_metadata_leader() {
+        let Some(leader_addr) = state.metadata_leader_addr() else {
+            return Err(AppError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "service_unavailable",
+                "当前无已知 leader,无法加节点 / no known leader to add member".to_string(),
+            ));
+        };
+        forward_add_member_to_leader(&leader_addr, &peer).await?;
+    } else {
+        state
+            .raft_add_member(peer.clone())
+            .await
+            .map_err(|err| AppError::internal(format!("加节点失败 / add member failed: {err}")))?;
+    }
+
+    state
+        .append_audit(
+            &auth.username,
+            "cluster.membership.add",
+            &format!("node/{}", body.node_id),
+            "success",
+            None,
+            json!({ "node_id": body.node_id, "api_addr": body.api_addr }),
+        )
+        .await;
+
+    let peers: Vec<crate::state::cluster::ClusterPeerInfo> =
+        state.cluster_peers.read().await.values().cloned().collect();
+    Ok(wrap(peers))
+}
+
+/// 把加节点请求转发到 leader 的内部端点。
+async fn forward_add_member_to_leader(
+    leader_addr: &str,
+    peer: &crate::state::cluster::ClusterPeerInfo,
+) -> Result<(), AppError> {
+    let url = format!("{leader_addr}/api/v1/internal/cluster/membership/add");
+    let token = AppState::internal_control_token();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|err| AppError::internal(format!("构建转发 client 失败: {err}")))?;
+    let resp = client
+        .post(&url)
+        .header("x-rustio-internal-token", &token)
+        .json(peer)
+        .send()
+        .await
+        .map_err(|err| AppError::internal(format!("转发加节点到 leader 失败: {err}")))?;
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        Err(AppError::internal(format!(
+            "leader 加节点返回 HTTP {}",
+            resp.status()
+        )))
+    }
+}

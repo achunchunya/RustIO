@@ -35,6 +35,9 @@ pub(crate) enum MetadataCommand {
     /// admin_sessions/sts_sessions)。18 种 IAM 变更经 commit_iam_runtime_change 统一提交。
     /// apply:整体替换 7 字段 + 落盘 admin_sessions。
     SetIamRuntime(Box<IamRuntimeSnapshot>),
+    /// 插入/更新单个集群节点拓扑(动态成员变更加节点时复制到各节点)。
+    /// apply:insert 到 `cluster_peers`,使全集群拓扑一致、EC 放置纳入新节点。
+    UpsertClusterPeer(Box<crate::state::cluster::ClusterPeerInfo>),
 }
 
 /// 命令 apply 结果(经 openraft `client_write` 返回给调用方)。
@@ -154,6 +157,10 @@ impl MetadataCommand {
                 {
                     tracing::warn!("持久化控制台会话失败: {err}");
                 }
+            }
+            MetadataCommand::UpsertClusterPeer(peer) => {
+                let peer = peer.as_ref().clone();
+                app.cluster_peers.write().await.insert(peer.node_id, peer);
             }
         }
     }

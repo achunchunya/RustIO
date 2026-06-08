@@ -548,6 +548,72 @@ pub(crate) async fn raft_metadata_write(
     }
 }
 
+/// 加节点请求(管理员端点或新节点自动 join 转发来):若本节点非 leader 则转发到 leader,
+/// leader 执行 add_learner+change_membership。
+pub(crate) async fn raft_membership_add(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(peer): Json<crate::state::cluster::ClusterPeerInfo>,
+) -> Response {
+    if let Err(response) = ensure_internal_token(&headers) {
+        return response;
+    }
+    // 非 leader:转发到 leader(seed 节点收到新节点 join 时可能不是 leader)。
+    if !state.is_metadata_leader() {
+        let Some(leader_addr) = state.metadata_leader_addr() else {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "no known leader"})),
+            )
+                .into_response();
+        };
+        let token = AppState::internal_control_token();
+        let url = format!("{leader_addr}/api/v1/internal/cluster/membership/add");
+        let client = match reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+        {
+            Ok(c) => c,
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": format!("build client: {err}")})),
+                )
+                    .into_response()
+            }
+        };
+        return match client
+            .post(&url)
+            .header("x-rustio-internal-token", &token)
+            .json(&peer)
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                (StatusCode::OK, Json(json!({"ok": true}))).into_response()
+            }
+            Ok(resp) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": format!("leader add member HTTP {}", resp.status())})),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": format!("forward to leader: {err}")})),
+            )
+                .into_response(),
+        };
+    }
+    match state.raft_add_member(peer).await {
+        Ok(()) => (StatusCode::OK, Json(json!({"ok": true}))).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("add member: {err}")})),
+        )
+            .into_response(),
+    }
+}
+
 // ── 跨节点 EC 分片 RPC 端点 ──
 
 /// 校验对象哈希为 64 位十六进制(SHA-256),防止路径穿越。

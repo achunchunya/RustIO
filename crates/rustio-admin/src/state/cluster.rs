@@ -4,12 +4,12 @@
 //! 集群模式(local_node_id > 0):解析 RUSTIO_CLUSTER_NODE_ID / RUSTIO_CLUSTER_NODE_ADDR /
 //! RUSTIO_CLUSTER_SEEDS,构建 ClusterPeerInfo 映射。
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// 单个节点的集群信息。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ClusterPeerInfo {
     pub node_id: u64,
     pub node_name: String,
@@ -20,7 +20,7 @@ pub struct ClusterPeerInfo {
 }
 
 /// 节点的单个本地磁盘（全局唯一 ID + 本地路径）。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ClusterDiskInfo {
     pub global_id: String,
     pub local_index: usize,

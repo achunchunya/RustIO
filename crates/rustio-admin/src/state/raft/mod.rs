@@ -148,6 +148,68 @@ impl AppState {
         Err(format!("metadata raft 写转发 leader 失败: {last_err}"))
     }
 
+    /// 动态成员变更:把新节点加入 raft 集群(本节点须是 leader)。
+    ///
+    /// 流程:add_learner(追日志) → change_membership(提升为 voter) → UpsertClusterPeer(复制拓扑)。
+    /// 加节点是 leader-only 操作;非 leader 调用返回错误(调用方负责判 leader 或转发)。
+    pub(crate) async fn raft_add_member(
+        &self,
+        peer: crate::state::cluster::ClusterPeerInfo,
+    ) -> Result<(), String> {
+        let Some(raft) = self.meta_raft.get() else {
+            return Err("metadata raft 未初始化(单机模式不支持动态成员)".to_string());
+        };
+        let node_id = peer.node_id;
+        let node = openraft::BasicNode::new(peer.api_addr.clone());
+
+        // 1) add_learner:新节点作为 learner 加入并追平日志(blocking=true 等待追上)。
+        raft.add_learner(node_id, node, true)
+            .await
+            .map_err(|err| format!("add_learner({node_id}) 失败: {err:?}"))?;
+
+        // 2) change_membership:把现有 voter 集 + 新节点一起作为新 voter 集提交(retain 保留)。
+        let mut voters: std::collections::BTreeSet<u64> = {
+            let metrics = raft.metrics();
+            let m = metrics.borrow();
+            m.membership_config.voter_ids().collect()
+        };
+        voters.insert(node_id);
+        raft.change_membership(voters, true)
+            .await
+            .map_err(|err| format!("change_membership(add {node_id}) 失败: {err:?}"))?;
+
+        // 3) 把新节点拓扑经 raft 复制到各节点 cluster_peers(全集群一致,EC 放置纳入新节点)。
+        self.submit_metadata_command(MetadataCommand::UpsertClusterPeer(Box::new(peer)))
+            .await?;
+        Ok(())
+    }
+
+    /// 本节点是否为 metadata raft 的 leader。
+    pub(crate) fn is_metadata_leader(&self) -> bool {
+        if let Some(raft) = self.meta_raft.get() {
+            let metrics = raft.metrics();
+            let m = metrics.borrow();
+            m.current_leader == Some(self.local_node_id)
+        } else {
+            false
+        }
+    }
+
+    /// 返回当前 leader 的 api_addr(若已知),用于把 leader-only 操作转发到 leader。
+    pub(crate) fn metadata_leader_addr(&self) -> Option<String> {
+        let raft = self.meta_raft.get()?;
+        let metrics = raft.metrics();
+        let m = metrics.borrow();
+        let leader_id = m.current_leader?;
+        let addr = m
+            .membership_config
+            .nodes()
+            .find(|(id, _)| **id == leader_id)
+            .map(|(_, node)| node.addr.clone());
+        drop(m);
+        addr.filter(|addr| !addr.is_empty())
+    }
+
     /// 启动元数据 raft(集群检测:有已知 peer 则多节点初始化)。
     /// async 上下文(server 启动)调用一次,幂等。
     pub async fn init_metadata_raft(self: &Arc<Self>, node_id: u64) -> Result<(), String> {
@@ -175,22 +237,34 @@ impl AppState {
         drop(cluster_peers);
 
         // 构建初始成员集与 bootstrap 决策。
-        // 集群模式:初始 voter = {自身} ∪ 全部已知 peer;仅最小 node_id 节点执行 initialize,
-        // 其余等待被 leader 纳入(membership 经 log 复制)。单机模式:单 voter = node_id。
+        // 「初始成员」判据 = 本节点在配置的 seed_peers 中(env RUSTIO_CLUSTER_SEEDS 含自己)。
+        //   - 初始成员:进入初始 voter 集;仅最小 node_id 执行 initialize,其余等待复制 membership。
+        //   - 新节点(seed 不含自己):不进初始 voter 集、不 initialize,启动后自动 join 被 leader 纳入。
+        // 注意:不能用 cluster_peers 判断,因 bootstrap 会把自己填入 cluster_peers。
         let is_cluster = self.local_node_id > 0;
+        let is_seed_member = !is_cluster || config.seed_peers.contains_key(&self.local_node_id);
         let mut members: BTreeMap<u64, BasicNode> = BTreeMap::new();
         if is_cluster {
+            // 初始 voter 集 = 全部 seed 成员(含自己当且仅当自己是 seed)。
             for (&id, addr) in &peer_api_addrs {
-                members.insert(id, BasicNode::new(addr.clone()));
+                if config.seed_peers.contains_key(&id) || id == self.local_node_id && is_seed_member
+                {
+                    members.insert(id, BasicNode::new(addr.clone()));
+                }
             }
-            members
-                .entry(self.local_node_id)
-                .or_insert_with(|| BasicNode::new(config.local_api_addr.clone()));
+            // 兜底:若自己是 seed 但因某种原因未在 peer_api_addrs,补进。
+            if is_seed_member {
+                members
+                    .entry(self.local_node_id)
+                    .or_insert_with(|| BasicNode::new(config.local_api_addr.clone()));
+            }
         } else {
             members.insert(node_id, BasicNode::new(String::new()));
         }
-        let min_voter = members.keys().next().copied().unwrap_or(node_id);
-        let should_initialize = !is_cluster || node_id == min_voter;
+        // 新节点(非 seed 成员)初始 members 为空集——它不 initialize,纯等待被纳入。
+        let min_voter = members.keys().next().copied();
+        let should_initialize =
+            !is_cluster || (is_seed_member && Some(node_id) == min_voter);
 
         let internal_token = AppState::internal_control_token();
         let raft = start_raft(
@@ -205,7 +279,84 @@ impl AppState {
         .await?;
         let _ = self.meta_raft_app.set(Arc::downgrade(self));
         let _ = self.meta_raft.set(raft);
+
+        // 新节点自动 join:集群模式下,本节点不是 seed 成员(env SEEDS 不含自己)→ 是后加入的新节点,
+        // 向某个 seed 发 join 请求,由 seed(或转发到 leader)纳入。
+        if is_cluster && !is_seed_member {
+            let seeds: Vec<String> = config.seed_peers.values().cloned().collect();
+            tracing::info!(node_id = self.local_node_id, seed_count = seeds.len(), "新节点启动,发起自动 join");
+            self.spawn_auto_join(config.local_api_addr.clone(), config.local_node_name.clone(), seeds);
+        }
         Ok(())
+    }
+
+    /// 后台尝试向 seed 节点发起 join(新节点自动加入)。非阻塞:启动不因 join 失败而失败,
+    /// leader 暂不可达时重试若干次。
+    fn spawn_auto_join(
+        self: &Arc<Self>,
+        local_api_addr: String,
+        local_node_name: String,
+        seeds: Vec<String>,
+    ) {
+        if seeds.is_empty() {
+            return;
+        }
+        let state = Arc::clone(self);
+        tokio::spawn(async move {
+            // 构造本节点拓扑(含真实磁盘列表,去同构假设)。
+            let disks: Vec<crate::state::cluster::ClusterDiskInfo> = {
+                let peers = state.cluster_peers.read().await;
+                peers
+                    .get(&state.local_node_id)
+                    .map(|info| info.disks.clone())
+                    .unwrap_or_default()
+            };
+            let peer = crate::state::cluster::ClusterPeerInfo {
+                node_id: state.local_node_id,
+                node_name: local_node_name,
+                api_addr: local_api_addr,
+                zone: "default".to_string(),
+                disks,
+            };
+            let token = AppState::internal_control_token();
+            let client = match reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(15))
+                .build()
+            {
+                Ok(c) => c,
+                Err(err) => {
+                    tracing::warn!("自动 join 构建 client 失败: {err}");
+                    return;
+                }
+            };
+            // 给集群一点选主时间,然后重试向各 seed 发 join(seed 非 leader 会自身转发到 leader)。
+            for attempt in 0..10u32 {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                for seed in &seeds {
+                    let url = format!("{seed}/api/v1/internal/cluster/membership/add");
+                    match client
+                        .post(&url)
+                        .header("x-rustio-internal-token", &token)
+                        .json(&peer)
+                        .send()
+                        .await
+                    {
+                        Ok(resp) if resp.status().is_success() => {
+                            tracing::info!(node_id = state.local_node_id, seed = %seed, "新节点自动 join 成功");
+                            return;
+                        }
+                        Ok(resp) => {
+                            tracing::debug!(seed = %seed, status = %resp.status(), "自动 join 暂未成功(可能 seed 非 leader/选主中)");
+                        }
+                        Err(err) => {
+                            tracing::debug!(seed = %seed, error = %err, "自动 join 请求失败,重试");
+                        }
+                    }
+                }
+                let _ = attempt;
+            }
+            tracing::warn!(node_id = state.local_node_id, "新节点自动 join 多次重试仍失败,请检查 seed/网络或改用管理员显式加节点");
+        });
     }
 }
 
