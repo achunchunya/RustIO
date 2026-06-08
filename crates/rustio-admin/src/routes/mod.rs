@@ -1081,27 +1081,6 @@ struct StorageDiskAggregate {
     shard_corrupted: usize,
 }
 
-fn derived_ec_shard_path(
-    state: &AppState,
-    bucket: &str,
-    key: &str,
-    shard_index: usize,
-) -> Option<(usize, PathBuf)> {
-    if state.data_disks.is_empty() {
-        return None;
-    }
-    let disk_index = shard_index % state.data_disks.len();
-    let object_hash = sha256_hex(key.as_bytes());
-    Some((
-        disk_index,
-        state.data_disks[disk_index]
-            .join(bucket)
-            .join(".rustio_ec")
-            .join(object_hash)
-            .join(format!("{shard_index}.bin")),
-    ))
-}
-
 async fn summarize_ec_shard_file(
     path: &FsPath,
     expected_size: usize,
@@ -1193,18 +1172,21 @@ async fn build_system_storage_metrics(
                 .map(|item| (item.shard_index, item))
                 .collect::<HashMap<_, _>>();
             for shard_index in 0..total_shards {
-                let shard = shard_map.get(&shard_index).cloned().or_else(|| {
-                    derived_ec_shard_path(state, &bucket, &manifest.key, shard_index).map(
-                        |(disk_index, shard_path)| EcShardInfo {
+                let shard = match shard_map.get(&shard_index).cloned() {
+                    Some(shard) => Some(shard),
+                    None => {
+                        let object_hash = sha256_hex(manifest.key.as_bytes());
+                        crate::routes::storage::derive_shard_info_for_index(
+                            state,
+                            &manifest.key,
+                            &object_hash,
+                            &bucket,
                             shard_index,
-                            disk_index,
-                            path: shard_path,
-                            checksum: String::new(),
-                            node_id: None,
-                            node_addr: None,
-                        },
-                    )
-                });
+                            total_shards,
+                        )
+                        .await
+                    }
+                };
                 let Some(shard) = shard else {
                     continue;
                 };

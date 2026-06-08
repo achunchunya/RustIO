@@ -139,18 +139,20 @@ pub(crate) async fn inspect_storage_manifest(
     let mut affected_disks = HashSet::new();
     let object_hash = sha256_hex(manifest.key.as_bytes());
     for shard_index in 0..total_shards {
-        let shard = shard_map.get(&shard_index).cloned().or_else(|| {
-            derived_ec_shard_path(state, bucket, &manifest.key, shard_index).map(
-                |(disk_index, shard_path)| EcShardInfo {
+        let shard = match shard_map.get(&shard_index).cloned() {
+            Some(shard) => Some(shard),
+            None => {
+                derive_shard_info_for_index(
+                    state,
+                    &manifest.key,
+                    &object_hash,
+                    bucket,
                     shard_index,
-                    disk_index,
-                    path: shard_path,
-                    checksum: String::new(),
-                    node_id: None,
-                    node_addr: None,
-                },
-            )
-        });
+                    total_shards,
+                )
+                .await
+            }
+        };
         let Some(shard) = shard else {
             missing_shards += 1;
             continue;
@@ -547,6 +549,46 @@ pub(crate) async fn resolve_shard_placements(
         }
     }
     Ok(placements)
+}
+
+/// 推导某个 shard_index 在集群中的归属信息(节点、远程标记、本地落盘路径)。
+///
+/// 用于 manifest 中缺失该分片条目时(写入失败未记录、旧版 manifest 等)的派生:
+/// 复用与写入一致的 `resolve_shard_placements`,避免回退到「本地盘 + shard_index % data_disks.len()」
+/// 这种与真实放置算法脱节的推导(集群模式下会把远程分片误判为本地空路径)。
+pub(crate) async fn derive_shard_info_for_index(
+    state: &AppState,
+    key: &str,
+    object_hash: &str,
+    bucket: &str,
+    shard_index: usize,
+    total_shards: usize,
+) -> Option<EcShardInfo> {
+    let placements = resolve_shard_placements(state, key, total_shards).await.ok()?;
+    let place = placements.get(shard_index)?;
+    let is_remote = place.node_id != 0 && place.node_id != state.local_node_id;
+    let path = if is_remote {
+        PathBuf::new()
+    } else {
+        place
+            .local_disk_path
+            .join(bucket)
+            .join(".rustio_ec")
+            .join(object_hash)
+            .join(format!("{shard_index}.bin"))
+    };
+    Some(EcShardInfo {
+        shard_index,
+        disk_index: place.local_disk_index,
+        path,
+        checksum: String::new(),
+        node_id: if is_remote { Some(place.node_id) } else { None },
+        node_addr: if is_remote {
+            Some(place.node_addr.clone())
+        } else {
+            None
+        },
+    })
 }
 
 pub(crate) fn manifest_disk_index_for_shard(

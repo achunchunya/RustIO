@@ -260,6 +260,7 @@ pub(crate) async fn write_ec_object(
         let disk_index = place.local_disk_index;
         let is_remote = place.node_id != 0 && place.node_id != state.local_node_id;
         let mut checksum = String::new();
+        let mut write_ok = false;
         let shard_path;
         if is_remote {
             // 远程分片:RPC 发到目标节点落盘;manifest 仅记录节点信息,本地 path 留空。
@@ -276,6 +277,7 @@ pub(crate) async fn write_ec_object(
                 Ok(remote_checksum) => {
                     checksum = remote_checksum;
                     successful_shards += 1;
+                    write_ok = true;
                 }
                 Err(message) => {
                     tracing::warn!(
@@ -306,21 +308,26 @@ pub(crate) async fn write_ec_object(
             if !write_failed && atomic_write(&path, &shards[shard_index]).await.is_ok() {
                 checksum = sha256_hex(&shards[shard_index]);
                 successful_shards += 1;
+                write_ok = true;
             }
             shard_path = path;
         }
-        shard_infos.push(EcShardInfo {
-            shard_index,
-            disk_index,
-            path: shard_path,
-            checksum,
-            node_id: if is_remote { Some(place.node_id) } else { None },
-            node_addr: if is_remote {
-                Some(place.node_addr.clone())
-            } else {
-                None
-            },
-        });
+        // 写失败的分片不写入 manifest:读/治理路径会按真实放置算法派生该缺失分片(含远程归属)
+        // 并触发重建,避免空 checksum 分片造成读路径(判坏)与治理(判健康)判定不一致。
+        if write_ok {
+            shard_infos.push(EcShardInfo {
+                shard_index,
+                disk_index,
+                path: shard_path,
+                checksum,
+                node_id: if is_remote { Some(place.node_id) } else { None },
+                node_addr: if is_remote {
+                    Some(place.node_addr.clone())
+                } else {
+                    None
+                },
+            });
+        }
     }
     if successful_shards < data_shards {
         let cleanup_failed = cleanup_ec_written_shards(&shard_infos, bucket, &object_hash).await;
@@ -601,7 +608,7 @@ pub(crate) async fn write_ec_object_streaming(
                         "远程分片流式写入失败 / remote shard streaming write failed"
                     );
                     ok = false;
-                    successful -= 1;
+                    successful = successful.saturating_sub(1);
                     checksum = String::new();
                 }
             }
@@ -609,18 +616,22 @@ pub(crate) async fn write_ec_object_streaming(
         if !ok {
             let _ = tokio::fs::remove_file(&path).await;
         }
-        shard_infos.push(EcShardInfo {
-            shard_index,
-            disk_index,
-            path: manifest_path,
-            checksum,
-            node_id: if is_remote { Some(place.node_id) } else { None },
-            node_addr: if is_remote {
-                Some(place.node_addr.clone())
-            } else {
-                None
-            },
-        });
+        // 仅成功写入的分片进入 manifest;失败分片由读/治理按真实放置派生并触发重建,
+        // 保持与非流式写路径一致,避免空 checksum 分片造成判定分歧。
+        if ok {
+            shard_infos.push(EcShardInfo {
+                shard_index,
+                disk_index,
+                path: manifest_path,
+                checksum,
+                node_id: if is_remote { Some(place.node_id) } else { None },
+                node_addr: if is_remote {
+                    Some(place.node_addr.clone())
+                } else {
+                    None
+                },
+            });
+        }
     }
 
     if successful < data_shards {
@@ -777,21 +788,19 @@ pub(crate) async fn read_ec_object(
             if existing.contains(&shard_index) {
                 continue;
             }
-            let disk_index = manifest_disk_index_for_shard(&manifest, shard_index)
-                .unwrap_or(shard_index % state.data_disks.len().max(1));
-            let shard_path = state.data_disks[disk_index]
-                .join(bucket)
-                .join(".rustio_ec")
-                .join(&object_hash)
-                .join(format!("{shard_index}.bin"));
-            manifest.shards.push(EcShardInfo {
+            // 复用真实放置算法推断缺失分片归属(可能是远程节点),避免误判为本地空路径。
+            if let Some(info) = derive_shard_info_for_index(
+                state,
+                key,
+                &object_hash,
+                bucket,
                 shard_index,
-                disk_index,
-                path: shard_path,
-                checksum: String::new(),
-                node_id: None,
-                node_addr: None,
-            });
+                total_shards,
+            )
+            .await
+            {
+                manifest.shards.push(info);
+            }
         }
     }
     let reed_solomon =
