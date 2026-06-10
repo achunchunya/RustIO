@@ -696,6 +696,127 @@ pub(crate) async fn internal_ec_shard_put(
     (StatusCode::OK, Json(json!({ "checksum": checksum }))).into_response()
 }
 
+/// 解析并校验 manifest RPC 路径参数,返回本节点 manifest 副本落盘路径。
+fn ec_manifest_replica_path(
+    state: &AppState,
+    bucket: &str,
+    object_hash: &str,
+) -> Result<PathBuf, Response> {
+    if !valid_bucket_name(bucket) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": bilingual_text("存储桶名称无效", "invalid bucket name") })),
+        )
+            .into_response());
+    }
+    if !valid_ec_object_hash(object_hash) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": bilingual_text("对象哈希无效", "invalid object hash") })),
+        )
+            .into_response());
+    }
+    // manifest 副本落本节点 data_dir/bucket/.rustio_ec_meta/<hash>.json(与 ec_manifest_path 同布局)。
+    Ok(state
+        .data_dir
+        .join(bucket)
+        .join(".rustio_ec_meta")
+        .join(format!("{object_hash}.json")))
+}
+
+/// 接收远程节点发来的 manifest 副本并落本地。
+pub(crate) async fn internal_ec_manifest_put(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((bucket, object_hash)): Path<(String, String)>,
+    body: Bytes,
+) -> Response {
+    if let Err(response) = ensure_internal_token(&headers) {
+        return response;
+    }
+    let path = match ec_manifest_replica_path(&state, &bucket, &object_hash) {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
+    if let Some(parent) = path.parent() {
+        if let Err(err) = tokio::fs::create_dir_all(parent).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": bilingual_text("创建清单目录失败", &format!("failed to create manifest dir: {err}")) })),
+            )
+                .into_response();
+        }
+    }
+    if let Err(err) = atomic_write(&path, &body).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": bilingual_text("写入清单失败", &format!("failed to write manifest: {err}")) })),
+        )
+            .into_response();
+    }
+    (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
+}
+
+/// 向远程请求方返回本地 manifest 副本字节(不存在返回 404)。
+pub(crate) async fn internal_ec_manifest_get(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((bucket, object_hash)): Path<(String, String)>,
+) -> Response {
+    if let Err(response) = ensure_internal_token(&headers) {
+        return response;
+    }
+    let path = match ec_manifest_replica_path(&state, &bucket, &object_hash) {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => (StatusCode::OK, bytes).into_response(),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": bilingual_text("清单不存在", "manifest not found") })),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": bilingual_text("读取清单失败", &format!("failed to read manifest: {err}")) })),
+        )
+            .into_response(),
+    }
+}
+
+/// 返回本地 manifest 副本的存在性 + updated_at(治理 healing 探测用,不存在返 200 exists:false)。
+pub(crate) async fn internal_ec_manifest_stat(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((bucket, object_hash)): Path<(String, String)>,
+) -> Response {
+    if let Err(response) = ensure_internal_token(&headers) {
+        return response;
+    }
+    let path = match ec_manifest_replica_path(&state, &bucket, &object_hash) {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => {
+            let updated_at = serde_json::from_slice::<serde_json::Value>(&bytes)
+                .ok()
+                .and_then(|v| v.get("updated_at").and_then(|u| u.as_str().map(str::to_string)))
+                .unwrap_or_default();
+            (StatusCode::OK, Json(json!({ "exists": true, "updated_at": updated_at }))).into_response()
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            (StatusCode::OK, Json(json!({ "exists": false }))).into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": bilingual_text("探测清单失败", &format!("failed to stat manifest: {err}")) })),
+        )
+            .into_response(),
+    }
+}
+
 /// 向远程请求方返回本地 EC 分片原始字节。
 pub(crate) async fn internal_ec_shard_get(
     State(state): State<Arc<AppState>>,

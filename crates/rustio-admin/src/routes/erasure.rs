@@ -19,6 +19,199 @@ pub(crate) fn shard_is_remote(shard: &EcShardInfo, local_node_id: u64) -> bool {
     matches!(shard.node_id, Some(id) if id != 0 && id != local_node_id)
 }
 
+/// 拼接远程 manifest 端点 URL。
+fn remote_manifest_url(node_addr: &str, bucket: &str, object_hash: &str) -> String {
+    format!("{node_addr}/api/v1/internal/ec/manifest/{bucket}/{object_hash}")
+}
+
+/// 将 manifest 字节 PUT 到远程节点副本。
+async fn put_remote_manifest(
+    node_addr: &str,
+    bucket: &str,
+    object_hash: &str,
+    bytes: Vec<u8>,
+) -> Result<(), String> {
+    let url = remote_manifest_url(node_addr, bucket, object_hash);
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|err| err.to_string())?;
+    let resp = client
+        .put(&url)
+        .header("x-rustio-internal-token", AppState::internal_control_token())
+        .body(bytes)
+        .send()
+        .await
+        .map_err(|err| format!("remote manifest put to {node_addr} failed: {err}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("remote manifest put status {} from {node_addr}", resp.status()));
+    }
+    Ok(())
+}
+
+/// 从远程节点 GET manifest 原始字节(不存在返回 Ok(None))。
+async fn get_remote_manifest(
+    node_addr: &str,
+    bucket: &str,
+    object_hash: &str,
+) -> Result<Option<Vec<u8>>, String> {
+    let url = remote_manifest_url(node_addr, bucket, object_hash);
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|err| err.to_string())?;
+    let resp = client
+        .get(&url)
+        .header("x-rustio-internal-token", AppState::internal_control_token())
+        .send()
+        .await
+        .map_err(|err| format!("remote manifest get from {node_addr} failed: {err}"))?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !resp.status().is_success() {
+        return Err(format!("remote manifest get status {} from {node_addr}", resp.status()));
+    }
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|err| format!("remote manifest get read body from {node_addr}: {err}"))?;
+    Ok(Some(bytes.to_vec()))
+}
+
+/// manifest 副本目标节点:(node_id, node_addr)。node_id=0 表示本地。
+struct ManifestReplica {
+    node_id: u64,
+    node_addr: String,
+}
+
+/// 选 manifest 副本节点(对齐 MinIO 元数据多副本):
+/// 单机(local_node_id=0)→ 仅本地一份;集群 → 取 manifest 各分片所属节点去重,
+/// 取前 `parity_shards + 1` 个不同节点(与数据容错等级一致),保证本节点在内(读写本地快路径)。
+fn manifest_replica_nodes(state: &AppState, manifest: &EcObjectManifest) -> Vec<ManifestReplica> {
+    if state.local_node_id == 0 {
+        return vec![ManifestReplica { node_id: 0, node_addr: String::new() }];
+    }
+    let want = manifest.parity_shards + 1;
+    let mut replicas: Vec<ManifestReplica> = Vec::new();
+    let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    // 本节点优先作为一份副本(本地读写快路径)。
+    replicas.push(ManifestReplica { node_id: state.local_node_id, node_addr: String::new() });
+    seen.insert(state.local_node_id);
+    // 其余副本取分片所属的不同节点(确定性顺序:按 shard_index)。
+    let mut shards: Vec<&EcShardInfo> = manifest.shards.iter().collect();
+    shards.sort_by_key(|s| s.shard_index);
+    for shard in shards {
+        if replicas.len() >= want {
+            break;
+        }
+        if let (Some(node_id), Some(addr)) = (shard.node_id, shard.node_addr.as_ref()) {
+            if node_id != 0 && !addr.is_empty() && seen.insert(node_id) {
+                replicas.push(ManifestReplica { node_id, node_addr: addr.clone() });
+            }
+        }
+    }
+    replicas
+}
+
+/// quorum 写 manifest 到多副本节点。floor(N/2)+1 成功才算成功。
+/// 单机退化为本地单写。`local_manifest_path` 是本节点 manifest 落盘路径。
+async fn write_manifest_quorum(
+    state: &AppState,
+    bucket: &str,
+    object_hash: &str,
+    local_manifest_path: &FsPath,
+    manifest: &EcObjectManifest,
+) -> Result<(), String> {
+    let bytes = serde_json::to_vec_pretty(manifest).map_err(|err| err.to_string())?;
+    let replicas = manifest_replica_nodes(state, manifest);
+    let quorum = replicas.len() / 2 + 1;
+    let mut ok = 0usize;
+    for replica in &replicas {
+        let result = if replica.node_id == 0 || replica.node_id == state.local_node_id {
+            // 本地副本
+            if let Some(parent) = local_manifest_path.parent() {
+                let _ = tokio::fs::create_dir_all(parent).await;
+            }
+            atomic_write(local_manifest_path, &bytes).await.map_err(|e| e.to_string())
+        } else {
+            put_remote_manifest(&replica.node_addr, bucket, object_hash, bytes.clone()).await
+        };
+        match result {
+            Ok(()) => ok += 1,
+            Err(message) => tracing::warn!(node = replica.node_id, error = %message, "manifest 副本写入失败"),
+        }
+    }
+    if ok >= quorum {
+        Ok(())
+    } else {
+        Err(format!("manifest 写未达 quorum({ok}/{quorum},共 {} 副本)", replicas.len()))
+    }
+}
+
+/// 读 manifest:本地副本优先(快路径,零远程开销);本地缺失/损坏时并发查集群其他节点的副本,
+/// 取 `updated_at` 最新者,并 inline healing 回写本地一份(下次本地命中)。
+/// 这解决了 manifest 单副本单点:本节点没有该对象 manifest 时仍能从其他副本读到。
+/// 返回 Ok(None) 表示所有已知副本都无该对象 manifest。
+async fn read_manifest_quorum(
+    state: &AppState,
+    bucket_root: &FsPath,
+    bucket: &str,
+    key: &str,
+) -> Option<EcObjectManifest> {
+    let local_path = ec_manifest_path(bucket_root, key);
+    // 快路径:本地副本命中。
+    if let Ok(bytes) = tokio::fs::read(&local_path).await {
+        if let Ok(manifest) = serde_json::from_slice::<EcObjectManifest>(&bytes) {
+            return Some(manifest);
+        }
+    }
+    // 单机无远程副本可查。
+    if state.local_node_id == 0 {
+        return None;
+    }
+    // 本地缺失/损坏:并发查集群其他节点副本,取 updated_at 最新者。
+    let object_hash = sha256_hex(key.as_bytes());
+    let peers: Vec<(u64, String)> = {
+        let guard = state.cluster_peers.read().await;
+        guard
+            .values()
+            .filter(|p| p.node_id != state.local_node_id && !p.api_addr.is_empty())
+            .map(|p| (p.node_id, p.api_addr.clone()))
+            .collect()
+    };
+    let mut best: Option<EcObjectManifest> = None;
+    for (node_id, addr) in peers {
+        match get_remote_manifest(&addr, bucket, &object_hash).await {
+            Ok(Some(bytes)) => {
+                if let Ok(manifest) = serde_json::from_slice::<EcObjectManifest>(&bytes) {
+                    let newer = best
+                        .as_ref()
+                        .map(|b| manifest.updated_at > b.updated_at)
+                        .unwrap_or(true);
+                    if newer {
+                        best = Some(manifest);
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(message) => {
+                tracing::debug!(node = node_id, error = %message, "读取远程 manifest 副本失败")
+            }
+        }
+    }
+    // inline healing:把从远程取到的最新 manifest 回写本地副本。
+    if let Some(manifest) = &best {
+        if let Ok(bytes) = serde_json::to_vec_pretty(manifest) {
+            if let Some(parent) = local_path.parent() {
+                let _ = tokio::fs::create_dir_all(parent).await;
+            }
+            let _ = atomic_write(&local_path, &bytes).await;
+        }
+    }
+    best
+}
+
 /// 将分片字节 PUT 到远程节点,返回远程计算的校验和。
 async fn put_remote_shard(
     node_addr: &str,
@@ -359,34 +552,16 @@ pub(crate) async fn write_ec_object(
         updated_at: Utc::now(),
     };
     let manifest_path = ec_manifest_path(&bucket_root, key);
-    if let Some(parent) = manifest_path.parent() {
-        if let Err(err) = tokio::fs::create_dir_all(parent).await {
-            let cleanup_failed = cleanup_ec_written_shards(&shard_infos, bucket, &object_hash).await;
-            return Err(s3_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "InternalError",
-                &format!(
-                    "创建纠删码清单目录失败，已回滚已写分片：{err}，清理失败 {cleanup_failed} 个 / failed to create erasure manifest directory; written shards rolled back: {err}; cleanup failed for {cleanup_failed} shard(s)"
-                ),
-                key,
-            ));
-        }
-    }
-    let bytes = serde_json::to_vec_pretty(&manifest).map_err(|err| {
-        s3_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "InternalError",
-            &format!("Failed to encode erasure manifest: {err}"),
-            key,
-        )
-    })?;
-    if let Err(err) = atomic_write(&manifest_path, &bytes).await {
+    // manifest 多副本 quorum 写(对齐 MinIO 元数据多副本);单机退化本地单写。
+    if let Err(message) =
+        write_manifest_quorum(state, bucket, &object_hash, &manifest_path, &manifest).await
+    {
         let cleanup_failed = cleanup_ec_written_shards(&shard_infos, bucket, &object_hash).await;
         return Err(s3_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "InternalError",
             &format!(
-                "写入纠删码清单失败，已回滚已写分片：{err}，清理失败 {cleanup_failed} 个 / failed to persist erasure manifest; written shards rolled back: {err}; cleanup failed for {cleanup_failed} shard(s)"
+                "写入纠删码清单未达 quorum,已回滚已写分片:{message},清理失败 {cleanup_failed} 个 / erasure manifest quorum write failed: {message}; written shards rolled back; cleanup failed for {cleanup_failed} shard(s)"
             ),
             key,
         ));
@@ -666,34 +841,16 @@ pub(crate) async fn write_ec_object_streaming(
         updated_at: Utc::now(),
     };
     let manifest_path = ec_manifest_path(&bucket_root, key);
-    if let Some(parent) = manifest_path.parent() {
-        if let Err(err) = tokio::fs::create_dir_all(parent).await {
-            cleanup_streaming_shards(&shard_paths).await;
-            return Err(s3_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "InternalError",
-                &format!(
-                    "创建纠删码清单目录失败，已回滚已写分片：{err} / failed to create erasure manifest directory; written shards rolled back: {err}"
-                ),
-                key,
-            ));
-        }
-    }
-    let bytes = serde_json::to_vec_pretty(&manifest).map_err(|err| {
-        s3_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "InternalError",
-            &format!("Failed to encode erasure manifest: {err}"),
-            key,
-        )
-    })?;
-    if let Err(err) = atomic_write(&manifest_path, &bytes).await {
+    // manifest 多副本 quorum 写;单机退化本地单写。
+    if let Err(message) =
+        write_manifest_quorum(state, bucket, &object_hash, &manifest_path, &manifest).await
+    {
         cleanup_streaming_shards(&shard_paths).await;
         return Err(s3_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "InternalError",
             &format!(
-                "写入纠删码清单失败，已回滚已写分片：{err} / failed to persist erasure manifest; written shards rolled back: {err}"
+                "写入纠删码清单未达 quorum,已回滚已写分片:{message} / erasure manifest quorum write failed: {message}; written shards rolled back"
             ),
             key,
         ));
@@ -726,51 +883,10 @@ pub(crate) async fn read_ec_object(
     customer_key: Option<&[u8; 32]>,
 ) -> Result<Option<Vec<u8>>, Response> {
     let bucket_root = bucket_path(state, bucket)?;
-    let manifest_path = ec_manifest_path(&bucket_root, key);
-    let manifest_bytes = match tokio::fs::read(&manifest_path).await {
-        Ok(bytes) => bytes,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => {
-            return Err(s3_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "InternalError",
-                &format!("Failed to read erasure manifest: {err}"),
-                key,
-            ));
-        }
-    };
-    let mut manifest = match serde_json::from_slice::<EcObjectManifest>(&manifest_bytes) {
-        Ok(manifest) => manifest,
-        Err(err) => {
-            let _ = upsert_storage_job(
-                state,
-                StorageJobDraft {
-                    kind: "scrub".to_string(),
-                    target: format!("{bucket}/{key}"),
-                    bucket: Some(bucket.to_string()),
-                    key: Some(key.to_string()),
-                    version_id: meta.map(|item| item.version_id.clone()),
-                    priority: Some(900),
-                    affected_disks: vec![],
-                    missing_shards: 0,
-                    corrupted_shards: 0,
-                    source: "read_failure".to_string(),
-                    details: json!({
-                        "bucket": bucket,
-                        "key": key,
-                        "error": err.to_string(),
-                    }),
-                },
-                "pending",
-            )
-            .await;
-            return Err(s3_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "InternalError",
-                &format!("Failed to decode erasure manifest: {err}"),
-                key,
-            ));
-        }
+    // manifest 多副本读:本地优先,本地缺失则从集群其他副本取最新并 inline 回写本地。
+    let mut manifest = match read_manifest_quorum(state, &bucket_root, bucket, key).await {
+        Some(manifest) => manifest,
+        None => return Ok(None),
     };
     if manifest.data_shards == 0 {
         return Ok(None);
@@ -1031,24 +1147,14 @@ pub(crate) async fn read_ec_object(
                 })?;
             shard_info.checksum = sha256_hex(recovered);
         }
-        let updated_manifest = serde_json::to_vec_pretty(&manifest).map_err(|err| {
-            s3_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "InternalError",
-                &format!("Failed to encode recovered manifest: {err}"),
-                key,
-            )
-        })?;
-        tokio::fs::write(&manifest_path, updated_manifest)
-            .await
-            .map_err(|err| {
-                s3_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "InternalError",
-                    &format!("Failed to persist recovered manifest: {err}"),
-                    key,
-                )
-            })?;
+        // 重建后的 manifest(分片校验和已更新)quorum 回写各副本。
+        let manifest_path = ec_manifest_path(&bucket_root, key);
+        let recovery_hash = sha256_hex(key.as_bytes());
+        if let Err(message) =
+            write_manifest_quorum(state, bucket, &recovery_hash, &manifest_path, &manifest).await
+        {
+            tracing::warn!(error = %message, "重建后 manifest quorum 回写失败");
+        }
     }
 
     let mut payload = Vec::with_capacity(manifest.total_size as usize);
@@ -1095,15 +1201,10 @@ pub(crate) async fn read_ec_object_streaming(
         }
     }
     let bucket_root = bucket_path(state, bucket)?;
-    let manifest_path = ec_manifest_path(&bucket_root, key);
-    let manifest_bytes = match tokio::fs::read(&manifest_path).await {
-        Ok(bytes) => bytes,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Ok(None),
-    };
-    let manifest: EcObjectManifest = match serde_json::from_slice(&manifest_bytes) {
-        Ok(manifest) => manifest,
-        Err(_) => return Ok(None),
+    // manifest 多副本读(本地优先 + 远程回退 inline 回写);无任何副本则交回退路径。
+    let manifest = match read_manifest_quorum(state, &bucket_root, bucket, key).await {
+        Some(manifest) => manifest,
+        None => return Ok(None),
     };
     if manifest.data_shards == 0 {
         return Ok(None);

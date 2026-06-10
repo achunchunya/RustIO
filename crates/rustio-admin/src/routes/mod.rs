@@ -611,6 +611,14 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             get(internal_ec_shard_stat),
         )
         .route(
+            "/api/v1/internal/ec/manifest/{bucket}/{object_hash}",
+            put(internal_ec_manifest_put).get(internal_ec_manifest_get),
+        )
+        .route(
+            "/api/v1/internal/ec/manifest-stat/{bucket}/{object_hash}",
+            get(internal_ec_manifest_stat),
+        )
+        .route(
             "/{bucket}",
             put(s3_root_create_bucket)
                 .get(s3_root_bucket_get)
