@@ -748,6 +748,27 @@ pub(crate) async fn s3_root_put_object(
             Err(response) => return response,
         };
 
+        // UploadPartCopy:带 x-amz-copy-source 时从源对象拷贝字节作为 part(而非读请求 body)。
+        if let Some(copy_source) = headers
+            .get("x-amz-copy-source")
+            .and_then(|value| value.to_str().ok())
+        {
+            let copy_source_range = headers
+                .get("x-amz-copy-source-range")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string);
+            return s3_upload_part_copy(
+                state,
+                bucket,
+                key,
+                upload_id,
+                part_number,
+                copy_source.to_string(),
+                copy_source_range,
+            )
+            .await;
+        }
+
         // part 上传走流式路径（传 body + streaming_context 给 s3_upload_part）
         return s3_upload_part_streaming(
             state,

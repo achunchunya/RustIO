@@ -1955,6 +1955,189 @@ pub(crate) async fn s3_upload_part_streaming(
     Ok(response)
 }
 
+/// UploadPartCopy:`PUT {bucket}/{key}?uploadId=&partNumber=` + `x-amz-copy-source`。
+/// 从源对象(可选 `x-amz-copy-source-range: bytes=a-b`)拷贝字节作为目标 multipart 的一个 part。
+/// 大对象服务端拷贝 / TransferManager 分片复制必用。返回 CopyPartResult。
+pub(crate) async fn s3_upload_part_copy(
+    state: Arc<AppState>,
+    bucket: String,
+    key: String,
+    upload_id: String,
+    part_number: u32,
+    copy_source_raw: String,
+    copy_source_range: Option<String>,
+) -> Response {
+    // 解析源对象。
+    let (source_bucket, source_key, source_version_id) =
+        match parse_copy_source_header(&copy_source_raw) {
+            Ok(value) => value,
+            Err(message) => return s3_error(StatusCode::BAD_REQUEST, "InvalidArgument", &message, &key),
+        };
+    if is_reserved_internal_key(&source_key) {
+        return s3_error(
+            StatusCode::BAD_REQUEST,
+            "InvalidObjectName",
+            "Source object key uses reserved internal namespace",
+            &source_key,
+        );
+    }
+    let source_current_meta =
+        match read_current_object_meta(&state, &source_bucket, &source_key).await {
+            Ok(meta) => meta,
+            Err(response) => return response,
+        };
+    let source_meta = if let Some(version_id) = source_version_id {
+        match resolve_object_version_meta(
+            &state,
+            &source_bucket,
+            &source_key,
+            &version_id,
+            source_current_meta,
+        )
+        .await
+        {
+            Ok(Some((meta, _))) => meta,
+            Ok(None) => {
+                return s3_error(
+                    StatusCode::NOT_FOUND,
+                    "NoSuchVersion",
+                    "The specified source version does not exist",
+                    &source_key,
+                )
+            }
+            Err(response) => return response,
+        }
+    } else {
+        match source_current_meta {
+            Some(meta) => meta,
+            None => {
+                return s3_error(
+                    StatusCode::NOT_FOUND,
+                    "NoSuchKey",
+                    "The specified source key does not exist",
+                    &source_key,
+                )
+            }
+        }
+    };
+    if source_meta.delete_marker {
+        return s3_error(
+            StatusCode::NOT_FOUND,
+            "NoSuchKey",
+            "The specified source key does not exist",
+            &source_key,
+        );
+    }
+
+    // 读源字节(全量;加密源 SSE-C 这里不支持,返回错误而非误拷)。
+    let source_bytes = match read_current_object_payload(
+        &state,
+        &source_bucket,
+        &source_key,
+        Some(&source_meta),
+        None,
+    )
+    .await
+    {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => {
+            return s3_error(
+                StatusCode::NOT_FOUND,
+                "NoSuchKey",
+                "The specified source key does not exist",
+                &source_key,
+            )
+        }
+        Err(response) => return response,
+    };
+
+    // 可选 copy-source-range: bytes=start-end(闭区间)。
+    let part_bytes = if let Some(range_spec) = copy_source_range.as_deref() {
+        match parse_copy_source_byte_range(range_spec, source_bytes.len() as u64) {
+            Some((start, end)) => source_bytes[start as usize..=end as usize].to_vec(),
+            None => {
+                return s3_error(
+                    StatusCode::BAD_REQUEST,
+                    "InvalidArgument",
+                    "Invalid x-amz-copy-source-range",
+                    &key,
+                )
+            }
+        }
+    } else {
+        source_bytes
+    };
+
+    // 落 part(复用 multipart part 落盘结构)。
+    let mut uploads = state.multipart_uploads.write().await;
+    let Some(upload) = uploads.get_mut(&upload_id) else {
+        return s3_error(
+            StatusCode::NOT_FOUND,
+            "NoSuchUpload",
+            "The specified upload does not exist",
+            &key,
+        );
+    };
+    if upload.bucket != bucket || upload.key != key {
+        return s3_error(
+            StatusCode::NOT_FOUND,
+            "NoSuchUpload",
+            "The specified upload does not match bucket/key",
+            &key,
+        );
+    }
+    let upload_dir = multipart_upload_dir(&state, &upload_id);
+    if let Err(err) = tokio::fs::create_dir_all(&upload_dir).await {
+        return s3_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "InternalError",
+            &format!("Failed to create multipart upload directory: {err}"),
+            &key,
+        );
+    }
+    let part_path = upload_dir.join(format!("{part_number}.part"));
+    if let Err(err) = atomic_write(&part_path, &part_bytes).await {
+        return s3_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "InternalError",
+            &format!("Failed to write copied part: {err}"),
+            &key,
+        );
+    }
+    let etag = format!("{:x}", Md5::digest(&part_bytes));
+    let last_modified = Utc::now();
+    upload.parts.insert(
+        part_number,
+        MultipartPart {
+            part_number,
+            etag: etag.clone(),
+            size: part_bytes.len() as u64,
+            path: part_path,
+            updated_at: last_modified,
+        },
+    );
+    drop(uploads);
+
+    let xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?><CopyPartResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><LastModified>{}</LastModified><ETag>"{}"</ETag></CopyPartResult>"#,
+        last_modified.to_rfc3339_opts(SecondsFormat::Secs, true),
+        etag,
+    );
+    s3_xml_response(StatusCode::OK, xml)
+}
+
+/// 解析 `x-amz-copy-source-range: bytes=start-end`(闭区间,均必填),返回 (start,end)。
+fn parse_copy_source_byte_range(spec: &str, size: u64) -> Option<(u64, u64)> {
+    let rest = spec.trim().strip_prefix("bytes=")?;
+    let (start_s, end_s) = rest.split_once('-')?;
+    let start: u64 = start_s.trim().parse().ok()?;
+    let end: u64 = end_s.trim().parse().ok()?;
+    if start > end || size == 0 || end >= size {
+        return None;
+    }
+    Some((start, end))
+}
+
 pub(crate) async fn s3_list_multipart_parts_xml(
     state: Arc<AppState>,
     bucket: String,
