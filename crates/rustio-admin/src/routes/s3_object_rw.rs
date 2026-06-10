@@ -126,15 +126,65 @@ pub(crate) async fn s3_root_bucket_get(
     let prefix = query.prefix.unwrap_or_default();
     let delimiter = query.delimiter.unwrap_or_default();
     let max_keys = query.max_keys.unwrap_or(1000).clamp(1, 10_000);
-    let mut objects = Vec::new();
-    if let Err(err) = collect_objects(&state, &bucket, &bucket_dir, &bucket_dir, &mut objects) {
-        return s3_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "InternalError",
-            &format!("Failed to list objects: {err}"),
-            &bucket,
+
+    // ── LIST v2 真分页快路径 ──
+    // 条件:list-type=2 且无 delimiter(CommonPrefix 折叠需全量去重,故有 delimiter 走全量)
+    // 且非 walk-fs 回退模式。redb range 真分页:只读一页,延迟与 bucket 总对象数解耦。
+    if query.list_type.as_deref() == Some("2")
+        && delimiter.is_empty()
+        && !list_walk_fs_fallback_enabled()
+    {
+        let continuation_token = query
+            .continuation_token
+            .as_deref()
+            .filter(|value| !value.is_empty());
+        let start_after = query
+            .start_after
+            .as_deref()
+            .filter(|value| !value.is_empty());
+        let boundary = continuation_token.or(start_after).unwrap_or("");
+        let (page_objects, truncated) =
+            collect_objects_page_indexed(&state, &bucket, &prefix, boundary, max_keys);
+        let next_token = if truncated {
+            page_objects.last().map(|o| o.key.clone())
+        } else {
+            None
+        };
+        return s3_xml_response(
+            StatusCode::OK,
+            build_list_objects_v2_xml(
+                &bucket,
+                &prefix,
+                &delimiter,
+                max_keys,
+                page_objects.len(),
+                truncated,
+                continuation_token,
+                start_after,
+                next_token.as_deref(),
+                &page_objects,
+                &[],
+            ),
         );
     }
+
+    // 全量路径:有 delimiter(CommonPrefix)、list v1、或 walk-fs 回退。
+    // LIST 主路径:纯 redb 索引枚举(无 walk-fs、无逐对象 stat);
+    // RUSTIO_LIST_WALK_FS=1 回退 walk-fs(异常恢复 / 基准对比 MinIO 行为)。
+    let objects = if list_walk_fs_fallback_enabled() {
+        let mut walked = Vec::new();
+        if let Err(err) = collect_objects(&state, &bucket, &bucket_dir, &bucket_dir, &mut walked) {
+            return s3_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "InternalError",
+                &format!("Failed to list objects: {err}"),
+                &bucket,
+            );
+        }
+        walked
+    } else {
+        collect_objects_indexed(&state, &bucket)
+    };
 
     let mut filtered = objects
         .into_iter()

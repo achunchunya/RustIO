@@ -31,6 +31,99 @@ pub(crate) fn collect_objects(
     Ok(())
 }
 
+/// 纯 redb 索引枚举对象(LIST 主路径):直接 scan_bucket(有序范围扫,O(对象数) 顺序读),
+/// **不 walk 文件系统、无 per-object stat 系统调用**——这是相对 MinIO「walk fs + 逐对象 stat」
+/// 列举模型的结构性性能优势(MinIO 海量对象 LIST 的瓶颈正是逐对象 fs stat)。
+/// current 对象元数据已完全下沉 redb(真相源),故索引枚举即完整。
+/// 异常恢复(元数据丢失但 payload 在)可经 `RUSTIO_LIST_WALK_FS=1` 回退到 `collect_objects` walk-fs。
+pub(crate) fn collect_objects_indexed(state: &AppState, bucket: &str) -> Vec<DiskObjectEntry> {
+    let mut output = Vec::new();
+    for meta in state.meta_store.scan_bucket(bucket).unwrap_or_default() {
+        if meta.delete_marker {
+            continue;
+        }
+        output.push(DiskObjectEntry {
+            key: meta.key.clone(),
+            size: meta.size,
+            etag: meta.etag.clone(),
+            last_modified: meta.created_at.to_rfc3339_opts(SecondsFormat::Secs, true),
+            storage_class: object_storage_class(&meta).to_string(),
+        });
+    }
+    output
+}
+
+/// LIST 是否回退到 walk-fs 模式(异常恢复 / 基准对比 MinIO 行为用)。默认 false=纯 redb 索引。
+pub(crate) fn list_walk_fs_fallback_enabled() -> bool {
+    std::env::var("RUSTIO_LIST_WALK_FS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// redb range 真分页枚举(LIST 无 delimiter 快路径):从 `start_after`(不含)起,
+/// 按 key 有序取至多 `limit` 个、且 key 以 `prefix` 开头的对象。
+/// **延迟与 bucket 总对象数解耦**(O(log n + page))——无论 bucket 有 1 万还是 1 亿对象,
+/// 单页 LIST 恒定延迟。这是相对 MinIO「每次 LIST 都 walk 全 bucket」的代际优势。
+/// 返回 (本页对象, 是否还有更多)。
+pub(crate) fn collect_objects_page_indexed(
+    state: &AppState,
+    bucket: &str,
+    prefix: &str,
+    start_after: &str,
+    limit: usize,
+) -> (Vec<DiskObjectEntry>, bool) {
+    // range 起点 = max(prefix, start_after):保证从 prefix 边界且越过 continuation 点开始。
+    let effective_start = if start_after > prefix {
+        start_after
+    } else {
+        prefix
+    };
+    // 多取 1 个判断是否截断;delete_marker 需跳过,故循环补取直到够数或耗尽。
+    let mut out: Vec<DiskObjectEntry> = Vec::with_capacity(limit.min(4096));
+    let mut cursor = effective_start.to_string();
+    let mut has_more = false;
+    'outer: loop {
+        let batch = state
+            .meta_store
+            .scan_bucket_page(bucket, &cursor, limit + 1)
+            .unwrap_or_default();
+        if batch.is_empty() {
+            break;
+        }
+        let batch_len = batch.len();
+        for meta in batch {
+            cursor = meta.key.clone();
+            // 超出 prefix 范围(有序 → 之后都不匹配),结束。
+            if !prefix.is_empty() && !meta.key.starts_with(prefix) {
+                break 'outer;
+            }
+            // 与 start_after 严格大于(scan_bucket_page 已 exclusive,但 effective_start=prefix 时需再判)。
+            if !start_after.is_empty() && meta.key.as_str() <= start_after {
+                continue;
+            }
+            if meta.delete_marker {
+                continue;
+            }
+            if out.len() == limit {
+                has_more = true;
+                break 'outer;
+            }
+            out.push(DiskObjectEntry {
+                key: meta.key.clone(),
+                size: meta.size,
+                etag: meta.etag.clone(),
+                last_modified: meta.created_at.to_rfc3339_opts(SecondsFormat::Secs, true),
+                storage_class: object_storage_class(&meta).to_string(),
+            });
+        }
+        // 本批不足 limit+1 → 已到末尾。
+        if batch_len < limit + 1 {
+            break;
+        }
+    }
+    (out, has_more)
+}
+
 pub(crate) fn collect_object_payload_files(
     bucket_root: &FsPath,
     dir: &FsPath,

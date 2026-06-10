@@ -176,6 +176,45 @@ impl MetaStore {
         Ok(out)
     }
 
+    /// range 真分页:从 `start_after`(不含)起按 key 有序取最多 `limit` 个对象元数据。
+    /// O(log n + page),与 bucket 总对象数解耦——LIST 单页延迟恒定(redb 有序索引核心红利)。
+    /// `start_after` 为空表示从 bucket 头部开始。
+    pub(crate) fn scan_bucket_page(
+        &self,
+        bucket: &str,
+        start_after: &str,
+        limit: usize,
+    ) -> Result<Vec<S3ObjectMeta>, String> {
+        let (prefix_start, end) = Self::bucket_prefix_range(bucket);
+        // 起点:start_after 非空则定位到 bucket\0<start_after> 之后(exclusive);否则 bucket 头部。
+        let start = if start_after.is_empty() {
+            prefix_start
+        } else {
+            let mut s = Self::encode_key(bucket, start_after);
+            // 追加一个 0 字节,使 range 起点严格大于 start_after 自身(exclusive lower bound)。
+            s.push(0);
+            s
+        };
+        let txn = self.db.begin_read().map_err(|err| err.to_string())?;
+        let table = txn
+            .open_table(OBJECT_META_TABLE)
+            .map_err(|err| err.to_string())?;
+        let mut out = Vec::with_capacity(limit.min(4096));
+        let range = table
+            .range(start.as_slice()..end.as_slice())
+            .map_err(|err| err.to_string())?;
+        for item in range {
+            if out.len() >= limit {
+                break;
+            }
+            let (_, value) = item.map_err(|err| err.to_string())?;
+            let meta: S3ObjectMeta =
+                serde_json::from_slice(value.value()).map_err(|err| err.to_string())?;
+            out.push(meta);
+        }
+        Ok(out)
+    }
+
     /// 全表扫描(仅供低频管理操作使用,如统计、KMS 轮转)。
     pub(crate) fn scan_all(&self) -> Result<Vec<S3ObjectMeta>, String> {
         let txn = self.db.begin_read().map_err(|err| err.to_string())?;
