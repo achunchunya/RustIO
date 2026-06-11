@@ -23,6 +23,12 @@ pub(crate) struct StreamingSigV4Context {
 pub(crate) struct S3AuthOutcome {
     /// 仅当 payload 用 STREAMING-AWS4-HMAC-SHA256-PAYLOAD 时填充，供 aws-chunked 解码器链式验签
     pub(crate) streaming_context: Option<StreamingSigV4Context>,
+    /// body 是 aws-chunked 编码且声明带 trailer（STREAMING-*-TRAILER），
+    /// 解码器需在 0 块后解析 trailer 行（如 x-amz-checksum-crc32）
+    pub(crate) chunked_trailer: bool,
+    /// body 是 unsigned aws-chunked（STREAMING-UNSIGNED-PAYLOAD-TRAILER）：
+    /// 块头无 chunk-signature，仍需解帧
+    pub(crate) unsigned_chunked: bool,
     /// 期望的 body SHA256（小写 64 位 hex）。
     ///
     /// 仅当 SigV4 验签（query/header）且声明的 payload_hash 是 64 位 hex、**且调用方传 body=None**
@@ -1533,6 +1539,8 @@ pub(crate) fn ensure_s3_auth(
         let expected_payload_sha256 = expected_payload_sha256_for_streaming(body, &payload_hash);
         return Ok(S3AuthOutcome {
             streaming_context: None,
+            chunked_trailer: false,
+            unsigned_chunked: false,
             expected_payload_sha256,
         });
     }
@@ -1767,6 +1775,8 @@ pub(crate) fn ensure_s3_auth(
 
     Ok(S3AuthOutcome {
         streaming_context,
+        chunked_trailer: payload_hash.ends_with("-TRAILER"),
+        unsigned_chunked: payload_hash == "STREAMING-UNSIGNED-PAYLOAD-TRAILER",
         expected_payload_sha256,
     })
 }
@@ -2197,6 +2207,16 @@ pub(crate) fn build_s3_list_page(
     start_after: Option<&str>,
     max_keys: usize,
 ) -> S3ListPage {
+    // AWS 语义：max-keys=0 返回空结果且 IsTruncated=false
+    if max_keys == 0 {
+        return S3ListPage {
+            objects: Vec::new(),
+            common_prefixes: Vec::new(),
+            result_count: 0,
+            truncated: false,
+            next_token: None,
+        };
+    }
     let mut page_objects = Vec::new();
     let mut page_common_prefixes = Vec::new();
     let mut emitted_common_prefixes = HashSet::new();
@@ -2270,6 +2290,7 @@ pub(crate) fn build_list_objects_v2_xml(
     next_continuation_token: Option<&str>,
     objects: &[DiskObjectEntry],
     common_prefixes: &[String],
+    encoding_url: bool,
 ) -> String {
     let mut xml = String::from(
         r#"<?xml version="1.0" encoding="UTF-8"?><ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">"#,
@@ -2277,8 +2298,11 @@ pub(crate) fn build_list_objects_v2_xml(
     xml.push_str("<Name>");
     xml.push_str(&xml_escape(bucket));
     xml.push_str("</Name><Prefix>");
-    xml.push_str(&xml_escape(prefix));
+    xml.push_str(&xml_escape(&s3_encode_key(prefix, encoding_url)));
     xml.push_str("</Prefix>");
+    if encoding_url {
+        xml.push_str("<EncodingType>url</EncodingType>");
+    }
     if let Some(value) = continuation_token {
         xml.push_str("<ContinuationToken>");
         xml.push_str(&xml_escape(value));
@@ -2286,7 +2310,7 @@ pub(crate) fn build_list_objects_v2_xml(
     }
     if let Some(value) = start_after {
         xml.push_str("<StartAfter>");
-        xml.push_str(&xml_escape(value));
+        xml.push_str(&xml_escape(&s3_encode_key(value, encoding_url)));
         xml.push_str("</StartAfter>");
     }
     xml.push_str("<KeyCount>");
@@ -2294,7 +2318,7 @@ pub(crate) fn build_list_objects_v2_xml(
     xml.push_str("</KeyCount><MaxKeys>");
     xml.push_str(&max_keys.to_string());
     xml.push_str("</MaxKeys><Delimiter>");
-    xml.push_str(&xml_escape(delimiter));
+    xml.push_str(&xml_escape(&s3_encode_key(delimiter, encoding_url)));
     xml.push_str("</Delimiter><IsTruncated>");
     xml.push_str(if truncated { "true" } else { "false" });
     xml.push_str("</IsTruncated>");
@@ -2308,13 +2332,13 @@ pub(crate) fn build_list_objects_v2_xml(
 
     for value in common_prefixes {
         xml.push_str("<CommonPrefixes><Prefix>");
-        xml.push_str(&xml_escape(value));
+        xml.push_str(&xml_escape(&s3_encode_key(value, encoding_url)));
         xml.push_str("</Prefix></CommonPrefixes>");
     }
 
     for item in objects {
         xml.push_str("<Contents><Key>");
-        xml.push_str(&xml_escape(&item.key));
+        xml.push_str(&xml_escape(&s3_encode_key(&item.key, encoding_url)));
         xml.push_str("</Key><LastModified>");
         xml.push_str(&item.last_modified);
         xml.push_str("</LastModified><ETag>\"");
@@ -2341,6 +2365,7 @@ pub(crate) fn build_list_objects_v1_xml(
     next_marker: Option<&str>,
     objects: &[DiskObjectEntry],
     common_prefixes: &[String],
+    encoding_url: bool,
 ) -> String {
     let mut xml = String::from(
         r#"<?xml version="1.0" encoding="UTF-8"?><ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">"#,
@@ -2348,31 +2373,37 @@ pub(crate) fn build_list_objects_v1_xml(
     xml.push_str("<Name>");
     xml.push_str(&xml_escape(bucket));
     xml.push_str("</Name><Prefix>");
-    xml.push_str(&xml_escape(prefix));
+    xml.push_str(&xml_escape(&s3_encode_key(prefix, encoding_url)));
     xml.push_str("</Prefix><Marker>");
-    xml.push_str(&xml_escape(marker));
+    xml.push_str(&xml_escape(&s3_encode_key(marker, encoding_url)));
     xml.push_str("</Marker><MaxKeys>");
     xml.push_str(&max_keys.to_string());
     xml.push_str("</MaxKeys><IsTruncated>");
     xml.push_str(if truncated { "true" } else { "false" });
     xml.push_str("</IsTruncated><Delimiter>");
-    xml.push_str(&xml_escape(delimiter));
+    xml.push_str(&xml_escape(&s3_encode_key(delimiter, encoding_url)));
     xml.push_str("</Delimiter>");
-    if let Some(next_marker) = next_marker {
-        xml.push_str("<NextMarker>");
-        xml.push_str(&xml_escape(next_marker));
-        xml.push_str("</NextMarker>");
+    if encoding_url {
+        xml.push_str("<EncodingType>url</EncodingType>");
+    }
+    // AWS V1 语义：NextMarker 仅在指定 delimiter 时返回（无 delimiter 时客户端用最后一个 Key 翻页）
+    if !delimiter.is_empty() {
+        if let Some(next_marker) = next_marker {
+            xml.push_str("<NextMarker>");
+            xml.push_str(&xml_escape(&s3_encode_key(next_marker, encoding_url)));
+            xml.push_str("</NextMarker>");
+        }
     }
 
     for value in common_prefixes {
         xml.push_str("<CommonPrefixes><Prefix>");
-        xml.push_str(&xml_escape(value));
+        xml.push_str(&xml_escape(&s3_encode_key(value, encoding_url)));
         xml.push_str("</Prefix></CommonPrefixes>");
     }
 
     for item in objects {
         xml.push_str("<Contents><Key>");
-        xml.push_str(&xml_escape(&item.key));
+        xml.push_str(&xml_escape(&s3_encode_key(&item.key, encoding_url)));
         xml.push_str("</Key><LastModified>");
         xml.push_str(&item.last_modified);
         xml.push_str("</LastModified><ETag>\"");

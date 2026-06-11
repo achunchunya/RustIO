@@ -54,7 +54,22 @@ pub(crate) async fn s3_root_get_object(
     }
 
     if let Some(upload_id) = query_value(uri.query(), "uploadId") {
-        return s3_list_multipart_parts_xml(state, bucket, key, upload_id).await;
+        let part_number_marker = query_value(uri.query(), "part-number-marker")
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(0);
+        let max_parts = query_value(uri.query(), "max-parts")
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(1000)
+            .clamp(0, 1000);
+        return s3_list_multipart_parts_xml(
+            state,
+            bucket,
+            key,
+            upload_id,
+            part_number_marker,
+            max_parts,
+        )
+        .await;
     }
 
     if is_reserved_internal_key(&key) {
@@ -254,6 +269,11 @@ pub(crate) async fn s3_root_get_object(
                         axum::http::HeaderValue::from_static("ON"),
                     );
                 }
+                if checksum_mode_enabled(&headers) {
+                    if let Some(ref checksum) = meta.checksum {
+                        apply_checksum_headers(&mut response, checksum);
+                    }
+                }
                 apply_object_metadata_headers(&mut response, meta);
                 return response;
             }
@@ -410,6 +430,11 @@ pub(crate) async fn s3_root_get_object(
                 axum::http::header::HeaderName::from_static("x-amz-object-lock-legal-hold"),
                 axum::http::HeaderValue::from_static("ON"),
             );
+        }
+        if checksum_mode_enabled(&headers) {
+            if let Some(ref checksum) = meta.checksum {
+                apply_checksum_headers(&mut response, checksum);
+            }
         }
         apply_object_metadata_headers(&mut response, meta);
     }
@@ -805,6 +830,11 @@ pub(crate) async fn s3_root_head_object(
                 axum::http::header::HeaderName::from_static("x-amz-object-lock-legal-hold"),
                 axum::http::HeaderValue::from_static("ON"),
             );
+        }
+        if checksum_mode_enabled(&headers) {
+            if let Some(ref checksum) = meta.checksum {
+                apply_checksum_headers(&mut response, checksum);
+            }
         }
         apply_object_metadata_headers(&mut response, meta);
     }
@@ -1751,6 +1781,70 @@ pub(crate) async fn s3_initiate_multipart_upload(
             Err(response) => return response,
         };
 
+    // CreateMultipartUpload 可声明 checksum 算法与合成类型（FULL_OBJECT/COMPOSITE）
+    let checksum_algorithm = headers
+        .get("x-amz-checksum-algorithm")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let checksum_algorithm = match checksum_algorithm {
+        Some(name) => match ChecksumAlgorithm::parse(name) {
+            Some(algorithm) => Some(algorithm),
+            None => {
+                return s3_error(
+                    StatusCode::BAD_REQUEST,
+                    "InvalidRequest",
+                    &format!("Unsupported checksum algorithm: {name}"),
+                    &key,
+                );
+            }
+        },
+        None => None,
+    };
+    let checksum_type = headers
+        .get("x-amz-checksum-type")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.trim().to_ascii_uppercase())
+        .filter(|value| !value.is_empty());
+    if let Some(ref value) = checksum_type {
+        if value != "FULL_OBJECT" && value != "COMPOSITE" {
+            return s3_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidRequest",
+                "x-amz-checksum-type must be FULL_OBJECT or COMPOSITE",
+                &key,
+            );
+        }
+        if checksum_algorithm.is_none() {
+            return s3_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidRequest",
+                "x-amz-checksum-type requires x-amz-checksum-algorithm",
+                &key,
+            );
+        }
+    }
+    if let (Some(algorithm), Some(checksum_type)) = (checksum_algorithm, checksum_type.as_deref())
+    {
+        if checksum_type == "COMPOSITE" && !algorithm.supports_composite() {
+            return s3_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidRequest",
+                "CRC64NVME only supports FULL_OBJECT checksum type",
+                &key,
+            );
+        }
+    }
+    // 默认合成类型：声明了算法未声明类型时为 COMPOSITE（CRC64NVME 例外，仅支持 FULL_OBJECT）
+    let checksum_type = match (checksum_algorithm, checksum_type) {
+        (Some(algorithm), None) => Some(if algorithm.supports_composite() {
+            "COMPOSITE".to_string()
+        } else {
+            "FULL_OBJECT".to_string()
+        }),
+        (_, value) => value,
+    };
+
     let upload_id = Uuid::new_v4().to_string();
     let upload_dir = multipart_upload_dir(&state, &upload_id);
     if let Err(err) = tokio::fs::create_dir_all(&upload_dir).await {
@@ -1771,6 +1865,8 @@ pub(crate) async fn s3_initiate_multipart_upload(
             initiated_at: Utc::now(),
             parts: HashMap::new(),
             encryption: encryption.clone(),
+            checksum_algorithm: checksum_algorithm.map(|algorithm| algorithm.name().to_string()),
+            checksum_type: checksum_type.clone(),
         },
     );
 
@@ -1781,15 +1877,33 @@ pub(crate) async fn s3_initiate_multipart_upload(
         xml_escape(&upload_id),
     );
     let mut response = s3_xml_response(StatusCode::OK, xml);
+    if let Some(algorithm) = checksum_algorithm {
+        if let Ok(value) = axum::http::HeaderValue::from_str(algorithm.name()) {
+            response.headers_mut().insert(
+                axum::http::header::HeaderName::from_static("x-amz-checksum-algorithm"),
+                value,
+            );
+        }
+    }
+    if let Some(ref checksum_type) = checksum_type {
+        if let Ok(value) = axum::http::HeaderValue::from_str(checksum_type) {
+            response.headers_mut().insert(
+                axum::http::header::HeaderName::from_static("x-amz-checksum-type"),
+                value,
+            );
+        }
+    }
     apply_object_encryption_headers(&mut response, &encryption);
     response
 }
 
 /// 流式分片上传：接收 axum Body（可含 aws-chunked），流式写入 part 文件并增量计算 weak_etag。
 ///
-/// - 若 `streaming_context` 存在（aws-chunked 编码），先用 `AwsChunkedDecoder` 解码 + 链式验签，
-///   累积解码后的明文再写文件（单个 part 大小有自然上限，不会 OOM）
+/// - 若 aws-chunked 编码（签名或 unsigned，可带 trailer），用 `AwsChunkedDecoder` 解码 +
+///   链式验签，流式写入 part 文件
 /// - 否则直接消费 body 帧，边写边喂 hasher，内存恒定
+/// - 支持 x-amz-checksum-*（头或 trailer 提供期望值）：校验失败回 BadDigest，
+///   通过则存入 `MultipartPart.checksum` 并在响应回显
 pub(crate) async fn s3_upload_part_streaming(
     state: Arc<AppState>,
     bucket: String,
@@ -1797,7 +1911,8 @@ pub(crate) async fn s3_upload_part_streaming(
     upload_id: String,
     part_number: u32,
     body: axum::body::Body,
-    streaming_context: Option<StreamingSigV4Context>,
+    auth_outcome: S3AuthOutcome,
+    headers: HeaderMap,
 ) -> Result<Response, Response> {
     use crate::routes::s3_chunked::{AwsChunkedDecoder, WeakEtagHasher};
     use futures::StreamExt;
@@ -1811,6 +1926,12 @@ pub(crate) async fn s3_upload_part_streaming(
             &bucket,
         ));
     }
+
+    let checksum_request = parse_checksum_headers(&headers)
+        .map_err(|message| s3_error(StatusCode::BAD_REQUEST, "InvalidRequest", &message, &key))?;
+    let mut checksum_hasher = checksum_request
+        .as_ref()
+        .map(|req| req.algorithm.hasher());
 
     let mut uploads = state.multipart_uploads.write().await;
     let Some(upload) = uploads.get_mut(&upload_id) else {
@@ -1854,9 +1975,13 @@ pub(crate) async fn s3_upload_part_streaming(
 
     let mut total_size: u64 = 0;
     let mut hasher = WeakEtagHasher::new();
+    let mut trailer_checksum: Option<(String, String)> = None;
+    let mut auth_outcome = auth_outcome;
+    let is_chunked_body =
+        auth_outcome.streaming_context.is_some() || auth_outcome.unsigned_chunked;
 
-    if let Some(ctx) = streaming_context {
-        // aws-chunked：解码 + 链式验签 → 写出（单个 part 大小有自然上限，先解码到 Vec 没问题）
+    if is_chunked_body {
+        // aws-chunked（签名或 unsigned，可带 trailer）：解码 + 链式验签 → 写出
         let mut full_body = Vec::new();
         let mut stream = body.into_data_stream();
         while let Some(result) = stream.next().await {
@@ -1871,7 +1996,11 @@ pub(crate) async fn s3_upload_part_streaming(
             full_body.extend_from_slice(&frame);
         }
         let reader = std::io::Cursor::new(full_body);
-        let decoder = AwsChunkedDecoder::new(reader, ctx);
+        let mut decoder = AwsChunkedDecoder::with_options(
+            reader,
+            auth_outcome.streaming_context.take(),
+            auth_outcome.chunked_trailer,
+        );
         let decoded = decoder.decode_all().await.map_err(|err| {
             s3_error(
                 StatusCode::BAD_REQUEST,
@@ -1880,6 +2009,11 @@ pub(crate) async fn s3_upload_part_streaming(
                 &key,
             )
         })?;
+        for (name, value) in decoder.trailers() {
+            if name.starts_with("x-amz-checksum-") {
+                trailer_checksum = Some((name.clone(), value.clone()));
+            }
+        }
         file.write_all(&decoded).await.map_err(|err| {
             s3_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1889,6 +2023,9 @@ pub(crate) async fn s3_upload_part_streaming(
             )
         })?;
         hasher.update(&decoded);
+        if let Some(checksum) = checksum_hasher.as_mut() {
+            checksum.update(&decoded);
+        }
         total_size = decoded.len() as u64;
     } else {
         // 非 chunked：直接消费 body 帧，边写边喂 hasher
@@ -1911,11 +2048,41 @@ pub(crate) async fn s3_upload_part_streaming(
                 )
             })?;
             hasher.update(&frame);
+            if let Some(checksum) = checksum_hasher.as_mut() {
+                checksum.update(&frame);
+            }
             total_size += frame.len() as u64;
         }
     }
 
     let etag = hasher.finalize();
+
+    // checksum 校验：期望值来自请求头或 trailer，不匹配回 BadDigest
+    let mut part_checksum: Option<(String, String)> = None;
+    if let (Some(request), Some(checksum)) = (checksum_request.as_ref(), checksum_hasher.take()) {
+        let computed = checksum.finalize();
+        let expected = request.expected.clone().or_else(|| {
+            trailer_checksum
+                .as_ref()
+                .filter(|(name, _)| name == request.algorithm.header_name())
+                .map(|(_, value)| value.clone())
+        });
+        if let Some(expected) = expected {
+            if expected.trim() != computed {
+                let _ = tokio::fs::remove_file(&part_path).await;
+                return Err(s3_error(
+                    StatusCode::BAD_REQUEST,
+                    "BadDigest",
+                    &format!(
+                        "The {} you specified did not match the calculated checksum",
+                        request.algorithm.name()
+                    ),
+                    &key,
+                ));
+            }
+        }
+        part_checksum = Some((request.algorithm.name().to_string(), computed));
+    }
 
     // Amazon S3 要求除最后一个分片外所有分片至少 5 MiB(EntityTooSmall),对分片最小大小进行校验。
     let min_part_size: u64 = std::env::var("RUSTIO_S3_MIN_PART_SIZE")
@@ -1942,6 +2109,7 @@ pub(crate) async fn s3_upload_part_streaming(
             size: total_size,
             path: part_path,
             updated_at: Utc::now(),
+            checksum: part_checksum.clone(),
         },
     );
     drop(uploads);
@@ -1951,6 +2119,16 @@ pub(crate) async fn s3_upload_part_streaming(
         response
             .headers_mut()
             .insert(axum::http::header::ETAG, value);
+    }
+    if let Some((algorithm_name, value)) = part_checksum {
+        if let Some(algorithm) = ChecksumAlgorithm::parse(&algorithm_name) {
+            if let Ok(value) = axum::http::HeaderValue::from_str(&value) {
+                response.headers_mut().insert(
+                    axum::http::header::HeaderName::from_static(algorithm.header_name()),
+                    value,
+                );
+            }
+        }
     }
     Ok(response)
 }
@@ -2114,6 +2292,7 @@ pub(crate) async fn s3_upload_part_copy(
             size: part_bytes.len() as u64,
             path: part_path,
             updated_at: last_modified,
+            checksum: None,
         },
     );
     drop(uploads);
@@ -2143,6 +2322,8 @@ pub(crate) async fn s3_list_multipart_parts_xml(
     bucket: String,
     key: String,
     upload_id: String,
+    part_number_marker: u32,
+    max_parts: usize,
 ) -> Response {
     let uploads = state.multipart_uploads.read().await;
     let Some(upload) = uploads.get(&upload_id) else {
@@ -2164,14 +2345,42 @@ pub(crate) async fn s3_list_multipart_parts_xml(
 
     let mut parts = upload.parts.values().cloned().collect::<Vec<_>>();
     parts.sort_by_key(|part| part.part_number);
+    // 分页：part-number-marker 之后的 part，取 max-parts 个
+    let remaining = parts
+        .into_iter()
+        .filter(|part| part.part_number > part_number_marker)
+        .collect::<Vec<_>>();
+    let is_truncated = remaining.len() > max_parts;
+    let page = &remaining[..max_parts.min(remaining.len())];
+    let next_part_number_marker = if is_truncated {
+        page.last().map(|part| part.part_number).unwrap_or(0)
+    } else {
+        0
+    };
+    let checksum_algorithm_xml = upload
+        .checksum_algorithm
+        .as_deref()
+        .map(|name| format!("<ChecksumAlgorithm>{}</ChecksumAlgorithm>", xml_escape(name)))
+        .unwrap_or_default();
+    let checksum_type_xml = upload
+        .checksum_type
+        .as_deref()
+        .map(|value| format!("<ChecksumType>{}</ChecksumType>", xml_escape(value)))
+        .unwrap_or_default();
 
     let mut xml = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?><ListPartsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Bucket>{}</Bucket><Key>{}</Key><UploadId>{}</UploadId><PartNumberMarker>0</PartNumberMarker><NextPartNumberMarker>0</NextPartNumberMarker><MaxParts>1000</MaxParts><IsTruncated>false</IsTruncated>"#,
+        r#"<?xml version="1.0" encoding="UTF-8"?><ListPartsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Bucket>{}</Bucket><Key>{}</Key><UploadId>{}</UploadId><PartNumberMarker>{}</PartNumberMarker><NextPartNumberMarker>{}</NextPartNumberMarker><MaxParts>{}</MaxParts><IsTruncated>{}</IsTruncated>{}{}"#,
         xml_escape(&bucket),
         xml_escape(&key),
         xml_escape(&upload_id),
+        part_number_marker,
+        next_part_number_marker,
+        max_parts,
+        is_truncated,
+        checksum_algorithm_xml,
+        checksum_type_xml,
     );
-    for part in parts {
+    for part in page {
         xml.push_str("<Part><PartNumber>");
         xml.push_str(&part.part_number.to_string());
         xml.push_str("</PartNumber><LastModified>");
@@ -2180,7 +2389,17 @@ pub(crate) async fn s3_list_multipart_parts_xml(
         xml.push_str(&xml_escape(&part.etag));
         xml.push_str("\"</ETag><Size>");
         xml.push_str(&part.size.to_string());
-        xml.push_str("</Size></Part>");
+        xml.push_str("</Size>");
+        if let Some((algorithm_name, value)) = part.checksum.as_ref() {
+            if let Some(algorithm) = ChecksumAlgorithm::parse(algorithm_name) {
+                xml.push_str(&format!(
+                    "<{tag}>{value}</{tag}>",
+                    tag = algorithm.xml_tag(),
+                    value = xml_escape(value),
+                ));
+            }
+        }
+        xml.push_str("</Part>");
     }
     xml.push_str("</ListPartsResult>");
     s3_xml_response(StatusCode::OK, xml)
@@ -2192,7 +2411,7 @@ pub(crate) async fn s3_complete_multipart_upload(
     key: String,
     upload_id: String,
     body: Bytes,
-    _headers: HeaderMap,
+    headers: HeaderMap,
 ) -> Response {
     let bucket_path = match bucket_path(&state, &bucket) {
         Ok(path) => path,
@@ -2252,6 +2471,12 @@ pub(crate) async fn s3_complete_multipart_upload(
         );
     }
     let upload_encryption = upload.encryption.clone();
+    // checksum 合成参数：算法以 initiate 声明为准，否则从首个带 checksum 的 part 推断
+    let mut upload_checksum_algorithm = upload
+        .checksum_algorithm
+        .as_deref()
+        .and_then(ChecksumAlgorithm::parse);
+    let upload_checksum_type = upload.checksum_type.clone();
 
     let xml_text = String::from_utf8_lossy(&body);
     let request = match from_xml_str::<CompleteMultipartUploadRequest>(&xml_text) {
@@ -2290,9 +2515,10 @@ pub(crate) async fn s3_complete_multipart_upload(
         }
     }
 
-    // 先校验所有 part(存在性 / ETag / 顺序严格递增),全部通过后再落盘,
+    // 先校验所有 part(存在性 / ETag / checksum / 顺序严格递增),全部通过后再落盘,
     // 避免缺片或非法请求截断并损坏已存在的对象。
     let mut etag_md5_concat: Vec<u8> = Vec::with_capacity(request.parts.len() * 16);
+    let mut part_checksums: Vec<String> = Vec::with_capacity(request.parts.len());
     let mut last_part_number: Option<u32> = None;
     for part in &request.parts {
         if let Some(prev) = last_part_number {
@@ -2328,6 +2554,64 @@ pub(crate) async fn s3_complete_multipart_upload(
             }
         }
 
+        // 请求 XML 中的 part checksum 与 UploadPart 存储值比对
+        let declared = match part.declared_checksum() {
+            Ok(value) => value,
+            Err(message) => {
+                return s3_error(StatusCode::BAD_REQUEST, "InvalidRequest", &message, &key);
+            }
+        };
+        if let Some((algorithm, expected)) = declared {
+            if upload_checksum_algorithm.is_none() {
+                upload_checksum_algorithm = Some(algorithm);
+            }
+            if upload_checksum_algorithm != Some(algorithm) {
+                return s3_error(
+                    StatusCode::BAD_REQUEST,
+                    "InvalidRequest",
+                    &format!(
+                        "Checksum algorithm mismatch for part {}",
+                        part.part_number
+                    ),
+                    &key,
+                );
+            }
+            match part_meta.checksum.as_ref() {
+                Some((stored_algorithm, stored_value))
+                    if ChecksumAlgorithm::parse(stored_algorithm) == Some(algorithm) =>
+                {
+                    if stored_value != &expected {
+                        return s3_error(
+                            StatusCode::BAD_REQUEST,
+                            "InvalidPart",
+                            &format!("Checksum mismatch for part {}", part.part_number),
+                            &key,
+                        );
+                    }
+                }
+                _ => {
+                    return s3_error(
+                        StatusCode::BAD_REQUEST,
+                        "InvalidPart",
+                        &format!(
+                            "Part {} was not uploaded with a {} checksum",
+                            part.part_number,
+                            algorithm.name()
+                        ),
+                        &key,
+                    );
+                }
+            }
+        }
+        if let Some((stored_algorithm, stored_value)) = part_meta.checksum.as_ref() {
+            if upload_checksum_algorithm.is_none() {
+                upload_checksum_algorithm = ChecksumAlgorithm::parse(stored_algorithm);
+            }
+            if upload_checksum_algorithm == ChecksumAlgorithm::parse(stored_algorithm) {
+                part_checksums.push(stored_value.clone());
+            }
+        }
+
         // part_meta.etag 是该 part 内容的 MD5 hex,解码为原始 16 字节用于计算 multipart ETag。
         match hex::decode(&part_meta.etag) {
             Ok(raw) => etag_md5_concat.extend_from_slice(&raw),
@@ -2341,6 +2625,22 @@ pub(crate) async fn s3_complete_multipart_upload(
             }
         }
     }
+
+    // 解析 complete 请求头中的 x-amz-checksum-type（可覆盖 initiate 声明）
+    let request_checksum_type = headers
+        .get("x-amz-checksum-type")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.trim().to_ascii_uppercase())
+        .filter(|value| !value.is_empty());
+    let effective_checksum_type = request_checksum_type
+        .or(upload_checksum_type)
+        .unwrap_or_else(|| "COMPOSITE".to_string());
+    // FULL_OBJECT 模式需要对合并后的整体数据计算 checksum
+    let mut full_object_hasher = match (&upload_checksum_algorithm, effective_checksum_type.as_str())
+    {
+        (Some(algorithm), "FULL_OBJECT") => Some(algorithm.hasher()),
+        _ => None,
+    };
 
     // 合并到唯一命名的临时文件,sync 后原子 rename 覆盖目标对象;中途任何失败只删临时文件,
     // 不破坏原有对象(对齐单次 PUT 的写入语义)。
@@ -2412,6 +2712,9 @@ pub(crate) async fn s3_complete_multipart_upload(
                     &key,
                 );
             }
+            if let Some(hasher) = full_object_hasher.as_mut() {
+                hasher.update(&buffer[..read]);
+            }
         }
     }
 
@@ -2437,6 +2740,28 @@ pub(crate) async fn s3_complete_multipart_upload(
 
     // multipart 对象 ETag = MD5(各 part MD5 原始字节拼接) + "-<part 数>"(符合 S3 规范)。
     let final_etag = format!("{:x}-{}", Md5::digest(&etag_md5_concat), request.parts.len());
+
+    // 最终 checksum：FULL_OBJECT 直接取全对象 hasher；COMPOSITE 为 checksum-of-checksums-N
+    // （要求所有 part 都带同算法 checksum，缺失则跳过不输出）
+    let final_checksum: Option<rustio_core::types::S3ObjectChecksum> =
+        match (upload_checksum_algorithm, full_object_hasher.take()) {
+            (Some(algorithm), Some(hasher)) => Some(rustio_core::types::S3ObjectChecksum {
+                algorithm: algorithm.name().to_string(),
+                value: hasher.finalize(),
+                checksum_type: "FULL_OBJECT".to_string(),
+            }),
+            (Some(algorithm), None) if part_checksums.len() == request.parts.len() => {
+                match compute_composite_checksum(algorithm, &part_checksums) {
+                    Ok(value) => Some(rustio_core::types::S3ObjectChecksum {
+                        algorithm: algorithm.name().to_string(),
+                        value,
+                        checksum_type: "COMPOSITE".to_string(),
+                    }),
+                    Err(_) => None,
+                }
+            }
+            _ => None,
+        };
     uploads.remove(&upload_id);
     drop(uploads);
 
@@ -2473,6 +2798,7 @@ pub(crate) async fn s3_complete_multipart_upload(
     )
     .await;
     object_meta.encryption = upload_encryption;
+    object_meta.checksum = final_checksum.clone();
     if encryption_enabled(&object_meta) {
         // 加密对象需整体 AES-GCM 加密，暂走全量读取路径（流式分块加密为后续阶段）
         let complete_bytes = match tokio::fs::read(&target_path).await {
@@ -2526,15 +2852,32 @@ pub(crate) async fn s3_complete_multipart_upload(
     )
     .await;
 
+    let checksum_xml = final_checksum
+        .as_ref()
+        .and_then(|checksum| {
+            ChecksumAlgorithm::parse(&checksum.algorithm).map(|algorithm| {
+                format!(
+                    "<{tag}>{value}</{tag}><ChecksumType>{ctype}</ChecksumType>",
+                    tag = algorithm.xml_tag(),
+                    value = xml_escape(&checksum.value),
+                    ctype = xml_escape(&checksum.checksum_type),
+                )
+            })
+        })
+        .unwrap_or_default();
     let xml = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?><CompleteMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Location>/{}/{}</Location><Bucket>{}</Bucket><Key>{}</Key><ETag>"{}"</ETag></CompleteMultipartUploadResult>"#,
+        r#"<?xml version="1.0" encoding="UTF-8"?><CompleteMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Location>/{}/{}</Location><Bucket>{}</Bucket><Key>{}</Key><ETag>"{}"</ETag>{}</CompleteMultipartUploadResult>"#,
         xml_escape(&bucket),
         xml_escape(&key),
         xml_escape(&bucket),
         xml_escape(&key),
         xml_escape(&final_etag),
+        checksum_xml,
     );
     let mut response = s3_xml_response(StatusCode::OK, xml);
+    if let Some(ref checksum) = final_checksum {
+        apply_checksum_headers(&mut response, checksum);
+    }
     if let Ok(value) = axum::http::HeaderValue::from_str(&object_meta.version_id) {
         response.headers_mut().insert(
             axum::http::header::HeaderName::from_static("x-amz-version-id"),
@@ -2585,57 +2928,181 @@ pub(crate) async fn s3_abort_multipart_upload(
     StatusCode::NO_CONTENT.into_response()
 }
 
-pub(crate) async fn s3_list_multipart_uploads_xml(state: Arc<AppState>, bucket: &str) -> Response {
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn s3_list_multipart_uploads_xml(
+    state: Arc<AppState>,
+    bucket: &str,
+    prefix: &str,
+    delimiter: &str,
+    key_marker: &str,
+    upload_id_marker: &str,
+    max_uploads: usize,
+    encoding_url: bool,
+) -> Response {
     let uploads = state.multipart_uploads.read().await;
     let mut items = uploads
         .values()
-        .filter(|upload| upload.bucket == bucket)
+        .filter(|upload| upload.bucket == bucket && upload.key.starts_with(prefix))
         .cloned()
         .collect::<Vec<_>>();
-    items.sort_by(|a, b| a.key.cmp(&b.key));
+    // AWS 排序：key 升序，同 key 按 upload_id 升序
+    items.sort_by(|a, b| {
+        a.key
+            .cmp(&b.key)
+            .then_with(|| a.upload_id.cmp(&b.upload_id))
+    });
+
+    // marker 过滤：key > key-marker，或 key == key-marker 且 upload_id > upload-id-marker
+    if !key_marker.is_empty() {
+        items.retain(|upload| {
+            upload.key.as_str() > key_marker
+                || (upload.key == key_marker
+                    && !upload_id_marker.is_empty()
+                    && upload.upload_id.as_str() > upload_id_marker)
+        });
+    }
+
+    // delimiter 折叠：prefix 之后含 delimiter 的 key 归入 CommonPrefixes
+    let mut entries: Vec<Result<MultipartUpload, String>> = Vec::new();
+    let mut seen_prefixes: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for upload in items {
+        if !delimiter.is_empty() {
+            let rest = &upload.key[prefix.len()..];
+            if let Some(pos) = rest.find(delimiter) {
+                let common = format!("{prefix}{}{delimiter}", &rest[..pos]);
+                if seen_prefixes.insert(common.clone()) {
+                    entries.push(Err(common));
+                }
+                continue;
+            }
+        }
+        entries.push(Ok(upload));
+    }
+
+    let is_truncated = entries.len() > max_uploads;
+    entries.truncate(max_uploads);
+    let (next_key_marker, next_upload_id_marker) = if is_truncated {
+        match entries.last() {
+            Some(Ok(upload)) => (upload.key.clone(), upload.upload_id.clone()),
+            Some(Err(common)) => (common.clone(), String::new()),
+            None => (String::new(), String::new()),
+        }
+    } else {
+        (String::new(), String::new())
+    };
 
     let mut xml = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?><ListMultipartUploadsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Bucket>{}</Bucket><KeyMarker></KeyMarker><UploadIdMarker></UploadIdMarker><NextKeyMarker></NextKeyMarker><NextUploadIdMarker></NextUploadIdMarker><Delimiter></Delimiter><Prefix></Prefix><MaxUploads>1000</MaxUploads><IsTruncated>false</IsTruncated>"#,
+        r#"<?xml version="1.0" encoding="UTF-8"?><ListMultipartUploadsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Bucket>{}</Bucket><KeyMarker>{}</KeyMarker><UploadIdMarker>{}</UploadIdMarker><NextKeyMarker>{}</NextKeyMarker><NextUploadIdMarker>{}</NextUploadIdMarker><Delimiter>{}</Delimiter><Prefix>{}</Prefix><MaxUploads>{}</MaxUploads><IsTruncated>{}</IsTruncated>{}"#,
         xml_escape(bucket),
+        xml_escape(&s3_encode_key(key_marker, encoding_url)),
+        xml_escape(upload_id_marker),
+        xml_escape(&s3_encode_key(&next_key_marker, encoding_url)),
+        xml_escape(&next_upload_id_marker),
+        xml_escape(&s3_encode_key(delimiter, encoding_url)),
+        xml_escape(&s3_encode_key(prefix, encoding_url)),
+        max_uploads,
+        is_truncated,
+        if encoding_url {
+            "<EncodingType>url</EncodingType>"
+        } else {
+            ""
+        },
     );
-    for upload in items {
-        xml.push_str("<Upload><Key>");
-        xml.push_str(&xml_escape(&upload.key));
-        xml.push_str("</Key><UploadId>");
-        xml.push_str(&xml_escape(&upload.upload_id));
-        xml.push_str("</UploadId><Initiated>");
-        xml.push_str(
-            &upload
-                .initiated_at
-                .to_rfc3339_opts(SecondsFormat::Secs, true),
-        );
-        xml.push_str("</Initiated></Upload>");
+    for entry in &entries {
+        match entry {
+            Ok(upload) => {
+                xml.push_str("<Upload><Key>");
+                xml.push_str(&xml_escape(&s3_encode_key(&upload.key, encoding_url)));
+                xml.push_str("</Key><UploadId>");
+                xml.push_str(&xml_escape(&upload.upload_id));
+                xml.push_str("</UploadId><Initiator><ID>rustio</ID><DisplayName>rustio</DisplayName></Initiator><Owner><ID>rustio</ID><DisplayName>rustio</DisplayName></Owner><StorageClass>STANDARD</StorageClass>");
+                if let Some(algorithm) = upload.checksum_algorithm.as_deref() {
+                    xml.push_str(&format!(
+                        "<ChecksumAlgorithm>{}</ChecksumAlgorithm>",
+                        xml_escape(algorithm)
+                    ));
+                }
+                if let Some(checksum_type) = upload.checksum_type.as_deref() {
+                    xml.push_str(&format!(
+                        "<ChecksumType>{}</ChecksumType>",
+                        xml_escape(checksum_type)
+                    ));
+                }
+                xml.push_str("<Initiated>");
+                xml.push_str(
+                    &upload
+                        .initiated_at
+                        .to_rfc3339_opts(SecondsFormat::Secs, true),
+                );
+                xml.push_str("</Initiated></Upload>");
+            }
+            Err(common) => {
+                xml.push_str("<CommonPrefixes><Prefix>");
+                xml.push_str(&xml_escape(&s3_encode_key(common, encoding_url)));
+                xml.push_str("</Prefix></CommonPrefixes>");
+            }
+        }
     }
     xml.push_str("</ListMultipartUploadsResult>");
     s3_xml_response(StatusCode::OK, xml)
 }
 
-pub(crate) async fn s3_list_buckets_xml(state: Arc<AppState>) -> Response {
+pub(crate) async fn s3_list_buckets_xml(
+    state: Arc<AppState>,
+    prefix: &str,
+    continuation_token: &str,
+    max_buckets: usize,
+) -> Response {
     let mut buckets = state
         .buckets
         .read()
         .await
         .keys()
+        .filter(|name| name.starts_with(prefix))
         .cloned()
         .collect::<Vec<_>>();
     buckets.sort();
 
-    let now = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+    // continuation-token 为上一页最后一个 bucket 名（明文 marker 语义）
+    if !continuation_token.is_empty() {
+        buckets.retain(|name| name.as_str() > continuation_token);
+    }
+    let is_truncated = buckets.len() > max_buckets;
+    buckets.truncate(max_buckets);
+    let next_token = if is_truncated {
+        buckets.last().cloned()
+    } else {
+        None
+    };
+
     let mut xml = String::from(
         r#"<?xml version="1.0" encoding="UTF-8"?><ListAllMyBucketsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Owner><ID>rustio</ID><DisplayName>rustio</DisplayName></Owner><Buckets>"#,
     );
-    for bucket in buckets {
+    for bucket in &buckets {
+        // CreationDate 取 bucket 目录的 mtime/birth time（BucketSpec 未持久化创建时间）
+        let creation_date = bucket_path(&state, bucket)
+            .ok()
+            .and_then(|path| std::fs::metadata(&path).ok())
+            .and_then(|metadata| metadata.created().or_else(|_| metadata.modified()).ok())
+            .map(DateTime::<Utc>::from)
+            .unwrap_or_else(Utc::now);
         xml.push_str("<Bucket><Name>");
-        xml.push_str(&xml_escape(&bucket));
+        xml.push_str(&xml_escape(bucket));
         xml.push_str("</Name><CreationDate>");
-        xml.push_str(&now);
+        xml.push_str(&creation_date.to_rfc3339_opts(SecondsFormat::Secs, true));
         xml.push_str("</CreationDate></Bucket>");
     }
-    xml.push_str("</Buckets></ListAllMyBucketsResult>");
+    xml.push_str("</Buckets>");
+    if !prefix.is_empty() {
+        xml.push_str("<Prefix>");
+        xml.push_str(&xml_escape(prefix));
+        xml.push_str("</Prefix>");
+    }
+    if let Some(token) = next_token {
+        xml.push_str("<ContinuationToken>");
+        xml.push_str(&xml_escape(&token));
+        xml.push_str("</ContinuationToken>");
+    }
+    xml.push_str("</ListAllMyBucketsResult>");
     s3_xml_response(StatusCode::OK, xml)
 }

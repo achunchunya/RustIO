@@ -98,19 +98,38 @@ pub(crate) async fn s3_root_bucket_get(
     }
 
     if query_has_key(uri.query(), "uploads") {
-        return s3_list_multipart_uploads_xml(state, &bucket).await;
+        let max_uploads = query_value(uri.query(), "max-uploads")
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(1000)
+            .clamp(0, 1000);
+        return s3_list_multipart_uploads_xml(
+            state,
+            &bucket,
+            query.prefix.as_deref().unwrap_or_default(),
+            query.delimiter.as_deref().unwrap_or_default(),
+            query.key_marker.as_deref().unwrap_or_default(),
+            query_value(uri.query(), "upload-id-marker")
+                .as_deref()
+                .unwrap_or_default(),
+            max_uploads,
+            query.encoding_type.as_deref() == Some("url"),
+        )
+        .await;
     }
 
     if query_has_key(uri.query(), "versions") {
         let prefix = query.prefix.unwrap_or_default();
-        let max_keys = query.max_keys.unwrap_or(1000).clamp(1, 10_000);
+        let delimiter = query.delimiter.unwrap_or_default();
+        let max_keys = query.max_keys.unwrap_or(1000).clamp(0, 1000);
         return s3_list_object_versions_xml(
             state,
             &bucket,
             &prefix,
+            &delimiter,
             max_keys,
             query.key_marker.as_deref().unwrap_or_default(),
             query.version_id_marker.as_deref().unwrap_or_default(),
+            query.encoding_type.as_deref() == Some("url"),
         )
         .await;
     }
@@ -125,7 +144,20 @@ pub(crate) async fn s3_root_bucket_get(
 
     let prefix = query.prefix.unwrap_or_default();
     let delimiter = query.delimiter.unwrap_or_default();
-    let max_keys = query.max_keys.unwrap_or(1000).clamp(1, 10_000);
+    // AWS 上限 1000；max-keys=0 合法（返回空结果 + IsTruncated=false）
+    let max_keys = query.max_keys.unwrap_or(1000).clamp(0, 1000);
+    let encoding_url = match query.encoding_type.as_deref() {
+        None => false,
+        Some("url") => true,
+        Some(_) => {
+            return s3_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidArgument",
+                "encoding-type must be url",
+                &bucket,
+            );
+        }
+    };
 
     // ── LIST v2 真分页快路径 ──
     // 条件:list-type=2 且无 delimiter(CommonPrefix 折叠需全量去重,故有 delimiter 走全量)
@@ -143,8 +175,11 @@ pub(crate) async fn s3_root_bucket_get(
             .as_deref()
             .filter(|value| !value.is_empty());
         let boundary = continuation_token.or(start_after).unwrap_or("");
-        let (page_objects, truncated) =
-            collect_objects_page_indexed(&state, &bucket, &prefix, boundary, max_keys);
+        let (page_objects, truncated) = if max_keys == 0 {
+            (Vec::new(), false)
+        } else {
+            collect_objects_page_indexed(&state, &bucket, &prefix, boundary, max_keys)
+        };
         let next_token = if truncated {
             page_objects.last().map(|o| o.key.clone())
         } else {
@@ -164,6 +199,7 @@ pub(crate) async fn s3_root_bucket_get(
                 next_token.as_deref(),
                 &page_objects,
                 &[],
+                encoding_url,
             ),
         );
     }
@@ -222,6 +258,7 @@ pub(crate) async fn s3_root_bucket_get(
                 page.next_token.as_deref(),
                 &page.objects,
                 &page.common_prefixes,
+                encoding_url,
             ),
         );
     }
@@ -239,7 +276,8 @@ pub(crate) async fn s3_root_bucket_get(
         );
     }
 
-    let marker = query.marker.or(query.key_marker).unwrap_or_default();
+    // V1 仅接受 marker 参数（key-marker 是 ListObjectVersions 的参数，不混用）
+    let marker = query.marker.unwrap_or_default();
     let marker_ref = if marker.is_empty() {
         None
     } else {
@@ -258,6 +296,7 @@ pub(crate) async fn s3_root_bucket_get(
             page.next_token.as_deref(),
             &page.objects,
             &page.common_prefixes,
+            encoding_url,
         ),
     )
 }
@@ -769,7 +808,7 @@ pub(crate) async fn s3_root_put_object(
             .await;
         }
 
-        // part 上传走流式路径（传 body + streaming_context 给 s3_upload_part）
+        // part 上传走流式路径（传 body + 完整 auth outcome 给 s3_upload_part，支持 chunked/trailer/checksum）
         return s3_upload_part_streaming(
             state,
             bucket,
@@ -777,7 +816,8 @@ pub(crate) async fn s3_root_put_object(
             upload_id,
             part_number,
             body,
-            auth_outcome.streaming_context,
+            auth_outcome,
+            headers,
         )
         .await
         .unwrap_or_else(|response| response);
@@ -1202,6 +1242,8 @@ pub(crate) async fn s3_root_put_object(
             request_tags.clone()
         };
         meta.encryption = requested_encryption.clone();
+        // 拷贝字节与源一致，FULL_OBJECT/COMPOSITE checksum 沿用源对象
+        meta.checksum = source_meta.checksum.clone();
         if let Err(err) = tokio::fs::write(&target_path, &source_bytes).await {
             return s3_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1296,6 +1338,18 @@ pub(crate) async fn s3_root_put_object(
     // 单次 PUT 对象数据：先流式写入唯一命名的临时文件，验证通过后原子 rename 到目标路径，
     // 避免整个对象驻留内存，且新写入失败时不破坏旧对象明文（last-writer-wins 与原行为一致）。
     use crate::routes::s3_chunked::{AwsChunkedDecoder, WeakEtagHasher};
+
+    // 解析 checksum 请求头（x-amz-checksum-* / x-amz-sdk-checksum-algorithm）
+    let checksum_request = match parse_checksum_headers(&headers) {
+        Ok(value) => value,
+        Err(message) => {
+            return s3_error(StatusCode::BAD_REQUEST, "InvalidRequest", &message, &key);
+        }
+    };
+    let mut checksum_hasher = checksum_request
+        .as_ref()
+        .map(|req| req.algorithm.hasher());
+
     let staging = {
         let file_name = target_path
             .file_name()
@@ -1319,14 +1373,32 @@ pub(crate) async fn s3_root_put_object(
         .take()
         .expect("object data PUT must carry streaming body");
     let mut etag_hasher = WeakEtagHasher::new();
-    let total: u64 = if let Some(ctx) = streaming_auth.streaming_context.take() {
-        // (a) aws-chunked（STREAMING-AWS4-HMAC-SHA256-PAYLOAD）：真流式解码 + 链式验签
+    // trailer 提供的 checksum 期望值（aws-chunked trailer 模式）
+    let mut trailer_checksum: Option<(String, String)> = None;
+    let is_chunked_body =
+        streaming_auth.streaming_context.is_some() || streaming_auth.unsigned_chunked;
+    let total: u64 = if is_chunked_body {
+        // (a) aws-chunked（签名或 unsigned，可带 trailer）：真流式解码 + 链式验签
         use futures::TryStreamExt;
         use tokio_util::io::StreamReader;
         let reader = StreamReader::new(body.into_data_stream().map_err(std::io::Error::other));
-        let decoder = AwsChunkedDecoder::new(reader, ctx);
-        match decoder.decode_into(&mut file, &mut etag_hasher).await {
-            Ok(total) => total,
+        let mut decoder = AwsChunkedDecoder::with_options(
+            reader,
+            streaming_auth.streaming_context.take(),
+            streaming_auth.chunked_trailer,
+        );
+        match decoder
+            .decode_into(&mut file, &mut etag_hasher, checksum_hasher.as_mut())
+            .await
+        {
+            Ok(total) => {
+                for (name, value) in decoder.trailers() {
+                    if name.starts_with("x-amz-checksum-") {
+                        trailer_checksum = Some((name.clone(), value.clone()));
+                    }
+                }
+                total
+            }
             Err(err) => {
                 let _ = tokio::fs::remove_file(&staging).await;
                 let (code, message) = if err.kind() == std::io::ErrorKind::PermissionDenied {
@@ -1373,6 +1445,9 @@ pub(crate) async fn s3_root_put_object(
             }
             etag_hasher.update(&frame);
             sha.update(&frame);
+            if let Some(hasher) = checksum_hasher.as_mut() {
+                hasher.update(&frame);
+            }
             total += frame.len() as u64;
         }
         // 普通 SigV4（声明 64 位 hex）：流式消费后比对 body SHA256 防篡改
@@ -1390,6 +1465,37 @@ pub(crate) async fn s3_root_put_object(
         }
         total
     };
+
+    // checksum 校验：期望值来自请求头或 aws-chunked trailer，不匹配回 BadDigest
+    let mut stored_checksum: Option<rustio_core::types::S3ObjectChecksum> = None;
+    if let (Some(request), Some(hasher)) = (checksum_request.as_ref(), checksum_hasher.take()) {
+        let computed = hasher.finalize();
+        let expected = request.expected.clone().or_else(|| {
+            trailer_checksum
+                .as_ref()
+                .filter(|(name, _)| name == request.algorithm.header_name())
+                .map(|(_, value)| value.clone())
+        });
+        if let Some(expected) = expected {
+            if expected.trim() != computed {
+                let _ = tokio::fs::remove_file(&staging).await;
+                return s3_error(
+                    StatusCode::BAD_REQUEST,
+                    "BadDigest",
+                    &format!(
+                        "The {} you specified did not match the calculated checksum",
+                        request.algorithm.name()
+                    ),
+                    &key,
+                );
+            }
+        }
+        stored_checksum = Some(rustio_core::types::S3ObjectChecksum {
+            algorithm: request.algorithm.name().to_string(),
+            value: computed,
+            checksum_type: "FULL_OBJECT".to_string(),
+        });
+    }
 
     if let Err(err) = file.sync_all().await {
         let _ = tokio::fs::remove_file(&staging).await;
@@ -1423,6 +1529,7 @@ pub(crate) async fn s3_root_put_object(
     meta.user_metadata = request_user_metadata;
     meta.tags = request_tags;
     meta.encryption = requested_encryption;
+    meta.checksum = stored_checksum;
 
     if !encryption_enabled(&meta) {
         // 非加密：从已落盘的目标文件流式 EC 编码，内存恒定
@@ -1505,6 +1612,9 @@ pub(crate) async fn s3_root_put_object(
             axum::http::header::HeaderName::from_static("x-amz-version-id"),
             value,
         );
+    }
+    if let Some(ref checksum) = meta.checksum {
+        apply_checksum_headers(&mut response, checksum);
     }
     apply_object_encryption_headers(&mut response, &meta.encryption);
     response
@@ -2432,7 +2542,7 @@ pub(crate) async fn s3_get_object_attributes(
             Ok(value) => value,
             Err(response) => return response,
         };
-    let (meta, _, bytes) = match load_selected_object_for_advanced_api(
+    let (meta, _, _bytes) = match load_selected_object_for_advanced_api(
         &state,
         &bucket,
         &key,
@@ -2444,7 +2554,8 @@ pub(crate) async fn s3_get_object_attributes(
         Ok(value) => value,
         Err(response) => return response,
     };
-    let checksum_sha256 = BASE64.encode(Sha256::digest(&bytes));
+    // 使用 PutObject/CompleteMPU 时存储的 checksum（不再现场全量读对象计算）
+    let stored_checksum = meta.checksum.clone();
     let requested_items = requested
         .split(',')
         .map(|item| item.trim().to_ascii_uppercase())
@@ -2459,6 +2570,17 @@ pub(crate) async fn s3_get_object_attributes(
         );
     }
 
+    let checksum_inner_xml = stored_checksum.as_ref().and_then(|checksum| {
+        ChecksumAlgorithm::parse(&checksum.algorithm).map(|algorithm| {
+            format!(
+                "<{tag}>{value}</{tag}><ChecksumType>{ctype}</ChecksumType>",
+                tag = algorithm.xml_tag(),
+                value = xml_escape(&checksum.value),
+                ctype = xml_escape(&checksum.checksum_type),
+            )
+        })
+    });
+
     let mut xml = String::from(
         r#"<?xml version="1.0" encoding="UTF-8"?><GetObjectAttributesOutput xmlns="http://s3.amazonaws.com/doc/2006-03-01/">"#,
     );
@@ -2471,12 +2593,11 @@ pub(crate) async fn s3_get_object_attributes(
                 ));
             }
             "CHECKSUM" => {
-                xml.push_str("<Checksum>");
-                xml.push_str(&format!(
-                    "<ChecksumSHA256>{}</ChecksumSHA256>",
-                    xml_escape(&checksum_sha256)
-                ));
-                xml.push_str("</Checksum>");
+                if let Some(ref inner) = checksum_inner_xml {
+                    xml.push_str("<Checksum>");
+                    xml.push_str(inner);
+                    xml.push_str("</Checksum>");
+                }
             }
             "OBJECTSIZE" => {
                 xml.push_str(&format!("<ObjectSize>{}</ObjectSize>", meta.size));
@@ -2488,19 +2609,19 @@ pub(crate) async fn s3_get_object_attributes(
                 ));
             }
             "OBJECTPARTS" => {
+                // multipart 对象 ETag 以 `-N` 结尾，N 为 part 数；单段对象输出单 part
+                let parts_count = meta
+                    .etag
+                    .rsplit_once('-')
+                    .and_then(|(_, count)| count.parse::<u64>().ok())
+                    .unwrap_or(1);
                 xml.push_str("<ObjectParts>");
                 xml.push_str("<IsTruncated>false</IsTruncated>");
-                xml.push_str("<MaxParts>1</MaxParts>");
+                xml.push_str(&format!("<MaxParts>{parts_count}</MaxParts>"));
                 xml.push_str("<PartNumberMarker>0</PartNumberMarker>");
                 xml.push_str("<NextPartNumberMarker>0</NextPartNumberMarker>");
-                xml.push_str("<PartsCount>1</PartsCount>");
-                xml.push_str("<Part><PartNumber>1</PartNumber>");
-                xml.push_str(&format!("<Size>{}</Size>", meta.size));
-                xml.push_str(&format!(
-                    "<ChecksumSHA256>{}</ChecksumSHA256>",
-                    xml_escape(&checksum_sha256)
-                ));
-                xml.push_str("</Part></ObjectParts>");
+                xml.push_str(&format!("<PartsCount>{parts_count}</PartsCount>"));
+                xml.push_str("</ObjectParts>");
             }
             _ => {
                 return s3_error(

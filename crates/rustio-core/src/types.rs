@@ -1333,6 +1333,18 @@ pub struct S3ObjectMeta {
     pub user_metadata: HashMap<String, String>,
     #[serde(default)]
     pub encryption: S3ObjectEncryptionMeta,
+    #[serde(default)]
+    pub checksum: Option<S3ObjectChecksum>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct S3ObjectChecksum {
+    /// 算法名（CRC32/CRC32C/SHA1/SHA256/CRC64NVME）
+    pub algorithm: String,
+    /// base64 编码的 checksum 值；COMPOSITE 时带 `-N` 后缀
+    pub value: String,
+    /// FULL_OBJECT 或 COMPOSITE
+    pub checksum_type: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

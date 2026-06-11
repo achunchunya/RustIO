@@ -2,13 +2,16 @@
 
 use super::*;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn s3_list_object_versions_xml(
     state: Arc<AppState>,
     bucket: &str,
     prefix: &str,
+    delimiter: &str,
     max_keys: usize,
     key_marker: &str,
     version_id_marker: &str,
+    encoding_url: bool,
 ) -> Response {
     let bucket_root = match bucket_path(&state, bucket) {
         Ok(path) => path,
@@ -101,8 +104,57 @@ pub(crate) async fn s3_list_object_versions_xml(
             .cmp(&right.0)
             .then_with(|| right.1.created_at.cmp(&left.1.created_at))
     });
-    let truncated = records.len() > max_keys;
-    let result = records.into_iter().take(max_keys).collect::<Vec<_>>();
+
+    // marker 过滤：从 key-marker/version-id-marker 之后开始
+    if !key_marker.is_empty() {
+        if !version_id_marker.is_empty() {
+            // 找到精确 marker 位置，保留其后的记录；找不到则退化为 key > key-marker
+            if let Some(position) = records
+                .iter()
+                .position(|(key, meta, _)| key == key_marker && meta.version_id == version_id_marker)
+            {
+                records.drain(..=position);
+            } else {
+                records.retain(|(key, _, _)| key.as_str() > key_marker);
+            }
+        } else {
+            records.retain(|(key, _, _)| key.as_str() > key_marker);
+        }
+    }
+
+    // delimiter 折叠：prefix 之后含 delimiter 的 key 归入 CommonPrefixes
+    enum VersionEntry {
+        Record(String, Box<S3ObjectMeta>, bool),
+        CommonPrefix(String),
+    }
+    let mut entries: Vec<VersionEntry> = Vec::new();
+    let mut seen_prefixes: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for (key, meta, is_latest) in records {
+        if !delimiter.is_empty() {
+            let rest = &key[prefix.len()..];
+            if let Some(pos) = rest.find(delimiter) {
+                let common = format!("{prefix}{}{delimiter}", &rest[..pos]);
+                if seen_prefixes.insert(common.clone()) {
+                    entries.push(VersionEntry::CommonPrefix(common));
+                }
+                continue;
+            }
+        }
+        entries.push(VersionEntry::Record(key, Box::new(meta), is_latest));
+    }
+
+    let truncated = entries.len() > max_keys;
+    entries.truncate(max_keys);
+    // 截断时输出 Next 标记，客户端凭此翻页
+    let (next_key_marker, next_version_id_marker) = if truncated {
+        match entries.last() {
+            Some(VersionEntry::Record(key, meta, _)) => (key.clone(), meta.version_id.clone()),
+            Some(VersionEntry::CommonPrefix(common)) => (common.clone(), String::new()),
+            None => (String::new(), String::new()),
+        }
+    } else {
+        (String::new(), String::new())
+    };
 
     let mut xml = String::from(
         r#"<?xml version="1.0" encoding="UTF-8"?><ListVersionsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">"#,
@@ -110,25 +162,50 @@ pub(crate) async fn s3_list_object_versions_xml(
     xml.push_str("<Name>");
     xml.push_str(&xml_escape(bucket));
     xml.push_str("</Name><Prefix>");
-    xml.push_str(&xml_escape(prefix));
+    xml.push_str(&xml_escape(&s3_encode_key(prefix, encoding_url)));
     xml.push_str("</Prefix><KeyMarker>");
-    xml.push_str(&xml_escape(key_marker));
+    xml.push_str(&xml_escape(&s3_encode_key(key_marker, encoding_url)));
     xml.push_str("</KeyMarker><VersionIdMarker>");
     xml.push_str(&xml_escape(version_id_marker));
-    xml.push_str("</VersionIdMarker><MaxKeys>");
+    xml.push_str("</VersionIdMarker>");
+    if encoding_url {
+        xml.push_str("<EncodingType>url</EncodingType>");
+    }
+    if !delimiter.is_empty() {
+        xml.push_str("<Delimiter>");
+        xml.push_str(&xml_escape(&s3_encode_key(delimiter, encoding_url)));
+        xml.push_str("</Delimiter>");
+    }
+    if truncated {
+        xml.push_str("<NextKeyMarker>");
+        xml.push_str(&xml_escape(&s3_encode_key(&next_key_marker, encoding_url)));
+        xml.push_str("</NextKeyMarker><NextVersionIdMarker>");
+        xml.push_str(&xml_escape(&next_version_id_marker));
+        xml.push_str("</NextVersionIdMarker>");
+    }
+    xml.push_str("<MaxKeys>");
     xml.push_str(&max_keys.to_string());
     xml.push_str("</MaxKeys><IsTruncated>");
     xml.push_str(if truncated { "true" } else { "false" });
     xml.push_str("</IsTruncated>");
 
-    for (_, meta, is_latest) in result {
+    for entry in &entries {
+        let (meta, is_latest) = match entry {
+            VersionEntry::CommonPrefix(common) => {
+                xml.push_str("<CommonPrefixes><Prefix>");
+                xml.push_str(&xml_escape(&s3_encode_key(common, encoding_url)));
+                xml.push_str("</Prefix></CommonPrefixes>");
+                continue;
+            }
+            VersionEntry::Record(_, meta, is_latest) => (meta, *is_latest),
+        };
         if meta.delete_marker {
             xml.push_str("<DeleteMarker>");
         } else {
             xml.push_str("<Version>");
         }
         xml.push_str("<Key>");
-        xml.push_str(&xml_escape(&meta.key));
+        xml.push_str(&xml_escape(&s3_encode_key(&meta.key, encoding_url)));
         xml.push_str("</Key><VersionId>");
         xml.push_str(&xml_escape(&meta.version_id));
         xml.push_str("</VersionId><IsLatest>");
@@ -142,7 +219,7 @@ pub(crate) async fn s3_list_object_versions_xml(
             xml.push_str("\"</ETag><Size>");
             xml.push_str(&meta.size.to_string());
             xml.push_str("</Size><StorageClass>");
-            xml.push_str(&xml_escape(object_storage_class(&meta)));
+            xml.push_str(&xml_escape(object_storage_class(meta)));
             xml.push_str("</StorageClass>");
         }
         if meta.delete_marker {

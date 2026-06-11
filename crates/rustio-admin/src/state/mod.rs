@@ -117,6 +117,7 @@ pub struct MultipartPart {
     pub size: u64,
     pub path: PathBuf,
     pub updated_at: DateTime<Utc>,
+    pub checksum: Option<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -127,6 +128,10 @@ pub struct MultipartUpload {
     pub initiated_at: DateTime<Utc>,
     pub parts: HashMap<u32, MultipartPart>,
     pub encryption: S3ObjectEncryptionMeta,
+    /// CreateMultipartUpload 指定的 x-amz-checksum-algorithm
+    pub checksum_algorithm: Option<String>,
+    /// FULL_OBJECT 或 COMPOSITE
+    pub checksum_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

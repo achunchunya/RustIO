@@ -19,6 +19,8 @@ pub(crate) struct S3BucketQuery {
     pub(crate) key_marker: Option<String>,
     #[serde(rename = "version-id-marker")]
     pub(crate) version_id_marker: Option<String>,
+    #[serde(rename = "encoding-type")]
+    pub(crate) encoding_type: Option<String>,
     pub(crate) location: Option<String>,
 }
 
@@ -34,6 +36,39 @@ pub(crate) struct CompleteMultipartUploadRequest {
 pub(crate) struct CompleteMultipartPart {
     pub(crate) part_number: u32,
     pub(crate) etag: Option<String>,
+    #[serde(rename = "ChecksumCRC32")]
+    pub(crate) checksum_crc32: Option<String>,
+    #[serde(rename = "ChecksumCRC32C")]
+    pub(crate) checksum_crc32c: Option<String>,
+    #[serde(rename = "ChecksumSHA1")]
+    pub(crate) checksum_sha1: Option<String>,
+    #[serde(rename = "ChecksumSHA256")]
+    pub(crate) checksum_sha256: Option<String>,
+    #[serde(rename = "ChecksumCRC64NVME")]
+    pub(crate) checksum_crc64nvme: Option<String>,
+}
+
+impl CompleteMultipartPart {
+    /// 取请求 XML 中携带的 checksum（算法, base64 值）；多个并存时返回 Err。
+    pub(crate) fn declared_checksum(&self) -> Result<Option<(ChecksumAlgorithm, String)>, String> {
+        let mut found: Vec<(ChecksumAlgorithm, String)> = Vec::new();
+        let candidates = [
+            (ChecksumAlgorithm::Crc32, &self.checksum_crc32),
+            (ChecksumAlgorithm::Crc32c, &self.checksum_crc32c),
+            (ChecksumAlgorithm::Sha1, &self.checksum_sha1),
+            (ChecksumAlgorithm::Sha256, &self.checksum_sha256),
+            (ChecksumAlgorithm::Crc64Nvme, &self.checksum_crc64nvme),
+        ];
+        for (algorithm, value) in candidates {
+            if let Some(value) = value.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                found.push((algorithm, value.to_string()));
+            }
+        }
+        if found.len() > 1 {
+            return Err("Expecting a single checksum per part".to_string());
+        }
+        Ok(found.pop())
+    }
 }
 
 #[derive(Debug, Deserialize, Default)]

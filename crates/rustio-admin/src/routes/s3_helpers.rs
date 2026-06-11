@@ -265,6 +265,21 @@ pub(crate) fn weak_etag(bytes: &[u8]) -> String {
     format!("{:x}", result)
 }
 
+/// encoding-type=url 时对 List 响应中的 key 类字段（Key/Prefix/Delimiter/Marker 等）
+/// 做 URL 编码；'/' 不编码，对齐 AWS 行为。
+pub(crate) fn s3_encode_key(value: &str, encoding_url: bool) -> String {
+    if !encoding_url {
+        return value.to_string();
+    }
+    const KEY_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
+        .remove(b'/')
+        .remove(b'-')
+        .remove(b'_')
+        .remove(b'.')
+        .remove(b'~');
+    utf8_percent_encode(value, KEY_ENCODE_SET).to_string()
+}
+
 pub(crate) fn format_http_date(value: DateTime<Utc>) -> String {
     value.format("%a, %d %b %Y %H:%M:%S GMT").to_string()
 }

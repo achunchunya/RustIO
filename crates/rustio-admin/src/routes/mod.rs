@@ -15,6 +15,7 @@ mod oidc;
 pub(crate) mod rate_limit;
 mod replication;
 mod s3_bucket_ops;
+mod s3_checksum;
 mod s3_chunked;
 mod s3_helpers;
 mod s3_meta;
@@ -44,6 +45,7 @@ pub(crate) use ldap::*;
 pub(crate) use oidc::*;
 pub(crate) use replication::*;
 pub(crate) use s3_bucket_ops::*;
+pub(crate) use s3_checksum::*;
 pub(crate) use s3_helpers::*;
 pub(crate) use s3_meta::*;
 pub(crate) use s3_object_ops::*;
@@ -2656,7 +2658,14 @@ async fn root_entry(
         if let Err(response) = ensure_metadata_read_barrier_s3(&state, "root").await {
             return response;
         }
-        return s3_list_buckets_xml(state).await;
+        let prefix = query_value(uri.query(), "prefix").unwrap_or_default();
+        let continuation_token =
+            query_value(uri.query(), "continuation-token").unwrap_or_default();
+        let max_buckets = query_value(uri.query(), "max-buckets")
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(10_000)
+            .clamp(1, 10_000);
+        return s3_list_buckets_xml(state, &prefix, &continuation_token, max_buckets).await;
     }
 
     if method == Method::GET || method == Method::HEAD {

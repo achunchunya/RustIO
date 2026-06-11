@@ -463,6 +463,7 @@ pub(crate) async fn list_object_versions(
                 user_metadata: HashMap::new(),
                 encryption: S3ObjectEncryptionMeta::default(),
                 content_type: None,
+                checksum: None,
             });
         }
     }
@@ -786,5 +787,6 @@ pub(crate) async fn build_object_meta_for_current_version(
         user_metadata: HashMap::new(),
         encryption: S3ObjectEncryptionMeta::default(),
         content_type,
+        checksum: None,
     }
 }
