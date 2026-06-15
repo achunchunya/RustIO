@@ -25,7 +25,7 @@ fn remote_manifest_url(node_addr: &str, bucket: &str, object_hash: &str) -> Stri
 }
 
 /// 将 manifest 字节 PUT 到远程节点副本。
-async fn put_remote_manifest(
+pub(crate) async fn put_remote_manifest(
     node_addr: &str,
     bucket: &str,
     object_hash: &str,
@@ -116,7 +116,7 @@ fn manifest_replica_nodes(state: &AppState, manifest: &EcObjectManifest) -> Vec<
 
 /// quorum 写 manifest 到多副本节点。floor(N/2)+1 成功才算成功。
 /// 单机退化为本地单写。`local_manifest_path` 是本节点 manifest 落盘路径。
-async fn write_manifest_quorum(
+pub(crate) async fn write_manifest_quorum(
     state: &AppState,
     bucket: &str,
     object_hash: &str,
@@ -153,7 +153,7 @@ async fn write_manifest_quorum(
 /// 取 `updated_at` 最新者,并 inline healing 回写本地一份(下次本地命中)。
 /// 这解决了 manifest 单副本单点:本节点没有该对象 manifest 时仍能从其他副本读到。
 /// 返回 Ok(None) 表示所有已知副本都无该对象 manifest。
-async fn read_manifest_quorum(
+pub(crate) async fn read_manifest_quorum(
     state: &AppState,
     bucket_root: &FsPath,
     bucket: &str,
@@ -280,7 +280,7 @@ async fn put_remote_shard_file(
 }
 
 /// 从远程节点 GET 分片原始字节。
-async fn get_remote_shard(
+pub(crate) async fn get_remote_shard(
     node_addr: &str,
     bucket: &str,
     object_hash: &str,

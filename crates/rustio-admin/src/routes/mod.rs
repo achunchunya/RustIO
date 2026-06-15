@@ -13,6 +13,7 @@ mod kms_rotate;
 mod ldap;
 mod oidc;
 pub(crate) mod rate_limit;
+mod rebalance;
 mod replication;
 mod s3_bucket_ops;
 mod s3_checksum;
@@ -43,6 +44,7 @@ pub(crate) use kms::*;
 pub(crate) use kms_rotate::*;
 pub(crate) use ldap::*;
 pub(crate) use oidc::*;
+pub(crate) use rebalance::*;
 pub(crate) use replication::*;
 pub(crate) use s3_bucket_ops::*;
 pub(crate) use s3_checksum::*;
@@ -210,6 +212,14 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/cluster/nodes", get(list_nodes))
         .route("/api/v1/cluster/peers", get(list_cluster_peers))
         .route("/api/v1/cluster/membership/add", post(add_cluster_member))
+        .route(
+            "/api/v1/cluster/membership/remove",
+            post(remove_cluster_member),
+        )
+        .route(
+            "/api/v1/cluster/membership/decommission",
+            post(decommission_cluster_member),
+        )
         .route("/api/v1/cluster/nodes/{id}/offline", post(set_node_offline))
         .route("/api/v1/cluster/nodes/{id}/online", post(set_node_online))
         .route("/api/v1/cluster/quotas", get(list_quotas))
@@ -435,6 +445,14 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             post(start_storage_rebalance),
         )
         .route(
+            "/api/v1/storage/governance/cluster-rebalance",
+            post(start_cluster_rebalance),
+        )
+        .route(
+            "/api/v1/storage/governance/cluster-rebalance/cancel",
+            post(cancel_cluster_rebalance),
+        )
+        .route(
             "/api/v1/storage/governance/decommission",
             post(start_storage_decommission),
         )
@@ -603,6 +621,18 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/internal/metadata-raft/write", post(raft_metadata_write))
         .route("/api/v1/internal/cluster/membership/add", post(raft_membership_add))
         .route(
+            "/api/v1/internal/cluster/membership/remove",
+            post(raft_membership_remove),
+        )
+        .route(
+            "/api/v1/internal/cluster/rebalance",
+            post(internal_cluster_rebalance),
+        )
+        .route(
+            "/api/v1/internal/cluster/decommission",
+            post(internal_cluster_decommission),
+        )
+        .route(
             "/api/v1/internal/ec/shard/{bucket}/{object_hash}/{disk_index}/{shard_index}",
             put(internal_ec_shard_put)
                 .get(internal_ec_shard_get)
@@ -619,6 +649,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/v1/internal/ec/manifest-stat/{bucket}/{object_hash}",
             get(internal_ec_manifest_stat),
+        )
+        .route(
+            "/api/v1/internal/ec/manifest-list",
+            get(internal_ec_manifest_list),
         )
         .route(
             "/{bucket}",

@@ -2296,6 +2296,7 @@ pub(crate) async fn add_cluster_member(
         api_addr: body.api_addr.clone(),
         zone: body.zone.unwrap_or_else(|| "default".to_string()),
         disks: body.disks.clone(),
+        draining: false,
     };
 
     // 非 leader:把加节点请求转发到 leader(add_learner/change_membership 是 leader-only)。
@@ -2354,6 +2355,155 @@ async fn forward_add_member_to_leader(
     } else {
         Err(AppError::internal(format!(
             "leader 加节点返回 HTTP {}",
+            resp.status()
+        )))
+    }
+}
+
+/// 动态成员变更:移除节点请求体。
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct RemoveClusterMemberRequest {
+    pub node_id: u64,
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// force=true:强删死节点(校验离线 + 剩余节点足够),移除后自动后台重建丢失分片。
+    /// force=false(默认):裸移除(仅成员集与拓扑收缩,不迁移数据)。
+    #[serde(default)]
+    pub force: bool,
+}
+
+/// 把节点从集群移除(动态成员变更,leader-only;非 leader 自动转发到 leader)。
+/// - force=false:裸移除(仅成员集与拓扑收缩);在线节点数据迁移应走 decommission。
+/// - force=true:强删死节点——校验离线 + 剩余非 draining 节点 ≥ 2,移除后后台 rebalance 重建。
+pub(crate) async fn remove_cluster_member(
+    State(state): State<Arc<AppState>>,
+    auth: AuthContext,
+    headers: HeaderMap,
+    Json(body): Json<RemoveClusterMemberRequest>,
+) -> Result<Json<ApiEnvelope<Vec<crate::state::cluster::ClusterPeerInfo>>>, AppError> {
+    auth.require(Permission::ClusterWrite)?;
+    ensure_confirm_header(&headers)?;
+
+    if body.node_id == 0 {
+        return Err(AppError::bad_request("node_id 必须 > 0 / node_id must be > 0"));
+    }
+    if !state.cluster_peers.read().await.contains_key(&body.node_id) {
+        return Err(AppError::not_found("节点不存在 / node not found"));
+    }
+
+    // force 模式预检:目标必须离线(在线节点应走 decommission 优雅退役),且移除后剩余节点足够。
+    if body.force {
+        if body.node_id == state.local_node_id {
+            return Err(AppError::bad_request(
+                "不能强删 leader 自身 / cannot force-remove the leader itself",
+            ));
+        }
+        let online = {
+            let health = state.storage_governance.read().await;
+            health
+                .peer_health
+                .get(&body.node_id)
+                .map(|h| h.online)
+                .unwrap_or(false)
+        };
+        if online {
+            return Err(AppError::bad_request(
+                "目标节点在线,请使用 decommission 优雅退役 / node is online, use decommission instead",
+            ));
+        }
+        let remaining = {
+            let peers = state.cluster_peers.read().await;
+            peers
+                .values()
+                .filter(|p| !p.draining && p.node_id != body.node_id)
+                .count()
+        };
+        if remaining < 2 {
+            return Err(AppError::bad_request(
+                "移除后剩余节点不足 2,无法保证 EC 重建 / fewer than 2 nodes would remain for EC rebuild",
+            ));
+        }
+    }
+
+    // 非 leader(或目标是 leader 自身):转发到 leader 内部端点处理。
+    // leader 不能移除自身,这种情况内部端点在 leader 上会拒绝,由调用方在其他节点重试。
+    if !state.is_metadata_leader() {
+        let Some(leader_addr) = state.metadata_leader_addr() else {
+            return Err(AppError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "service_unavailable",
+                "当前无已知 leader,无法移除节点 / no known leader to remove member".to_string(),
+            ));
+        };
+        forward_remove_member_to_leader(&leader_addr, body.node_id, body.force).await?;
+    } else {
+        state
+            .raft_remove_member(body.node_id)
+            .await
+            .map_err(|err| AppError::internal(format!("移除节点失败 / remove member failed: {err}")))?;
+    }
+
+    // force 模式:移除后该节点分片全部缺失,后台 rebalance 重建(迁移原语走 RS 重建回退路径)。
+    // 仅 leader 执行编排;非 leader 已把移除转发 leader,重建由 leader 一侧的成员变更后续手动/自动触发。
+    if body.force && state.is_metadata_leader() {
+        let reason = body
+            .reason
+            .clone()
+            .unwrap_or_else(|| "force remove rebuild".to_string());
+        spawn_cluster_rebalance(&state, RebalanceScope::All, reason);
+    }
+
+    state
+        .append_audit(
+            &auth.username,
+            if body.force {
+                "cluster.membership.force_remove"
+            } else {
+                "cluster.membership.remove"
+            },
+            &format!("node/{}", body.node_id),
+            "success",
+            body.reason.clone(),
+            json!({ "node_id": body.node_id, "force": body.force }),
+        )
+        .await;
+    state
+        .push_event(
+            "cluster.membership.removed",
+            "cluster-service",
+            json!({ "node_id": body.node_id, "force": body.force }),
+        )
+        .await;
+
+    let peers: Vec<crate::state::cluster::ClusterPeerInfo> =
+        state.cluster_peers.read().await.values().cloned().collect();
+    Ok(wrap(peers))
+}
+
+/// 把移除节点请求转发到 leader 的内部端点。
+async fn forward_remove_member_to_leader(
+    leader_addr: &str,
+    node_id: u64,
+    force: bool,
+) -> Result<(), AppError> {
+    let url = format!("{leader_addr}/api/v1/internal/cluster/membership/remove");
+    let token = AppState::internal_control_token();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|err| AppError::internal(format!("构建转发 client 失败: {err}")))?;
+    let resp = client
+        .post(&url)
+        .header("x-rustio-internal-token", &token)
+        .json(&serde_json::json!({ "node_id": node_id, "force": force }))
+        .send()
+        .await
+        .map_err(|err| AppError::internal(format!("转发移除节点到 leader 失败: {err}")))?;
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        Err(AppError::internal(format!(
+            "leader 移除节点返回 HTTP {}",
             resp.status()
         )))
     }

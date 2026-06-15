@@ -492,6 +492,10 @@ pub(crate) async fn resolve_shard_placements(
     let mut sorted_peers: Vec<_> = peers.values().collect();
     sorted_peers.sort_by_key(|p| p.node_id);
     for peer in sorted_peers {
+        // 退役中(draining)节点不再接受新分片放置,排除出候选池。
+        if peer.draining {
+            continue;
+        }
         for disk in &peer.disks {
             candidates.push((
                 peer.node_id,
@@ -535,9 +539,12 @@ pub(crate) async fn resolve_shard_placements(
         let cursor = per_node_cursor.entry(node_id).or_insert(0);
         if *cursor < disks.len() {
             let (nid, addr, disk_idx, path) = disks[*cursor];
-            // 远程节点磁盘 path 为占位空值时,落盘回退本节点磁盘(同 disk_index 取模);
-            // 实际远程分片经 RPC 写到对端,不在本地落盘。
-            let write_path = if path.as_os_str().is_empty() {
+            // local_disk_path 仅对本节点有意义。远程节点上报的 local_path 是**对端机器**的
+            // 路径(seed 为占位空值;动态 join 节点为其真实本地路径),在本节点文件系统上无效。
+            // 因此远程分片一律回退本节点占位路径(同 disk_index 取模),实际分片经 RPC 落对端;
+            // 仅本节点分片用真实 path。
+            let is_remote = *nid != state.local_node_id;
+            let write_path = if is_remote || path.as_os_str().is_empty() {
                 let local_len = state.data_disks.len().max(1);
                 state.data_disks[*disk_idx % local_len].clone()
             } else {

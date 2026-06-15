@@ -38,6 +38,9 @@ pub(crate) enum MetadataCommand {
     /// 插入/更新单个集群节点拓扑(动态成员变更加节点时复制到各节点)。
     /// apply:insert 到 `cluster_peers`,使全集群拓扑一致、EC 放置纳入新节点。
     UpsertClusterPeer(Box<crate::state::cluster::ClusterPeerInfo>),
+    /// 移除单个集群节点拓扑(动态成员变更移除节点时复制到各节点)。
+    /// apply:remove `cluster_peers`,使 EC 放置/布局自动收缩到剩余节点。
+    RemoveClusterPeer { node_id: u64 },
 }
 
 /// 命令 apply 结果(经 openraft `client_write` 返回给调用方)。
@@ -161,6 +164,9 @@ impl MetadataCommand {
             MetadataCommand::UpsertClusterPeer(peer) => {
                 let peer = peer.as_ref().clone();
                 app.cluster_peers.write().await.insert(peer.node_id, peer);
+            }
+            MetadataCommand::RemoveClusterPeer { node_id } => {
+                app.cluster_peers.write().await.remove(node_id);
             }
         }
     }

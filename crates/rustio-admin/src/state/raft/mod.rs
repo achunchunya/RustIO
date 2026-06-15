@@ -184,6 +184,43 @@ impl AppState {
         Ok(())
     }
 
+    /// 动态成员变更:把节点从 raft 集群移除(本节点须是 leader)。
+    ///
+    /// 流程:change_membership(voters−{node_id}) 收缩 voter 集 → RemoveClusterPeer(复制拓扑收缩)。
+    /// 移除是 leader-only 操作;非 leader 调用返回错误(调用方负责判 leader 或转发)。
+    /// 不允许移除 leader 自身(避免成员变更与让位交错的不确定态;先由其他节点接任再移)。
+    pub(crate) async fn raft_remove_member(&self, node_id: u64) -> Result<(), String> {
+        let Some(raft) = self.meta_raft.get() else {
+            return Err("metadata raft 未初始化(单机模式不支持动态成员)".to_string());
+        };
+        if node_id == self.local_node_id {
+            return Err("不允许移除 leader 自身;请在其他节点发起移除".to_string());
+        }
+
+        let mut voters: std::collections::BTreeSet<u64> = {
+            let metrics = raft.metrics();
+            let m = metrics.borrow();
+            m.membership_config.voter_ids().collect()
+        };
+        let was_voter = voters.remove(&node_id);
+        if voters.is_empty() {
+            return Err("移除后将无任何 voter,拒绝执行".to_string());
+        }
+
+        // 1) change_membership:以收缩后的 voter 集提交(retain=false 同时移出 learner 残留)。
+        //    目标本就不是 voter(如仅 learner/拓扑残留)时跳过,直接清理拓扑。
+        if was_voter {
+            raft.change_membership(voters, false)
+                .await
+                .map_err(|err| format!("change_membership(remove {node_id}) 失败: {err:?}"))?;
+        }
+
+        // 2) 把拓扑收缩经 raft 复制到各节点 cluster_peers(EC 放置/布局自动排除该节点)。
+        self.submit_metadata_command(MetadataCommand::RemoveClusterPeer { node_id })
+            .await?;
+        Ok(())
+    }
+
     /// 本节点是否为 metadata raft 的 leader。
     pub(crate) fn is_metadata_leader(&self) -> bool {
         if let Some(raft) = self.meta_raft.get() {
@@ -317,6 +354,7 @@ impl AppState {
                 api_addr: local_api_addr,
                 zone: "default".to_string(),
                 disks,
+                draining: false,
             };
             let token = AppState::internal_control_token();
             let client = match reqwest::Client::builder()

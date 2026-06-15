@@ -306,7 +306,15 @@ pub(crate) async fn ec_layout_for(state: &AppState) -> (usize, usize) {
     if state.local_node_id == 0 {
         return ec_layout();
     }
-    let node_count = state.cluster_peers.read().await.len();
+    // 仅统计非 draining 节点:退役中节点不计入布局,新写入分片数随之收缩,
+    // 不再落到待退役节点(与 resolve_shard_placements 的 draining 过滤一致)。
+    let node_count = state
+        .cluster_peers
+        .read()
+        .await
+        .values()
+        .filter(|peer| !peer.draining)
+        .count();
     cluster_ec_layout(node_count)
 }
 

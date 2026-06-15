@@ -614,6 +614,93 @@ pub(crate) async fn raft_membership_add(
     }
 }
 
+/// 移除节点请求体(内部端点)。
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct RaftMembershipRemoveRequest {
+    pub(crate) node_id: u64,
+    /// force=true:强删死节点,移除后由 leader 侧后台 rebalance 重建丢失分片。
+    #[serde(default)]
+    pub(crate) force: bool,
+}
+
+/// 移除节点请求(管理员端点转发来):若本节点非 leader 则转发到 leader,
+/// leader 执行 change_membership 收缩 + RemoveClusterPeer 拓扑复制。
+pub(crate) async fn raft_membership_remove(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<RaftMembershipRemoveRequest>,
+) -> Response {
+    if let Err(response) = ensure_internal_token(&headers) {
+        return response;
+    }
+    // 非 leader:转发到 leader(change_membership 是 leader-only)。
+    if !state.is_metadata_leader() {
+        let Some(leader_addr) = state.metadata_leader_addr() else {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "no known leader"})),
+            )
+                .into_response();
+        };
+        let token = AppState::internal_control_token();
+        let url = format!("{leader_addr}/api/v1/internal/cluster/membership/remove");
+        let client = match reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+        {
+            Ok(c) => c,
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": format!("build client: {err}")})),
+                )
+                    .into_response()
+            }
+        };
+        return match client
+            .post(&url)
+            .header("x-rustio-internal-token", &token)
+            .json(&body)
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                (StatusCode::OK, Json(json!({"ok": true}))).into_response()
+            }
+            Ok(resp) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": format!("leader remove member HTTP {}", resp.status())})),
+            )
+                .into_response(),
+            Err(err) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": format!("forward to leader: {err}")})),
+            )
+                .into_response(),
+        };
+    }
+    match state.raft_remove_member(body.node_id).await {
+        Ok(()) => {
+            // force 强删:移除后该节点分片全缺失,leader 侧后台 rebalance 全量重建
+            //(迁移原语走 RS 重建回退路径)。转发路径(管理端点非 leader)经此触发,
+            // 与 leader 直发路径(remove_cluster_member 自身触发)互斥不重复。
+            if body.force {
+                crate::routes::spawn_cluster_rebalance(
+                    &state,
+                    crate::routes::RebalanceScope::All,
+                    "force remove rebuild".to_string(),
+                );
+            }
+            (StatusCode::OK, Json(json!({"ok": true}))).into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("remove member: {err}")})),
+        )
+            .into_response(),
+    }
+}
+
 // ── 跨节点 EC 分片 RPC 端点 ──
 
 /// 校验对象哈希为 64 位十六进制(SHA-256),防止路径穿越。

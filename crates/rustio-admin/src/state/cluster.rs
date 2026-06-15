@@ -17,6 +17,10 @@ pub struct ClusterPeerInfo {
     pub zone: String,
     /// 该节点管理的本地磁盘（global_disk_id → 本地路径）。
     pub disks: Vec<ClusterDiskInfo>,
+    /// 退役中标记:true 时不再接受新分片放置(优雅退役 draining 阶段),
+    /// EC 布局/放置自动排除该节点,存量数据经 rebalance 迁出后再从成员集移除。
+    #[serde(default)]
+    pub draining: bool,
 }
 
 /// 节点的单个本地磁盘（全局唯一 ID + 本地路径）。

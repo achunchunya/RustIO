@@ -209,6 +209,7 @@ impl AppState {
                     api_addr: cluster_config.local_api_addr.clone(),
                     zone: cluster_config.local_zone.clone(),
                     disks,
+                    draining: false,
                 },
             );
             // Seed peers:同构集群假设(磁盘数与本地相同)。远程节点的 local_path 仅占位,
@@ -234,6 +235,7 @@ impl AppState {
                         api_addr: seed_addr.clone(),
                         zone: "unknown".to_string(),
                         disks,
+                        draining: false,
                     },
                 );
             }
