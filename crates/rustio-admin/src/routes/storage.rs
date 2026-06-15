@@ -138,6 +138,17 @@ pub(crate) async fn inspect_storage_manifest(
     let mut corrupted_shards = 0usize;
     let mut affected_disks = HashSet::new();
     let object_hash = sha256_hex(manifest.key.as_bytes());
+    // 一次性读出已确认离线的节点集合(peer_health.online=false),供下方区分
+    // 「远程分片偶发探测抖动」与「节点确认宕机」——后者才计缺失触发重建。
+    let offline_nodes: HashSet<u64> = {
+        let runtime = state.storage_governance.read().await;
+        runtime
+            .peer_health
+            .iter()
+            .filter(|(_, h)| !h.online)
+            .map(|(id, _)| *id)
+            .collect()
+    };
     for shard_index in 0..total_shards {
         let shard = match shard_map.get(&shard_index).cloned() {
             Some(shard) => Some(shard),
@@ -187,15 +198,31 @@ pub(crate) async fn inspect_storage_manifest(
                     missing_shards += 1;
                     affected_disks.insert(disk_id);
                 }
-                // 节点不可达(超时/连接失败等瞬时故障)→ 不计缺失,避免网络抖动把健康对象
-                // 误判为缺失而触发重建风暴。本轮跳过该分片,下次扫描节点恢复后再判定。
+                // 节点不可达(超时/连接失败等)→ 需区分「偶发抖动」与「确认宕机」:
+                // - 若该节点在 peer_health 中已被探测确认离线(online=false),视为真宕机,
+                //   计缺失并触发重建(否则宕机节点的分片永远无法恢复);
+                // - 否则视为偶发抖动,本轮跳过不计,避免把健康对象误判为缺失而触发重建风暴。
                 Err(message) => {
-                    tracing::debug!(
-                        shard_index = shard.shard_index,
-                        node = %node_addr,
-                        error = %message,
-                        "治理扫描:远程分片探测失败(节点不可达),本轮跳过不计缺失"
-                    );
+                    let node_confirmed_offline = shard
+                        .node_id
+                        .map(|nid| offline_nodes.contains(&nid))
+                        .unwrap_or(false);
+                    if node_confirmed_offline {
+                        missing_shards += 1;
+                        affected_disks.insert(disk_id);
+                        tracing::warn!(
+                            shard_index = shard.shard_index,
+                            node = %node_addr,
+                            "治理扫描:远程分片所在节点已确认离线,计缺失并触发重建"
+                        );
+                    } else {
+                        tracing::debug!(
+                            shard_index = shard.shard_index,
+                            node = %node_addr,
+                            error = %message,
+                            "治理扫描:远程分片探测失败(疑似抖动),本轮跳过不计缺失"
+                        );
+                    }
                 }
             }
             continue;
