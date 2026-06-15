@@ -679,7 +679,7 @@ pub(crate) async fn raft_membership_remove(
                 .into_response(),
         };
     }
-    match state.raft_remove_member(body.node_id).await {
+    match crate::routes::locked_remove_member(&state, body.node_id, body.force).await {
         Ok(()) => {
             // force 强删:移除后该节点分片全缺失,leader 侧后台 rebalance 全量重建
             //(迁移原语走 RS 重建回退路径)。转发路径(管理端点非 leader)经此触发,

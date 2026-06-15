@@ -317,6 +317,10 @@ pub struct AppState {
     /// 集群：本节点 ID(0=单机模式) + peer 拓扑。
     pub local_node_id: u64,
     pub cluster_peers: RwLock<HashMap<u64, cluster::ClusterPeerInfo>>,
+    /// 成员变更串行锁:decommission / force-remove 的「检查剩余节点数 + 变更成员」需互斥执行,
+    /// 否则两个并发移除各自看不到对方,可能把集群降到预期外的节点数(TOCTOU)。
+    /// 仅保护「检查 + 提交成员变更」临界区,不覆盖耗时的 rebalance 迁移。
+    pub membership_change_lock: tokio::sync::Mutex<()>,
     pub architecture: ArchitectureTopology,
     pub credentials: RwLock<HashMap<String, LocalCredential>>,
     pub nodes: RwLock<Vec<ClusterNode>>,

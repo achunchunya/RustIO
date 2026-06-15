@@ -367,14 +367,33 @@ pub(crate) async fn internal_ec_manifest_list(
     let limit = params.limit.map(|v| v.clamp(1, 2000)).unwrap_or(200);
     let cursor_bucket = params.cursor.as_deref().unwrap_or("");
     let filter_bucket = params.bucket.as_deref().filter(|b| !b.is_empty());
+    let (entries, next_cursor) =
+        scan_manifest_entries_paged(&state, cursor_bucket, limit, filter_bucket).await;
+    (StatusCode::OK, Json(json!({ "entries": entries, "next_cursor": next_cursor }))).into_response()
+}
 
-    let bucket_names = state
+/// 分页扫描本节点 manifest 清单(handler 与本地枚举共用,可独立单测)。
+///
+/// 分页语义:游标 = 已完整返回的最后一个 bucket 名。`limit` 是 **bucket 边界对齐的软上限**——
+/// 单个 bucket 始终一次性完整返回(不中途截断,避免大 bucket 超出 limit 的对象被漏枚举导致
+/// rebalance 丢对象),达到 limit 后在 bucket 边界停止,下一页从下一个 bucket 续。
+/// bucket 列表排序后遍历,保证跨 RPC 调用游标稳定有效。返回 `(entries, next_cursor)`,
+/// next_cursor 为空表示已枚举到末尾。
+pub(crate) async fn scan_manifest_entries_paged(
+    state: &AppState,
+    cursor_bucket: &str,
+    limit: usize,
+    filter_bucket: Option<&str>,
+) -> (Vec<ManifestEntry>, String) {
+    // 排序保证跨 RPC 顺序稳定(HashMap.keys() 顺序不确定会使游标失效)。
+    let mut bucket_names = state
         .buckets
         .read()
         .await
         .keys()
         .cloned()
         .collect::<Vec<_>>();
+    bucket_names.sort();
     let mut entries: Vec<ManifestEntry> = Vec::new();
     let mut next_cursor = String::new();
     let mut started = cursor_bucket.is_empty();
@@ -384,31 +403,32 @@ pub(crate) async fn internal_ec_manifest_list(
             continue;
         }
         if !started {
+            // 跳过游标及之前的 bucket(上一页已完整返回)。
             if bucket_name.as_str() == cursor_bucket {
                 started = true;
             }
             continue;
         }
-        if entries.len() >= limit {
-            next_cursor = bucket_name.clone();
-            break;
-        }
 
-        let bucket_root = match bucket_path(&state, bucket_name) {
+        let bucket_root = match bucket_path(state, bucket_name) {
             Ok(p) => p,
             Err(_) => continue,
         };
         let manifest_dir = bucket_root.join(".rustio_ec_meta");
         let mut dir = match tokio::fs::read_dir(&manifest_dir).await {
             Ok(d) => d,
-            Err(_) => continue,
+            Err(_) => {
+                // 该 bucket 无 manifest 目录:仍视为"已完整处理",游标推进。
+                next_cursor = bucket_name.clone();
+                if entries.len() >= limit {
+                    break;
+                }
+                continue;
+            }
         };
 
+        // 完整扫描该 bucket 的所有 manifest(不中途截断,保证不丢对象)。
         loop {
-            if entries.len() >= limit {
-                next_cursor = bucket_name.clone();
-                break;
-            }
             let Some(entry) = dir.next_entry().await.unwrap_or(None) else {
                 break;
             };
@@ -439,9 +459,19 @@ pub(crate) async fn internal_ec_manifest_list(
                 node_ids,
             });
         }
+        // 该 bucket 已完整返回,游标推进到它;达到软上限则在 bucket 边界停止。
+        next_cursor = bucket_name.clone();
+        if entries.len() >= limit {
+            break;
+        }
     }
 
-    (StatusCode::OK, Json(json!({ "entries": entries, "next_cursor": next_cursor }))).into_response()
+    // 自然遍历完所有 bucket(未因 limit 提前 break)→ 清空游标表示结束。
+    if entries.len() < limit {
+        next_cursor = String::new();
+    }
+
+    (entries, next_cursor)
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -684,52 +714,9 @@ async fn enumerate_cluster_manifests(state: &Arc<AppState>) -> Result<Vec<Manife
     Ok(dedup.into_values().collect())
 }
 
-/// 本地扫描 manifest 目录。
+/// 本地扫描全部 manifest 条目(无分页,复用分页扫描逻辑的全量形式)。
 async fn collect_local_manifest_entries(state: &AppState) -> Result<Vec<ManifestEntry>, String> {
-    let mut entries = Vec::new();
-    let bucket_names = state.buckets.read().await.keys().cloned().collect::<Vec<_>>();
-    for bucket in bucket_names {
-        let bucket_root = match bucket_path(state, &bucket) {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
-        let dir = bucket_root.join(".rustio_ec_meta");
-        let mut entries_iter = match tokio::fs::read_dir(&dir).await {
-            Ok(d) => d,
-            Err(_) => continue,
-        };
-        loop {
-            let Some(entry) = entries_iter.next_entry().await.unwrap_or(None) else {
-                break;
-            };
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("json") {
-                continue;
-            }
-            let bytes = match tokio::fs::read(&path).await {
-                Ok(b) => b,
-                Err(_) => continue,
-            };
-            let manifest: EcObjectManifest = match serde_json::from_slice(&bytes) {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            let node_ids: Vec<u64> = manifest
-                .shards
-                .iter()
-                .filter_map(|s| s.node_id)
-                .chain(std::iter::once(state.local_node_id))
-                .collect::<HashSet<_>>()
-                .into_iter()
-                .collect();
-            entries.push(ManifestEntry {
-                bucket: manifest.bucket.clone(),
-                key: manifest.key.clone(),
-                updated_at: manifest.updated_at.to_rfc3339(),
-                node_ids,
-            });
-        }
-    }
+    let (entries, _) = scan_manifest_entries_paged(state, "", usize::MAX, None).await;
     Ok(entries)
 }
 
@@ -1083,7 +1070,25 @@ pub(crate) fn spawn_decommission(state: &Arc<AppState>, node_id: u64, reason: St
 /// 退役全流程:标记 draining → rebalance(scope=node)→ 复核残留 → 移除成员。
 async fn run_decommission(state: &Arc<AppState>, node_id: u64, reason: &str) -> Result<(), String> {
     // 1) 标记 draining(经 raft 复制到各节点,新写入立即不再落该节点)。
-    set_peer_draining(state, node_id, true).await?;
+    //    持成员变更锁做「校验剩余非 draining 节点 ≥ 2 + 标记」,与 force-remove 互斥:
+    //    避免并发移除把可用节点数降到布局无法满足。
+    {
+        let _guard = state.membership_change_lock.lock().await;
+        let remaining = state
+            .cluster_peers
+            .read()
+            .await
+            .values()
+            .filter(|p| !p.draining && p.node_id != node_id)
+            .count();
+        if remaining < 2 {
+            return Err(bilingual(
+                "退役后剩余节点不足 2,无法保证 EC 布局",
+                "fewer than 2 nodes would remain after decommission",
+            ));
+        }
+        set_peer_draining(state, node_id, true).await?;
+    }
 
     // 2) rebalance 迁出引用该节点的对象。
     let (migrated, skipped, failed) =
@@ -1103,7 +1108,8 @@ async fn run_decommission(state: &Arc<AppState>, node_id: u64, reason: &str) -> 
     }
 
     // 4) 从 raft 成员集移除(收缩 voter + RemoveClusterPeer 拓扑)。
-    state.raft_remove_member(node_id).await?;
+    //    该节点已 draining,locked_remove_member 不需 force 校验(剩余即非 draining 节点)。
+    locked_remove_member(state, node_id, false).await?;
     Ok(())
 }
 

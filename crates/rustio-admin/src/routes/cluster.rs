@@ -2360,6 +2360,32 @@ async fn forward_add_member_to_leader(
     }
 }
 
+/// 持成员变更锁的原子移除:在锁内重新校验剩余节点数(force),再提交 raft 成员变更。
+/// 消除两个并发移除各自看不到对方的 TOCTOU(同时只有一个 leader,所有移除在其上串行)。
+/// 必须在 leader 上调用(raft_remove_member 是 leader-only)。
+pub(crate) async fn locked_remove_member(
+    state: &Arc<AppState>,
+    node_id: u64,
+    force: bool,
+) -> Result<(), String> {
+    let _guard = state.membership_change_lock.lock().await;
+    if force {
+        let remaining = state
+            .cluster_peers
+            .read()
+            .await
+            .values()
+            .filter(|p| !p.draining && p.node_id != node_id)
+            .count();
+        if remaining < 2 {
+            return Err(
+                "移除后剩余节点不足 2,无法保证 EC 重建 / fewer than 2 nodes would remain".to_string(),
+            );
+        }
+    }
+    state.raft_remove_member(node_id).await
+}
+
 /// 动态成员变更:移除节点请求体。
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct RemoveClusterMemberRequest {
@@ -2437,8 +2463,7 @@ pub(crate) async fn remove_cluster_member(
         };
         forward_remove_member_to_leader(&leader_addr, body.node_id, body.force).await?;
     } else {
-        state
-            .raft_remove_member(body.node_id)
+        locked_remove_member(&state, body.node_id, body.force)
             .await
             .map_err(|err| AppError::internal(format!("移除节点失败 / remove member failed: {err}")))?;
     }

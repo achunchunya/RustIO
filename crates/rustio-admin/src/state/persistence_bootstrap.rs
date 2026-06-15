@@ -435,6 +435,7 @@ impl AppState {
             data_disks,
             local_node_id,
             cluster_peers: RwLock::new(cluster_peers),
+            membership_change_lock: tokio::sync::Mutex::new(()),
             architecture: ArchitectureTopology {
                 version: "m0-architecture-aligned".to_string(),
                 aligned_at: now,

@@ -1062,6 +1062,12 @@ impl AppState {
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
             return;
         };
+        // 清理上次运行遗留的 rebalance 迁移临时文件(进程中途崩溃会残留,长期累积占满磁盘)。
+        // 迁移临时文件无跨重启价值(迁移幂等可重跑),启动时整目录清空安全。
+        let tmp_dir = self.data_dir.join(".rebalance_tmp");
+        handle.spawn(async move {
+            let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
+        });
         use futures::FutureExt;
         // 后台常驻 worker 的单轮执行包一层 catch_unwind:某轮 panic 时记录日志并继续下一轮,
         // 避免 panic 沿 future 展开导致整个 worker task 静默永久退出。
