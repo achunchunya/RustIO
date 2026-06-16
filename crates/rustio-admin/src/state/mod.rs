@@ -132,6 +132,10 @@ pub struct MultipartUpload {
     pub checksum_algorithm: Option<String>,
     /// FULL_OBJECT 或 COMPOSITE
     pub checksum_type: Option<String>,
+    /// CreateMultipartUpload 声明的 Content-Type(complete 时恢复到对象元数据)。
+    pub content_type: Option<String>,
+    /// CreateMultipartUpload 声明的 x-amz-meta-* 用户元数据(complete 时恢复)。
+    pub user_metadata: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

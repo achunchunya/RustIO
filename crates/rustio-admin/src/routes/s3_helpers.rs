@@ -72,21 +72,31 @@ pub(crate) fn collect_objects_page_indexed(
     start_after: &str,
     limit: usize,
 ) -> (Vec<DiskObjectEntry>, bool) {
-    // range 起点 = max(prefix, start_after):保证从 prefix 边界且越过 continuation 点开始。
-    let effective_start = if start_after > prefix {
-        start_after
-    } else {
-        prefix
-    };
+    // range 起点 = max(prefix, start_after)。两者 exclusive/inclusive 语义不同:
+    //   - start_after(分页 continuation):exclusive,从其之后开始;
+    //   - prefix(范围下界):inclusive,等于 prefix 的对象必须保留
+    //     (否则 LIST(prefix=某对象完整key) 会漏掉该对象)。
+    let use_start_after = start_after > prefix;
+    let effective_start = if use_start_after { start_after } else { prefix };
     // 多取 1 个判断是否截断;delete_marker 需跳过,故循环补取直到够数或耗尽。
     let mut out: Vec<DiskObjectEntry> = Vec::with_capacity(limit.min(4096));
     let mut cursor = effective_start.to_string();
+    // 首批:effective_start 来自 prefix 时 inclusive;来自 start_after 时 exclusive。
+    let mut inclusive_first = !use_start_after && !prefix.is_empty();
     let mut has_more = false;
     'outer: loop {
-        let batch = state
-            .meta_store
-            .scan_bucket_page(bucket, &cursor, limit + 1)
-            .unwrap_or_default();
+        let batch = if inclusive_first {
+            state
+                .meta_store
+                .scan_bucket_page_inclusive(bucket, &cursor, limit + 1)
+                .unwrap_or_default()
+        } else {
+            state
+                .meta_store
+                .scan_bucket_page(bucket, &cursor, limit + 1)
+                .unwrap_or_default()
+        };
+        inclusive_first = false; // 后续批次以上一批末尾 key 为 exclusive continuation。
         if batch.is_empty() {
             break;
         }
@@ -97,7 +107,7 @@ pub(crate) fn collect_objects_page_indexed(
             if !prefix.is_empty() && !meta.key.starts_with(prefix) {
                 break 'outer;
             }
-            // 与 start_after 严格大于(scan_bucket_page 已 exclusive,但 effective_start=prefix 时需再判)。
+            // 与 start_after 严格大于(continuation 已 exclusive,但 effective_start=prefix 时需再判)。
             if !start_after.is_empty() && meta.key.as_str() <= start_after {
                 continue;
             }

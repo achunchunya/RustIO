@@ -185,14 +185,39 @@ impl MetaStore {
         start_after: &str,
         limit: usize,
     ) -> Result<Vec<S3ObjectMeta>, String> {
+        self.scan_bucket_page_inner(bucket, start_after, limit, false)
+    }
+
+    /// 同 `scan_bucket_page`,但起点为 **inclusive**(包含等于 `start` 自身的 key)。
+    /// 用于 LIST 的 prefix 下界:prefix 恰等于某对象完整 key 时,该对象必须保留
+    /// (exclusive 版本会把它误跳过——LIST(prefix=完整key) 漏对象的根因)。
+    pub(crate) fn scan_bucket_page_inclusive(
+        &self,
+        bucket: &str,
+        start: &str,
+        limit: usize,
+    ) -> Result<Vec<S3ObjectMeta>, String> {
+        self.scan_bucket_page_inner(bucket, start, limit, true)
+    }
+
+    fn scan_bucket_page_inner(
+        &self,
+        bucket: &str,
+        start_after: &str,
+        limit: usize,
+        inclusive: bool,
+    ) -> Result<Vec<S3ObjectMeta>, String> {
         let (prefix_start, end) = Self::bucket_prefix_range(bucket);
-        // 起点:start_after 非空则定位到 bucket\0<start_after> 之后(exclusive);否则 bucket 头部。
+        // 起点:start_after 非空则定位到 bucket\0<start_after>;否则 bucket 头部。
+        // exclusive(默认,分页 continuation):追加 0 字节使 range 起点严格大于 start_after 自身。
+        // inclusive(prefix 下界):直接用 bucket\0<start> 作起点,保留等于 start 的 key。
         let start = if start_after.is_empty() {
             prefix_start
         } else {
             let mut s = Self::encode_key(bucket, start_after);
-            // 追加一个 0 字节,使 range 起点严格大于 start_after 自身(exclusive lower bound)。
-            s.push(0);
+            if !inclusive {
+                s.push(0);
+            }
             s
         };
         let txn = self.db.begin_read().map_err(|err| err.to_string())?;

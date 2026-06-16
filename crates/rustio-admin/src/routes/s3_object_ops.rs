@@ -212,9 +212,17 @@ pub(crate) async fn s3_root_get_object(
                 }
                 let mut response = body.into_response();
                 *response.status_mut() = StatusCode::OK;
+                // Content-Type 取对象元数据声明值,缺失回退 octet-stream。
+                let resolved_content_type = meta
+                    .content_type
+                    .clone()
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| "application/octet-stream".to_string());
                 response.headers_mut().insert(
                     axum::http::header::CONTENT_TYPE,
-                    axum::http::HeaderValue::from_static("application/octet-stream"),
+                    axum::http::HeaderValue::from_str(&resolved_content_type).unwrap_or_else(|_| {
+                        axum::http::HeaderValue::from_static("application/octet-stream")
+                    }),
                 );
                 response.headers_mut().insert(
                     axum::http::header::HeaderName::from_static("accept-ranges"),
@@ -368,9 +376,16 @@ pub(crate) async fn s3_root_get_object(
 
     let payload_len = payload.len();
     let mut response = (status, payload).into_response();
+    // Content-Type 取对象元数据声明值(PUT / CreateMultipartUpload 时记录),缺失回退 octet-stream。
+    let resolved_content_type = selected_meta
+        .as_ref()
+        .and_then(|meta| meta.content_type.clone())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "application/octet-stream".to_string());
     response.headers_mut().insert(
         axum::http::header::CONTENT_TYPE,
-        axum::http::HeaderValue::from_static("application/octet-stream"),
+        axum::http::HeaderValue::from_str(&resolved_content_type)
+            .unwrap_or_else(|_| axum::http::HeaderValue::from_static("application/octet-stream")),
     );
     response.headers_mut().insert(
         axum::http::header::HeaderName::from_static("accept-ranges"),
@@ -1867,6 +1882,9 @@ pub(crate) async fn s3_initiate_multipart_upload(
             encryption: encryption.clone(),
             checksum_algorithm: checksum_algorithm.map(|algorithm| algorithm.name().to_string()),
             checksum_type: checksum_type.clone(),
+            // Content-Type 与 x-amz-meta-* 在 create 时声明,complete 时恢复到对象元数据。
+            content_type: parse_content_type(&headers),
+            user_metadata: extract_user_metadata(&headers),
         },
     );
 
@@ -2420,6 +2438,37 @@ pub(crate) async fn s3_complete_multipart_upload(
         );
     }
 
+    // 幂等:重复 complete 同一个已完成的 multipart(client 重试或显式二次 complete)。
+    // 此时 upload 记录已在首次 complete 时删除,但目标对象已存在——S3 语义是幂等返回成功,
+    // 而非 NoSuchUpload。必须在 versioning 归档之前短路,避免把重复请求误归档一个版本。
+    if !state.multipart_uploads.read().await.contains_key(&upload_id) {
+        match read_current_object_meta(&state, &bucket, &key).await {
+            Ok(Some(existing)) => {
+                let part_count = existing
+                    .etag
+                    .rsplit_once('-')
+                    .and_then(|(_, n)| n.parse::<usize>().ok());
+                // 仅当对象 ETag 形如 multipart 合成 ETag("<md5>-<n>")时认定为已完成的 multipart,
+                // 幂等返回其结果;否则落到下方 NoSuchUpload(upload_id 确属未知/已过期)。
+                if part_count.is_some() {
+                    let xml = format!(
+                        r#"<?xml version="1.0" encoding="UTF-8"?><CompleteMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Location>/{}/{}</Location><Bucket>{}</Bucket><Key>{}</Key><ETag>"{}"</ETag></CompleteMultipartUploadResult>"#,
+                        xml_escape(&bucket),
+                        xml_escape(&key),
+                        xml_escape(&bucket),
+                        xml_escape(&key),
+                        xml_escape(&existing.etag),
+                    );
+                    let mut response = s3_xml_response(StatusCode::OK, xml);
+                    apply_object_encryption_headers(&mut response, &existing.encryption);
+                    return response;
+                }
+            }
+            Ok(None) => {}
+            Err(response) => return response,
+        }
+    }
+
     let versioning_enabled = state
         .buckets
         .read()
@@ -2457,6 +2506,9 @@ pub(crate) async fn s3_complete_multipart_upload(
         );
     }
     let upload_encryption = upload.encryption.clone();
+    let upload_content_type = upload.content_type.clone();
+    let upload_content_type_for_meta = upload.content_type.clone();
+    let upload_user_metadata = upload.user_metadata.clone();
     // checksum 合成参数：算法以 initiate 声明为准，否则从首个带 checksum 的 part 推断
     let mut upload_checksum_algorithm = upload
         .checksum_algorithm
@@ -2800,11 +2852,16 @@ pub(crate) async fn s3_complete_multipart_upload(
         target_len,
         final_etag.clone(),
         false,
-        None,
+        upload_content_type,
     )
     .await;
     object_meta.encryption = upload_encryption;
+    object_meta.user_metadata = upload_user_metadata;
     object_meta.checksum = final_checksum.clone();
+    // 显式恢复 create 时声明的 Content-Type(build 已传入,这里兜底确保不被默认值覆盖)。
+    if upload_content_type_for_meta.is_some() {
+        object_meta.content_type = upload_content_type_for_meta;
+    }
     if encryption_enabled(&object_meta) {
         // 加密对象需整体 AES-GCM 加密，暂走全量读取路径（流式分块加密为后续阶段）
         let complete_bytes = match tokio::fs::read(&target_path).await {
