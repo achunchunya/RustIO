@@ -2084,23 +2084,9 @@ pub(crate) async fn s3_upload_part_streaming(
         part_checksum = Some((request.algorithm.name().to_string(), computed));
     }
 
-    // Amazon S3 要求除最后一个分片外所有分片至少 5 MiB(EntityTooSmall),对分片最小大小进行校验。
-    let min_part_size: u64 = std::env::var("RUSTIO_S3_MIN_PART_SIZE")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(5 * 1024 * 1024);
-    if total_size > 0 && total_size < min_part_size {
-        return Err(s3_error(
-            StatusCode::BAD_REQUEST,
-            "EntityTooSmall",
-            &format!(
-                "Your proposed upload is smaller than the minimum allowed size of {} bytes",
-                min_part_size
-            ),
-            &key,
-        ));
-    }
-
+    // 注意:UploadPart 阶段不校验分片最小大小。S3 协议规定 EntityTooSmall 仅在
+    // CompleteMultipartUpload 时对「除最后一个分片外」的分片校验——服务端在 UploadPart
+    // 时无从得知该分片是否为最后一个,任何大小都必须接受(否则合法的小尾片/小对象会被误拒)。
     upload.parts.insert(
         part_number,
         MultipartPart {
@@ -2520,7 +2506,14 @@ pub(crate) async fn s3_complete_multipart_upload(
     let mut etag_md5_concat: Vec<u8> = Vec::with_capacity(request.parts.len() * 16);
     let mut part_checksums: Vec<String> = Vec::with_capacity(request.parts.len());
     let mut last_part_number: Option<u32> = None;
-    for part in &request.parts {
+    // S3 规定除最后一个分片外,每个参与 complete 的分片须 ≥5 MiB(EntityTooSmall);
+    // 最后一个分片不限大小。此校验只能在 complete 时做(此刻才知道哪个是最后一个)。
+    let min_part_size: u64 = std::env::var("RUSTIO_S3_MIN_PART_SIZE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5 * 1024 * 1024);
+    let total_parts = request.parts.len();
+    for (part_index, part) in request.parts.iter().enumerate() {
         if let Some(prev) = last_part_number {
             if part.part_number <= prev {
                 return s3_error(
@@ -2541,6 +2534,19 @@ pub(crate) async fn s3_complete_multipart_upload(
                 &key,
             );
         };
+
+        // 非最后一个分片须 ≥ min_part_size(最后一个分片豁免)。
+        let is_last_part = part_index + 1 == total_parts;
+        if !is_last_part && part_meta.size < min_part_size {
+            return s3_error(
+                StatusCode::BAD_REQUEST,
+                "EntityTooSmall",
+                &format!(
+                    "Your proposed upload is smaller than the minimum allowed size of {min_part_size} bytes"
+                ),
+                &key,
+            );
+        }
 
         if let Some(expected_etag) = &part.etag {
             let normalized = expected_etag.trim_matches('"');
