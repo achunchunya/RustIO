@@ -76,6 +76,7 @@ pub(crate) async fn create_bucket_spec(
         name: body.name,
         tenant_id: tenant_id.clone(),
         versioning: body.versioning,
+        versioning_configured: body.versioning,
         object_lock: body.object_lock,
         ilm_policy: body.ilm_policy,
         replication_policy: body.replication_policy,

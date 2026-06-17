@@ -303,6 +303,7 @@ impl AppState {
                     name: name.clone(),
                     tenant_id: "default".to_string(),
                     versioning: true,
+                    versioning_configured: true,
                     object_lock: false,
                     ilm_policy: None,
                     replication_policy: None,

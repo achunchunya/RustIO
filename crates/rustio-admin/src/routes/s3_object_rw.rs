@@ -79,20 +79,24 @@ pub(crate) async fn s3_root_bucket_get(
     }
 
     if query_has_key(uri.query(), "versioning") {
-        let versioning_enabled = state
+        // S3 三态:从未配置(versioning_configured=false)→ 空响应(无 Status);
+        // 配置过 → Enabled(versioning=true)/ Suspended(false)。
+        let (configured, enabled) = state
             .buckets
             .read()
             .await
             .get(&bucket)
-            .map(|item| item.versioning)
-            .unwrap_or(true);
-        let status = if versioning_enabled {
-            "Enabled"
+            .map(|item| (item.versioning_configured, item.versioning))
+            .unwrap_or((false, false));
+        let status_xml = if !configured {
+            String::new()
+        } else if enabled {
+            "<Status>Enabled</Status>".to_string()
         } else {
-            "Suspended"
+            "<Status>Suspended</Status>".to_string()
         };
         let xml = format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?><VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>{status}</Status></VersioningConfiguration>"#
+            r#"<?xml version="1.0" encoding="UTF-8"?><VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">{status_xml}</VersioningConfiguration>"#
         );
         return s3_xml_response(StatusCode::OK, xml);
     }
@@ -1607,11 +1611,15 @@ pub(crate) async fn s3_root_put_object(
                 .insert(axum::http::header::CONTENT_TYPE, value);
         }
     }
-    if let Ok(value) = axum::http::HeaderValue::from_str(&meta.version_id) {
-        response.headers_mut().insert(
-            axum::http::header::HeaderName::from_static("x-amz-version-id"),
-            value,
-        );
+    // 仅版本化桶返回 x-amz-version-id;非版本化桶 version_id="null",不返回该 header
+    //(S3 语义:未配置版本化的桶 PUT 响应不含 VersionId)。
+    if meta.version_id != "null" {
+        if let Ok(value) = axum::http::HeaderValue::from_str(&meta.version_id) {
+            response.headers_mut().insert(
+                axum::http::header::HeaderName::from_static("x-amz-version-id"),
+                value,
+            );
+        }
     }
     if let Some(ref checksum) = meta.checksum {
         apply_checksum_headers(&mut response, checksum);

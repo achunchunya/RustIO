@@ -594,6 +594,7 @@ pub(crate) async fn s3_root_create_bucket(
         // S3 语义:bucket 默认 versioning=Disabled;仅启用 object-lock 时强制 Enabled
         //(S3 规定 object-lock 依赖 versioning)。后续可经 PutBucketVersioning 显式开启。
         versioning: object_lock_enabled,
+        versioning_configured: object_lock_enabled,
         object_lock: object_lock_enabled,
         ilm_policy: None,
         replication_policy: None,
@@ -670,11 +671,13 @@ pub(crate) async fn s3_root_update_bucket_versioning(
             name: bucket.clone(),
             tenant_id: "default".to_string(),
             versioning: true,
+            versioning_configured: true,
             object_lock: false,
             ilm_policy: None,
             replication_policy: None,
         });
         bucket_spec.versioning = versioning;
+        bucket_spec.versioning_configured = true;
     }
 
     StatusCode::OK.into_response()

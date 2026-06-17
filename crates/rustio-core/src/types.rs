@@ -490,6 +490,11 @@ pub struct BucketSpec {
     pub name: String,
     pub tenant_id: String,
     pub versioning: bool,
+    /// 是否曾显式配置过版本化(PutBucketVersioning)。S3 GetBucketVersioning 三态语义:
+    /// 从未配置 → 空响应(无 Status);配置过且 versioning=true → Enabled;false → Suspended。
+    /// 仅凭 `versioning: bool` 无法区分「从未配置」与「已暂停」,故需此标记。
+    #[serde(default)]
+    pub versioning_configured: bool,
     pub object_lock: bool,
     pub ilm_policy: Option<String>,
     pub replication_policy: Option<String>,

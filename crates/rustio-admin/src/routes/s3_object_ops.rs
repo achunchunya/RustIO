@@ -2979,11 +2979,14 @@ pub(crate) async fn s3_complete_multipart_upload(
     if let Some(ref checksum) = final_checksum {
         apply_checksum_headers(&mut response, checksum);
     }
-    if let Ok(value) = axum::http::HeaderValue::from_str(&object_meta.version_id) {
-        response.headers_mut().insert(
-            axum::http::header::HeaderName::from_static("x-amz-version-id"),
-            value,
-        );
+    // 仅版本化桶返回 x-amz-version-id(非版本化桶 version_id="null",不返回)。
+    if object_meta.version_id != "null" {
+        if let Ok(value) = axum::http::HeaderValue::from_str(&object_meta.version_id) {
+            response.headers_mut().insert(
+                axum::http::header::HeaderName::from_static("x-amz-version-id"),
+                value,
+            );
+        }
     }
     apply_object_encryption_headers(&mut response, &object_meta.encryption);
     response
