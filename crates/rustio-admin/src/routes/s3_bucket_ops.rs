@@ -35,6 +35,9 @@ pub(crate) struct CompleteMultipartUploadRequest {
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct CompleteMultipartPart {
     pub(crate) part_number: u32,
+    // S3 XML 标签是 "ETag"(大写 T);PascalCase 会映射成 "Etag" 而漏解析,
+    // 导致 complete 时 part ETag 校验被跳过(错误 ETag 也放行)。显式 rename。
+    #[serde(rename = "ETag")]
     pub(crate) etag: Option<String>,
     #[serde(rename = "ChecksumCRC32")]
     pub(crate) checksum_crc32: Option<String>,

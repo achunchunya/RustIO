@@ -21,6 +21,18 @@ pub(crate) async fn s3_root_get_object(
     }
 
     if let Err(response) = ensure_s3_auth(&headers, &method, &uri, None, &state) {
+        // 桶不存在时,S3 语义是 404 NoSuchBucket 优先于 403 AccessDenied
+        //(对完全不存在的桶,未授权/匿名请求返回 404,而非泄露式 403)。
+        if let Ok(path) = bucket_path(&state, &bucket) {
+            if !path.exists() {
+                return s3_error(
+                    StatusCode::NOT_FOUND,
+                    "NoSuchBucket",
+                    "The specified bucket does not exist",
+                    &bucket,
+                );
+            }
+        }
         return response;
     }
     if let Err(response) = ensure_metadata_read_barrier_s3(&state, &bucket).await {
@@ -466,6 +478,18 @@ pub(crate) async fn s3_root_delete_object(
     Path((bucket, key)): Path<(String, String)>,
 ) -> Response {
     if let Err(response) = ensure_s3_auth(&headers, &method, &uri, None, &state) {
+        // 桶不存在时,S3 语义是 404 NoSuchBucket 优先于 403 AccessDenied
+        //(对完全不存在的桶,未授权/匿名请求返回 404,而非泄露式 403)。
+        if let Ok(path) = bucket_path(&state, &bucket) {
+            if !path.exists() {
+                return s3_error(
+                    StatusCode::NOT_FOUND,
+                    "NoSuchBucket",
+                    "The specified bucket does not exist",
+                    &bucket,
+                );
+            }
+        }
         return response;
     }
 
@@ -702,6 +726,18 @@ pub(crate) async fn s3_root_head_object(
     Path((bucket, key)): Path<(String, String)>,
 ) -> Response {
     if let Err(response) = ensure_s3_auth(&headers, &method, &uri, None, &state) {
+        // 桶不存在时,S3 语义是 404 NoSuchBucket 优先于 403 AccessDenied
+        //(对完全不存在的桶,未授权/匿名请求返回 404,而非泄露式 403)。
+        if let Ok(path) = bucket_path(&state, &bucket) {
+            if !path.exists() {
+                return s3_error(
+                    StatusCode::NOT_FOUND,
+                    "NoSuchBucket",
+                    "The specified bucket does not exist",
+                    &bucket,
+                );
+            }
+        }
         return response;
     }
     if let Err(response) = ensure_metadata_read_barrier_s3(&state, &bucket).await {
