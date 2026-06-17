@@ -114,11 +114,28 @@ pub(crate) fn object_path(bucket_root: &FsPath, key: &str) -> Result<PathBuf, Re
     Ok(bucket_root.join(key_path))
 }
 
+/// 当前版本明文 payload 的落盘路径(哈希布局,消除层级冲突)。
+///
+/// 用 `sha256(key)` 平铺到 `bucket_root/.rustio_payload/<hash>`,而非按 key 层级映射。
+/// 后者会让 `foo/bar`(文件)与 `foo/bar/xyzzy`(需 `foo/bar/` 目录)在文件系统上冲突
+/// (Not a directory / EEXIST)——而 S3 扁平 key 空间允许二者共存。哈希布局与 EC 分片、
+/// 版本归档(`.rustio_versions/<hash>/`)的既有布局一致。
+/// 仍先经 `object_path` 做 key 合法性校验(空 key / 路径穿越),再映射到哈希文件名。
+pub(crate) fn object_payload_path(bucket_root: &FsPath, key: &str) -> Result<PathBuf, Response> {
+    // 复用 object_path 的 key 校验(拒空 key / `..` 穿越等),路径本身不用其层级结果。
+    object_path(bucket_root, key)?;
+    Ok(bucket_root
+        .join(".rustio_payload")
+        .join(sha256_hex(key.as_bytes())))
+}
+
 pub(crate) fn is_reserved_internal_key(key: &str) -> bool {
     key == ".rustio_meta"
         || key.starts_with(".rustio_meta/")
         || key == ".rustio_versions"
         || key.starts_with(".rustio_versions/")
+        || key == ".rustio_payload"
+        || key.starts_with(".rustio_payload/")
 }
 
 pub(crate) fn valid_version_id(version_id: &str) -> bool {
@@ -881,7 +898,7 @@ pub(crate) async fn read_current_object_payload(
         Some(bytes) => Ok(Some(bytes)),
         None => {
             let bucket_root = bucket_path(state, bucket)?;
-            let target_path = object_path(&bucket_root, key)?;
+            let target_path = object_payload_path(&bucket_root, key)?;
             let bytes = match tokio::fs::read(&target_path).await {
                 Ok(bytes) => bytes,
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -905,7 +922,7 @@ pub(crate) async fn read_current_hot_object_payload(
     key: &str,
 ) -> Result<Option<Vec<u8>>, Response> {
     let bucket_root = bucket_path(state, bucket)?;
-    let target_path = object_path(&bucket_root, key)?;
+    let target_path = object_payload_path(&bucket_root, key)?;
     let bytes = match tokio::fs::read(&target_path).await {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -927,7 +944,7 @@ pub(crate) async fn persist_restored_current_object_payload(
     payload: &[u8],
 ) -> Result<(), Response> {
     let bucket_root = bucket_path(state, &meta.bucket)?;
-    let target_path = object_path(&bucket_root, &meta.key)?;
+    let target_path = object_payload_path(&bucket_root, &meta.key)?;
     if let Some(parent) = target_path.parent() {
         tokio::fs::create_dir_all(parent).await.map_err(|err| {
             s3_error(
@@ -957,7 +974,7 @@ pub(crate) async fn remove_current_hot_object_payload(
     key: &str,
 ) -> Result<(), Response> {
     let bucket_root = bucket_path(state, bucket)?;
-    let target_path = object_path(&bucket_root, key)?;
+    let target_path = object_payload_path(&bucket_root, key)?;
     match tokio::fs::remove_file(&target_path).await {
         Ok(_) => {}
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}

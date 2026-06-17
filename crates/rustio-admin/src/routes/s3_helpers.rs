@@ -155,6 +155,8 @@ pub(crate) fn collect_object_payload_files(
             || rel.starts_with(".rustio_versions/")
             || rel == ".rustio_ec_meta"
             || rel.starts_with(".rustio_ec_meta/")
+            || rel == ".rustio_payload"
+            || rel.starts_with(".rustio_payload/")
         {
             continue;
         }
@@ -232,6 +234,8 @@ pub(crate) fn is_bucket_control_plane_metadata_path(bucket_root: &FsPath, path: 
             | ".rustio_meta/bucket-encryption.json"
     ) || rel == ".rustio_ec_meta"
         || rel.starts_with(".rustio_ec_meta/")
+        || rel == ".rustio_payload"
+        || rel.starts_with(".rustio_payload/")
 }
 
 pub(crate) fn bucket_has_objects(bucket_root: &FsPath, dir: &FsPath) -> std::io::Result<bool> {

@@ -208,7 +208,7 @@ pub(crate) async fn put_bucket_object(
         }
     }
 
-    let target = object_path(&bucket_dir, &key)
+    let target = object_payload_path(&bucket_dir, &key)
         .map_err(|_| AppError::bad_request("对象键路径无效 / invalid object key path"))?;
     if let Some(parent) = target.parent() {
         tokio::fs::create_dir_all(parent).await.map_err(|err| {

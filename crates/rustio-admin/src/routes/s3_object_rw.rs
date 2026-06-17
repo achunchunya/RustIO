@@ -1204,7 +1204,7 @@ pub(crate) async fn s3_root_put_object(
             return response;
         }
 
-        let target_path = match object_path(&bucket_dir, &key) {
+        let target_path = match object_payload_path(&bucket_dir, &key) {
             Ok(path) => path,
             Err(response) => return response,
         };
@@ -1317,7 +1317,7 @@ pub(crate) async fn s3_root_put_object(
         return response;
     }
 
-    let target_path = match object_path(&bucket_dir, &key) {
+    let target_path = match object_payload_path(&bucket_dir, &key) {
         Ok(path) => path,
         Err(response) => return response,
     };

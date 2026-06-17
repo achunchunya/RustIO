@@ -2540,7 +2540,7 @@ pub(crate) async fn s3_complete_multipart_upload(
         );
     }
 
-    let target_path = match object_path(&bucket_path, &key) {
+    let target_path = match object_payload_path(&bucket_path, &key) {
         Ok(path) => path,
         Err(response) => return response,
     };

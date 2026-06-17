@@ -313,10 +313,11 @@ impl AppState {
             }
         }
 
-        let source_path = Self::safe_object_path(&source_bucket_root, &item.object_key)
-            .ok_or_else(|| {
-                bilingual_runtime_error("源对象路径无效", "invalid source object key")
-            })?;
+        // 读源对象当前明文 payload:源由 S3 PUT 写入,落盘为哈希布局
+        //(.rustio_payload/<sha256(key)>,消除 key 层级冲突),此处须按同一布局读取。
+        let source_path = source_bucket_root
+            .join(".rustio_payload")
+            .join(sha256_hex(item.object_key.as_bytes()));
         let payload = std::fs::read(&source_path).map_err(|err| {
             bilingual_runtime_error(
                 "读取源对象失败",

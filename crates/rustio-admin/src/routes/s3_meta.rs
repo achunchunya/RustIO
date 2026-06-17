@@ -437,7 +437,7 @@ pub(crate) async fn list_object_versions(
 
     if output.is_empty() {
         let bucket_root = bucket_path(state, bucket)?;
-        let target = object_path(&bucket_root, key)?;
+        let target = object_payload_path(&bucket_root, key)?;
         if let Ok(metadata) = tokio::fs::metadata(&target).await {
             let modified = metadata.modified().ok();
             let modified_at = modified.map(DateTime::<Utc>::from).unwrap_or_else(Utc::now);
@@ -486,7 +486,7 @@ pub(crate) async fn promote_latest_archived_version(
 
     let bucket_root = bucket_path(state, bucket)?;
     if next.delete_marker {
-        let current_path = object_path(&bucket_root, key)?;
+        let current_path = object_payload_path(&bucket_root, key)?;
         let _ = tokio::fs::remove_file(current_path).await;
     } else if next.remote_tier.is_none() {
         let payload = read_archived_object_payload_by_meta(state, &next).await?;
@@ -498,7 +498,7 @@ pub(crate) async fn promote_latest_archived_version(
                 key,
             )
         })?;
-        let target = object_path(&bucket_root, key)?;
+        let target = object_payload_path(&bucket_root, key)?;
         if let Some(parent) = target.parent() {
             tokio::fs::create_dir_all(parent).await.map_err(|err| {
                 s3_error(
@@ -519,7 +519,7 @@ pub(crate) async fn promote_latest_archived_version(
         })?;
         write_ec_object(state, bucket, key, &payload, &mut next, None).await?;
     } else {
-        let target = object_path(&bucket_root, key)?;
+        let target = object_payload_path(&bucket_root, key)?;
         let _ = tokio::fs::remove_file(target).await;
         remove_ec_object(state, bucket, key).await?;
     }
