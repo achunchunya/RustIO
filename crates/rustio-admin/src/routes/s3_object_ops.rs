@@ -446,7 +446,9 @@ pub(crate) async fn s3_root_get_object(
                 axum::http::HeaderValue::from_static("ON"),
             );
         }
-        if checksum_mode_enabled(&headers) {
+        // S3 不对 range/partial 响应返回整对象 checksum:checksum 覆盖整个对象,
+        // 对 partial 内容无意义,客户端会拿它校验 partial body 而失败(FlexibleChecksumError)。
+        if status != StatusCode::PARTIAL_CONTENT && checksum_mode_enabled(&headers) {
             if let Some(ref checksum) = meta.checksum {
                 apply_checksum_headers(&mut response, checksum);
             }
