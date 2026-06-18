@@ -344,7 +344,13 @@ pub(crate) async fn s3_root_bucket_post(
     }
 
     if query_has_key(uri.query(), "delete") {
-        return s3_root_delete_objects(state, bucket, body).await;
+        // 批量删除可带 x-amz-bypass-governance-retention 头绕过 GOVERNANCE retention。
+        let bypass_governance = headers
+            .get("x-amz-bypass-governance-retention")
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        return s3_root_delete_objects(state, bucket, body, bypass_governance).await;
     }
 
     s3_error(
@@ -359,6 +365,7 @@ pub(crate) async fn s3_root_delete_objects(
     state: Arc<AppState>,
     bucket: String,
     body: Bytes,
+    bypass_governance: bool,
 ) -> Response {
     let bucket_root = match bucket_path(&state, &bucket) {
         Ok(path) => path,
@@ -431,7 +438,7 @@ pub(crate) async fn s3_root_delete_objects(
             continue;
         }
 
-        match s3_delete_object_single(&state, &bucket, &key, item.version_id.as_deref()).await {
+        match s3_delete_object_single(&state, &bucket, &key, item.version_id.as_deref(), bypass_governance).await {
             Ok(entry) => deleted.push(entry),
             Err(entry) => errors.push(entry),
         }
@@ -448,6 +455,7 @@ pub(crate) async fn s3_delete_object_single(
     bucket: &str,
     key: &str,
     version_id: Option<&str>,
+    bypass_governance: bool,
 ) -> Result<S3DeleteObjectResultEntry, S3DeleteObjectErrorEntry> {
     let bucket_root = bucket_path(state, bucket).map_err(|_| S3DeleteObjectErrorEntry {
         key: key.to_string(),
@@ -465,7 +473,7 @@ pub(crate) async fn s3_delete_object_single(
     }
 
     if let Some(version_id) = version_id {
-        let removed = delete_object_version(state, bucket, key, version_id)
+        let removed = delete_object_version(state, bucket, key, version_id, bypass_governance)
             .await
             .map_err(|_| S3DeleteObjectErrorEntry {
                 key: key.to_string(),
@@ -542,9 +550,16 @@ pub(crate) async fn s3_delete_object_single(
     }
 
     let retention_until = current_meta.as_ref().and_then(|item| item.retention_until);
+    // GOVERNANCE 模式 + bypass 头可绕过;COMPLIANCE 不可。
+    let governance_bypassed = current_meta
+        .as_ref()
+        .and_then(|item| item.retention_mode.as_deref())
+        == Some("GOVERNANCE")
+        && bypass_governance;
     if retention_until
         .map(|value| value > Utc::now())
         .unwrap_or(false)
+        && !governance_bypassed
     {
         return Err(S3DeleteObjectErrorEntry {
             key: key.to_string(),

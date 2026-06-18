@@ -1872,6 +1872,30 @@ pub(crate) async fn s3_root_put_bucket_object_lock(
         }
     };
 
+    // 仅创建时启用了 object-lock 的桶可设置 lock 配置;否则 409 InvalidBucketState。
+    let bucket_lock_enabled = state
+        .bucket_object_locks
+        .read()
+        .await
+        .get(&bucket)
+        .map(|item| item.enabled)
+        .unwrap_or(false)
+        || state
+            .buckets
+            .read()
+            .await
+            .get(&bucket)
+            .map(|item| item.object_lock)
+            .unwrap_or(false);
+    if !bucket_lock_enabled {
+        return s3_error(
+            StatusCode::CONFLICT,
+            "InvalidBucketState",
+            "Object Lock configuration cannot be enabled on existing buckets",
+            &bucket,
+        );
+    }
+
     let enabled = parsed
         .object_lock_enabled
         .as_deref()
@@ -1880,7 +1904,7 @@ pub(crate) async fn s3_root_put_bucket_object_lock(
     if !enabled {
         return s3_error(
             StatusCode::BAD_REQUEST,
-            "InvalidRequest",
+            "MalformedXML",
             "ObjectLockEnabled must be Enabled",
             &bucket,
         );
@@ -1896,7 +1920,7 @@ pub(crate) async fn s3_root_put_bucket_object_lock(
         Err(err) => {
             return s3_error(
                 StatusCode::BAD_REQUEST,
-                "InvalidRequest",
+                "MalformedXML",
                 &err.message,
                 &bucket,
             )
@@ -1904,12 +1928,21 @@ pub(crate) async fn s3_root_put_bucket_object_lock(
     };
 
     let default_retention_days = if let Some(retention) = default_retention {
+        // Days 与 Years 互斥(S3 规定),同时提供 → 400 MalformedXML。
+        if retention.days.is_some() && retention.years.is_some() {
+            return s3_error(
+                StatusCode::BAD_REQUEST,
+                "MalformedXML",
+                "Only one of Days or Years may be specified",
+                &bucket,
+            );
+        }
         if let Some(days) = retention.days {
             if days == 0 {
                 return s3_error(
                     StatusCode::BAD_REQUEST,
-                    "InvalidRequest",
-                    "Default retention days must be greater than 0",
+                    "InvalidRetentionPeriod",
+                    "Default retention days must be a positive integer",
                     &bucket,
                 );
             }
@@ -1918,8 +1951,8 @@ pub(crate) async fn s3_root_put_bucket_object_lock(
             if years == 0 {
                 return s3_error(
                     StatusCode::BAD_REQUEST,
-                    "InvalidRequest",
-                    "Default retention years must be greater than 0",
+                    "InvalidRetentionPeriod",
+                    "Default retention years must be a positive integer",
                     &bucket,
                 );
             }

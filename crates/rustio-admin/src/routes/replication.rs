@@ -380,7 +380,7 @@ pub(crate) async fn delete_bucket_object(
     }
 
     if let Some(version_id) = query.version_id {
-        let removed = delete_object_version(&state, &name, &key, &version_id)
+        let removed = delete_object_version(&state, &name, &key, &version_id, false)
             .await
             .map_err(|_| {
                 AppError::internal("删除对象版本失败 / failed to delete object version")

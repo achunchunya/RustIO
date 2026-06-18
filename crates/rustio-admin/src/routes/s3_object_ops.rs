@@ -503,7 +503,13 @@ pub(crate) async fn s3_root_delete_object(
     }
 
     if let Some(version_id) = query_value(uri.query(), "versionId") {
-        let removed = match delete_object_version(&state, &bucket, &key, &version_id).await {
+        // GOVERNANCE retention 可由 x-amz-bypass-governance-retention 头绕过删除限制。
+        let bypass_governance = headers
+            .get("x-amz-bypass-governance-retention")
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let removed = match delete_object_version(&state, &bucket, &key, &version_id, bypass_governance).await {
             Ok(value) => value,
             Err(response) => return response,
         };
@@ -608,9 +614,22 @@ pub(crate) async fn s3_root_delete_object(
     }
 
     let retention_until = current_meta.as_ref().and_then(|item| item.retention_until);
+    // GOVERNANCE 模式可由带 x-amz-bypass-governance-retention 头的请求绕过删除限制;
+    // COMPLIANCE 模式任何人不可绕过。retention 未过期且(非 GOVERNANCE 或未带 bypass)则拒绝。
+    let retention_mode = current_meta
+        .as_ref()
+        .and_then(|item| item.retention_mode.as_deref());
+    let bypass_governance = headers
+        .get("x-amz-bypass-governance-retention")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let governance_bypassed =
+        retention_mode == Some("GOVERNANCE") && bypass_governance;
     if retention_until
         .map(|value| value > Utc::now())
         .unwrap_or(false)
+        && !governance_bypassed
     {
         state
             .append_audit(

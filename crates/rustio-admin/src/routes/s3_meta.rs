@@ -534,6 +534,7 @@ pub(crate) async fn delete_object_version(
     bucket: &str,
     key: &str,
     version_id: &str,
+    bypass_governance: bool,
 ) -> Result<bool, Response> {
     let current_meta = read_current_object_meta(state, bucket, key).await?;
 
@@ -547,10 +548,14 @@ pub(crate) async fn delete_object_version(
                     key,
                 ));
             }
+            // GOVERNANCE 模式 + bypass 头可绕过;COMPLIANCE 不可。
+            let governance_bypassed =
+                meta.retention_mode.as_deref() == Some("GOVERNANCE") && bypass_governance;
             if meta
                 .retention_until
                 .map(|value| value > Utc::now())
                 .unwrap_or(false)
+                && !governance_bypassed
             {
                 return Err(s3_error(
                     StatusCode::FORBIDDEN,
@@ -581,10 +586,13 @@ pub(crate) async fn delete_object_version(
             key,
         ));
     }
+    let archived_governance_bypassed =
+        archived_meta.retention_mode.as_deref() == Some("GOVERNANCE") && bypass_governance;
     if archived_meta
         .retention_until
         .map(|value| value > Utc::now())
         .unwrap_or(false)
+        && !archived_governance_bypassed
     {
         return Err(s3_error(
             StatusCode::FORBIDDEN,
