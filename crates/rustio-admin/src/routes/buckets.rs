@@ -505,19 +505,30 @@ pub(crate) fn validate_sse_customer_headers(
     }
 
     let computed_key_md5 = BASE64.encode(Md5::digest(&key_bytes));
-    if let Some(provided_key_md5) = key_md5.as_deref() {
-        if provided_key_md5 != computed_key_md5 {
-            return Err(s3_error(
-                StatusCode::BAD_REQUEST,
-                "InvalidRequest",
-                &format!(
-                    "{} 的 Key-MD5 校验失败 / {} key MD5 validation failed",
-                    header_kind.mode_label(),
-                    header_kind.mode_label()
-                ),
-                resource,
-            ));
-        }
+    // SSE-C 的 customer-key-MD5 头必填(S3 要求);缺失即 400 InvalidArgument。
+    let Some(provided_key_md5) = key_md5.as_deref() else {
+        return Err(s3_error(
+            StatusCode::BAD_REQUEST,
+            "InvalidArgument",
+            &format!(
+                "{} 缺少客户密钥 MD5 头 / {} requires customer key MD5 header",
+                header_kind.mode_label(),
+                header_kind.mode_label()
+            ),
+            resource,
+        ));
+    };
+    if provided_key_md5 != computed_key_md5 {
+        return Err(s3_error(
+            StatusCode::BAD_REQUEST,
+            "InvalidRequest",
+            &format!(
+                "{} 的 Key-MD5 校验失败 / {} key MD5 validation failed",
+                header_kind.mode_label(),
+                header_kind.mode_label()
+            ),
+            resource,
+        ));
     }
 
     Ok(Some(SseCustomerRequest {
