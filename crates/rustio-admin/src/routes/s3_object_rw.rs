@@ -339,6 +339,17 @@ pub(crate) async fn s3_root_bucket_post(
     Path(bucket): Path<String>,
     body: Bytes,
 ) -> Response {
+    // 检测 Content-Type: multipart/form-data → 表单上传
+    if let Some(content_type) = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+    {
+        if content_type.starts_with("multipart/form-data") {
+            let body_vec = body.to_vec();
+            return s3_form_upload(state, bucket, content_type, body_vec).await;
+        }
+    }
+
     if let Err(response) = ensure_s3_auth(&headers, &method, &uri, Some(body.as_ref()), &state) {
         return response;
     }
