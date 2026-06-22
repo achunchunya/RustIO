@@ -1847,8 +1847,10 @@ pub(crate) async fn s3_initiate_multipart_upload(
         );
     }
 
+    // multipart 支持 SSE-C:initiate 接受 customer 头并记录 key-md5(meta.customer_key_md5),
+    // 后续 upload_part / complete 须带同一 key(校验 md5 一致),complete 时整体加密。
     let (encryption, _sse_customer_key) =
-        match resolve_object_encryption_meta(&state, &bucket, &headers, &key, false).await {
+        match resolve_object_encryption_meta(&state, &bucket, &headers, &key, true).await {
             Ok(value) => value,
             Err(response) => return response,
         };
@@ -2024,6 +2026,32 @@ pub(crate) async fn s3_upload_part_streaming(
             "The specified upload does not match bucket/key",
             &key,
         ));
+    }
+
+    // SSE-C multipart:若 initiate 用了 customer key,upload_part 必须带同一 key
+    //(校验 customer-key-md5 与 initiate 记录一致)。part 明文落临时区,complete 时整体加密。
+    if let Some(expected_md5) = upload.encryption.customer_key_md5.clone() {
+        match validate_sse_customer_headers(&headers, &key, SseCustomerHeaderKind::Request, true) {
+            Ok(Some(req)) => {
+                if req.key_md5 != expected_md5 {
+                    return Err(s3_error(
+                        StatusCode::BAD_REQUEST,
+                        "InvalidArgument",
+                        "SSE-C key does not match the key used at CreateMultipartUpload",
+                        &key,
+                    ));
+                }
+            }
+            Ok(None) => {
+                return Err(s3_error(
+                    StatusCode::BAD_REQUEST,
+                    "InvalidRequest",
+                    "This multipart upload uses SSE-C; customer key headers are required on UploadPart",
+                    &key,
+                ));
+            }
+            Err(response) => return Err(response),
+        }
     }
 
     let upload_dir = multipart_upload_dir(&state, &upload_id);
@@ -2920,6 +2948,35 @@ pub(crate) async fn s3_complete_multipart_upload(
         object_meta.content_type = upload_content_type_for_meta;
     }
     if encryption_enabled(&object_meta) {
+        // SSE-C multipart:complete 请求须带同一 customer key(校验 md5 一致),用它整体加密;
+        // 服务端 SSE(SSE-S3/KMS)customer key 为 None,由 write_ec_object 内部派生密钥。
+        let complete_customer_key = if object_meta.encryption.customer_key_md5.is_some() {
+            match validate_sse_customer_headers(&headers, &key, SseCustomerHeaderKind::Request, true)
+            {
+                Ok(Some(req)) => {
+                    if Some(&req.key_md5) != object_meta.encryption.customer_key_md5.as_ref() {
+                        return s3_error(
+                            StatusCode::BAD_REQUEST,
+                            "InvalidArgument",
+                            "SSE-C key does not match the key used at CreateMultipartUpload",
+                            &key,
+                        );
+                    }
+                    Some(req.key_bytes)
+                }
+                Ok(None) => {
+                    return s3_error(
+                        StatusCode::BAD_REQUEST,
+                        "InvalidRequest",
+                        "This multipart upload uses SSE-C; customer key headers are required on CompleteMultipartUpload",
+                        &key,
+                    );
+                }
+                Err(response) => return response,
+            }
+        } else {
+            None
+        };
         // 加密对象需整体 AES-GCM 加密，暂走全量读取路径（流式分块加密为后续阶段）
         let complete_bytes = match tokio::fs::read(&target_path).await {
             Ok(bytes) => bytes,
@@ -2938,7 +2995,7 @@ pub(crate) async fn s3_complete_multipart_upload(
             &key,
             &complete_bytes,
             &mut object_meta,
-            None,
+            complete_customer_key.as_ref(),
         )
         .await
         {
