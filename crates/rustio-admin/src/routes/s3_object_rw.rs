@@ -613,7 +613,7 @@ pub(crate) async fn s3_delete_object_single(
 
     if versioning_enabled {
         let marker =
-            build_object_meta_for_current_version(state, bucket, key, 0, String::new(), true, None).await;
+            build_object_meta_for_current_version(state, bucket, key, 0, String::new(), true, ObjectSystemMetadata::default()).await;
         let marker_version_id = marker.version_id.clone();
         persist_current_object_meta(state, marker)
             .await
@@ -1019,6 +1019,18 @@ pub(crate) async fn s3_root_put_object(
     }
 
     let request_user_metadata = extract_user_metadata(&headers);
+    // 提取系统定义元数据(标准内容头 + storage-class),storage-class 非法提前拒绝(写盘前)。
+    let request_system_meta = match extract_object_system_metadata(&headers) {
+        Ok(system_meta) => system_meta,
+        Err(invalid_class) => {
+            return s3_error(
+                StatusCode::BAD_REQUEST,
+                "InvalidStorageClass",
+                &format!("The storage class you specified is not valid: {invalid_class}"),
+                &key,
+            );
+        }
+    };
     let request_tags = match headers
         .get(axum::http::header::HeaderName::from_static("x-amz-tagging"))
         .and_then(|value| value.to_str().ok())
@@ -1251,6 +1263,30 @@ pub(crate) async fn s3_root_put_object(
                 }
             }
         }
+        // 系统内容头:COPY 继承源对象,REPLACE 用请求头;storage-class 请求优先、回退源。
+        let copy_system_meta = if metadata_directive == "COPY" {
+            ObjectSystemMetadata {
+                content_type: source_meta.content_type.clone(),
+                cache_control: source_meta.cache_control.clone(),
+                content_disposition: source_meta.content_disposition.clone(),
+                content_encoding: source_meta.content_encoding.clone(),
+                content_language: source_meta.content_language.clone(),
+                expires: source_meta.expires.clone(),
+                website_redirect_location: source_meta.website_redirect_location.clone(),
+                storage_class: request_system_meta
+                    .storage_class
+                    .clone()
+                    .or_else(|| Some(source_meta.storage_class.clone())),
+            }
+        } else {
+            ObjectSystemMetadata {
+                storage_class: request_system_meta
+                    .storage_class
+                    .clone()
+                    .or_else(|| Some(source_meta.storage_class.clone())),
+                ..request_system_meta.clone()
+            }
+        };
         let mut meta = build_object_meta_for_current_version(
             &state,
             &bucket,
@@ -1258,7 +1294,7 @@ pub(crate) async fn s3_root_put_object(
             source_bytes.len() as u64,
             source_etag.clone(),
             false,
-            None,
+            copy_system_meta,
         )
         .await;
         meta.user_metadata = if metadata_directive == "COPY" {
@@ -1552,9 +1588,8 @@ pub(crate) async fn s3_root_put_object(
     }
 
     let etag = etag_hasher.finalize();
-    let content_type = parse_content_type(&headers);
     let mut meta =
-        build_object_meta_for_current_version(&state, &bucket, &key, total, etag.clone(), false, content_type.clone())
+        build_object_meta_for_current_version(&state, &bucket, &key, total, etag.clone(), false, request_system_meta)
             .await;
     meta.user_metadata = request_user_metadata;
     meta.tags = request_tags;

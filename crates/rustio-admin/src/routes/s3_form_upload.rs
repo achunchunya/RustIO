@@ -665,7 +665,10 @@ async fn write_form_upload_object(
         size,
         etag.clone(),
         false,
-        content_type.clone(),
+        ObjectSystemMetadata {
+            content_type: content_type.clone(),
+            ..Default::default()
+        },
     )
     .await;
 

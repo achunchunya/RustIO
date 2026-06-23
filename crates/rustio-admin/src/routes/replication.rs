@@ -229,7 +229,7 @@ pub(crate) async fn put_bucket_object(
         body.len() as u64,
         etag.clone(),
         false,
-        None,
+        ObjectSystemMetadata::default(),
     )
     .await;
     persist_current_object_meta(&state, meta.clone())
@@ -456,7 +456,7 @@ pub(crate) async fn delete_bucket_object(
     let mut response_body = json!({ "bucket": name, "key": key, "deleted": true });
     let notification_meta = if versioning_enabled {
         let marker =
-            build_object_meta_for_current_version(&state, &name, &key, 0, String::new(), true, None)
+            build_object_meta_for_current_version(&state, &name, &key, 0, String::new(), true, ObjectSystemMetadata::default())
                 .await;
         persist_current_object_meta(&state, marker.clone())
             .await
@@ -1079,7 +1079,7 @@ pub(crate) async fn expire_current_object_for_lifecycle(
 
     let removed_meta = if versioning_enabled {
         let marker =
-            build_object_meta_for_current_version(state, bucket, key, 0, String::new(), true, None).await;
+            build_object_meta_for_current_version(state, bucket, key, 0, String::new(), true, ObjectSystemMetadata::default()).await;
         persist_current_object_meta(state, marker.clone())
             .await
             .map_err(|_| {

@@ -1319,6 +1319,18 @@ pub struct S3ObjectMeta {
     pub etag: String,
     #[serde(default)]
     pub content_type: Option<String>,
+    #[serde(default)]
+    pub cache_control: Option<String>,
+    #[serde(default)]
+    pub content_disposition: Option<String>,
+    #[serde(default)]
+    pub content_encoding: Option<String>,
+    #[serde(default)]
+    pub content_language: Option<String>,
+    #[serde(default)]
+    pub expires: Option<String>,
+    #[serde(default)]
+    pub website_redirect_location: Option<String>,
     pub created_at: DateTime<Utc>,
     #[serde(default = "default_object_storage_class")]
     pub storage_class: String,

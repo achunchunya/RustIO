@@ -364,6 +364,62 @@ pub(crate) fn extract_user_metadata(headers: &HeaderMap) -> HashMap<String, Stri
     output
 }
 
+/// 对象系统定义元数据(标准 HTTP 内容头 + 存储类),PUT/Copy/multipart 提取后写入 S3ObjectMeta。
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ObjectSystemMetadata {
+    pub content_type: Option<String>,
+    pub cache_control: Option<String>,
+    pub content_disposition: Option<String>,
+    pub content_encoding: Option<String>,
+    pub content_language: Option<String>,
+    pub expires: Option<String>,
+    pub website_redirect_location: Option<String>,
+    pub storage_class: Option<String>,
+}
+
+/// S3 合法存储类(指定非法值时 PUT 返回 InvalidStorageClass)。
+pub(crate) const VALID_STORAGE_CLASSES: &[&str] = &[
+    "STANDARD",
+    "REDUCED_REDUNDANCY",
+    "STANDARD_IA",
+    "ONEZONE_IA",
+    "INTELLIGENT_TIERING",
+    "GLACIER",
+    "DEEP_ARCHIVE",
+    "GLACIER_IR",
+];
+
+/// 从请求头提取对象系统元数据。storage_class 非法返回 Err(非法值字符串)。
+pub(crate) fn extract_object_system_metadata(
+    headers: &HeaderMap,
+) -> Result<ObjectSystemMetadata, String> {
+    let read = |name: &str| -> Option<String> {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
+
+    let storage_class = read("x-amz-storage-class").map(|value| value.to_ascii_uppercase());
+    if let Some(ref class) = storage_class {
+        if !VALID_STORAGE_CLASSES.contains(&class.as_str()) {
+            return Err(class.clone());
+        }
+    }
+
+    Ok(ObjectSystemMetadata {
+        content_type: read("content-type"),
+        cache_control: read("cache-control"),
+        content_disposition: read("content-disposition"),
+        content_encoding: read("content-encoding"),
+        content_language: read("content-language"),
+        expires: read("expires"),
+        website_redirect_location: read("x-amz-website-redirect-location"),
+        storage_class,
+    })
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum SseCustomerHeaderKind {
     Request,
@@ -666,6 +722,30 @@ pub(crate) fn apply_object_metadata_headers(response: &mut Response, meta: &S3Ob
         }
     }
 
+    // 系统定义内容头回显(PUT 时存储,GET/HEAD 时按 S3 语义回显)。
+    let system_headers: [(&str, &Option<String>); 6] = [
+        ("cache-control", &meta.cache_control),
+        ("content-disposition", &meta.content_disposition),
+        ("content-encoding", &meta.content_encoding),
+        ("content-language", &meta.content_language),
+        ("expires", &meta.expires),
+        (
+            "x-amz-website-redirect-location",
+            &meta.website_redirect_location,
+        ),
+    ];
+    for (header_name, value) in system_headers {
+        let Some(value) = value.as_deref().filter(|value| !value.is_empty()) else {
+            continue;
+        };
+        if let (Ok(name), Ok(header_value)) = (
+            axum::http::header::HeaderName::from_bytes(header_name.as_bytes()),
+            axum::http::HeaderValue::from_str(value),
+        ) {
+            response.headers_mut().insert(name, header_value);
+        }
+    }
+
     for (key, value) in &meta.user_metadata {
         let header_name = format!("x-amz-meta-{key}");
         let Ok(header_name) = axum::http::header::HeaderName::from_bytes(header_name.as_bytes())
@@ -678,6 +758,32 @@ pub(crate) fn apply_object_metadata_headers(response: &mut Response, meta: &S3Ob
         response.headers_mut().insert(header_name, header_value);
     }
     apply_object_encryption_headers(response, &meta.encryption);
+}
+
+/// GET 对象的 `?response-content-*` 查询参数覆盖响应头(presigned URL 常用,优先级高于对象存储值)。
+pub(crate) fn apply_response_override_headers(response: &mut Response, query: Option<&str>) {
+    let Some(query) = query else {
+        return;
+    };
+    let overrides: [(&str, &str); 6] = [
+        ("response-content-type", "content-type"),
+        ("response-content-disposition", "content-disposition"),
+        ("response-content-encoding", "content-encoding"),
+        ("response-content-language", "content-language"),
+        ("response-cache-control", "cache-control"),
+        ("response-expires", "expires"),
+    ];
+    for (param, header) in overrides {
+        let Some(value) = query_value(Some(query), param).filter(|value| !value.is_empty()) else {
+            continue;
+        };
+        if let (Ok(name), Ok(header_value)) = (
+            axum::http::header::HeaderName::from_bytes(header.as_bytes()),
+            axum::http::HeaderValue::from_str(&value),
+        ) {
+            response.headers_mut().insert(name, header_value);
+        }
+    }
 }
 
 pub(crate) fn object_restore_is_active(meta: &S3ObjectMeta) -> bool {

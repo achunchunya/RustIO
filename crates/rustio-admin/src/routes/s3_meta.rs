@@ -463,6 +463,12 @@ pub(crate) async fn list_object_versions(
                 user_metadata: HashMap::new(),
                 encryption: S3ObjectEncryptionMeta::default(),
                 content_type: None,
+                cache_control: None,
+                content_disposition: None,
+                content_encoding: None,
+                content_language: None,
+                expires: None,
+                website_redirect_location: None,
                 checksum: None,
             });
         }
@@ -715,7 +721,7 @@ pub(crate) async fn build_object_meta_for_current_version(
     size: u64,
     etag: String,
     delete_marker: bool,
-    content_type: Option<String>,
+    system_meta: ObjectSystemMetadata,
 ) -> S3ObjectMeta {
     let now = Utc::now();
     let (versioning, object_lock_from_bucket) = state
@@ -784,7 +790,10 @@ pub(crate) async fn build_object_meta_for_current_version(
         size,
         etag,
         created_at: now,
-        storage_class: default_storage_class(),
+        storage_class: system_meta
+            .storage_class
+            .clone()
+            .unwrap_or_else(default_storage_class),
         retention_mode,
         retention_until,
         legal_hold: if delete_marker { false } else { legal_hold },
@@ -794,7 +803,13 @@ pub(crate) async fn build_object_meta_for_current_version(
         tags: Vec::new(),
         user_metadata: HashMap::new(),
         encryption: S3ObjectEncryptionMeta::default(),
-        content_type,
+        content_type: system_meta.content_type,
+        cache_control: system_meta.cache_control,
+        content_disposition: system_meta.content_disposition,
+        content_encoding: system_meta.content_encoding,
+        content_language: system_meta.content_language,
+        expires: system_meta.expires,
+        website_redirect_location: system_meta.website_redirect_location,
         checksum: None,
     }
 }

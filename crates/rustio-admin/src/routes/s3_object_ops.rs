@@ -295,6 +295,7 @@ pub(crate) async fn s3_root_get_object(
                     }
                 }
                 apply_object_metadata_headers(&mut response, meta);
+                apply_response_override_headers(&mut response, uri.query());
                 return response;
             }
             Ok(None) => {}
@@ -467,6 +468,7 @@ pub(crate) async fn s3_root_get_object(
         }
         apply_object_metadata_headers(&mut response, meta);
     }
+    apply_response_override_headers(&mut response, uri.query());
     response
 }
 
@@ -676,7 +678,7 @@ pub(crate) async fn s3_root_delete_object(
 
     if versioning_enabled {
         let marker =
-            build_object_meta_for_current_version(&state, &bucket, &key, 0, String::new(), true, None)
+            build_object_meta_for_current_version(&state, &bucket, &key, 0, String::new(), true, ObjectSystemMetadata::default())
                 .await;
         if let Err(response) = persist_current_object_meta(&state, marker.clone()).await {
             return response;
@@ -847,9 +849,16 @@ pub(crate) async fn s3_root_head_object(
         return response;
     }
     let mut response = StatusCode::OK.into_response();
+    // Content-Type 取对象元数据声明值,缺失回退 octet-stream(原硬编码 octet-stream,从不回显真实值)。
+    let resolved_content_type = meta_ref
+        .content_type
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "application/octet-stream".to_string());
     response.headers_mut().insert(
         axum::http::header::CONTENT_TYPE,
-        axum::http::HeaderValue::from_static("application/octet-stream"),
+        axum::http::HeaderValue::from_str(&resolved_content_type)
+            .unwrap_or_else(|_| axum::http::HeaderValue::from_static("application/octet-stream")),
     );
     response.headers_mut().insert(
         axum::http::header::HeaderName::from_static("accept-ranges"),
@@ -910,6 +919,7 @@ pub(crate) async fn s3_root_head_object(
         }
         apply_object_metadata_headers(&mut response, meta);
     }
+    apply_response_override_headers(&mut response, uri.query());
     response
 }
 
@@ -2937,7 +2947,10 @@ pub(crate) async fn s3_complete_multipart_upload(
         target_len,
         final_etag.clone(),
         false,
-        upload_content_type,
+        ObjectSystemMetadata {
+            content_type: upload_content_type,
+            ..Default::default()
+        },
     )
     .await;
     object_meta.encryption = upload_encryption;
