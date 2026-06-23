@@ -18,6 +18,7 @@ mod replication;
 mod s3_bucket_ops;
 mod s3_checksum;
 mod s3_chunked;
+mod s3_cors;
 mod s3_form_upload;
 mod s3_helpers;
 mod s3_meta;
@@ -49,6 +50,7 @@ pub(crate) use rebalance::*;
 pub(crate) use replication::*;
 pub(crate) use s3_bucket_ops::*;
 pub(crate) use s3_checksum::*;
+pub(crate) use s3_cors::*;
 pub(crate) use s3_form_upload::*;
 pub(crate) use s3_helpers::*;
 pub(crate) use s3_meta::*;
@@ -656,13 +658,17 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/api/v1/internal/ec/manifest-list",
             get(internal_ec_manifest_list),
         )
+        // console CORS 层仅作用于此前注册的「管理路由」(axum .layer 只覆盖之前的路由)；
+        // 下面的 S3 路由不受其影响,改走 per-bucket CORS(预检 + inject 中间件)。
+        .layer(build_console_cors_layer())
         .route(
             "/{bucket}",
             put(s3_root_create_bucket)
                 .get(s3_root_bucket_get)
                 .head(s3_root_head_bucket)
                 .post(s3_root_bucket_post)
-                .delete(s3_root_delete_bucket),
+                .delete(s3_root_delete_bucket)
+                .options(s3_cors_preflight_bucket),
         )
         .route(
             "/{bucket}/",
@@ -670,7 +676,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 .get(s3_root_bucket_get)
                 .head(s3_root_head_bucket)
                 .post(s3_root_bucket_post)
-                .delete(s3_root_delete_bucket),
+                .delete(s3_root_delete_bucket)
+                .options(s3_cors_preflight_bucket),
         )
         .route(
             "/{bucket}/{*key}",
@@ -678,8 +685,14 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 .get(s3_root_get_object)
                 .head(s3_root_head_object)
                 .post(s3_root_post_object)
-                .delete(s3_root_delete_object),
+                .delete(s3_root_delete_object)
+                .options(s3_cors_preflight_object),
         )
+        // S3 实际请求的 CORS 响应头注入(对管理路由 / 无 Origin 为 no-op)。
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            inject_s3_cors_headers,
+        ))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             track_request_activity,

@@ -44,7 +44,6 @@ use anyhow::Context;
 use rustio_admin::{build_router, AppState};
 use tower_http::{
     classify::ServerErrorsFailureClass,
-    cors::CorsLayer,
     trace::{DefaultMakeSpan, TraceLayer},
 };
 use tracing::{error, info, Level};
@@ -79,7 +78,7 @@ async fn main() -> anyhow::Result<()> {
     if let Err(err) = state.init_metadata_raft(raft_node_id).await {
         tracing::warn!("元数据 raft 启动失败,降级本地直写: {err}");
     }
-    let cors_layer = build_cors_layer()?;
+    // console CORS 已下沉 build_router(仅作用于管理路由);S3 路由走 per-bucket CORS。
     let app = build_router(state)
         .layer(
             TraceLayer::new_for_http()
@@ -99,8 +98,7 @@ async fn main() -> anyhow::Result<()> {
                         );
                     },
                 ),
-        )
-        .layer(cors_layer);
+        );
 
     let addr = resolve_listen_addr()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -170,41 +168,6 @@ fn env_flag_enabled(key: &str) -> bool {
     std::env::var(key)
         .map(|v| matches!(v.trim(), "1" | "true" | "TRUE" | "yes" | "on"))
         .unwrap_or(false)
-}
-
-/// 构建 CORS 层:未配置 `RUSTIO_CORS_ORIGIN` 时默认仅允许 localhost(拒绝任意跨域),
-/// 而非全放开。配置无效值时返回错误而非 panic。
-fn build_cors_layer() -> anyhow::Result<CorsLayer> {
-    let methods = [
-        axum::http::Method::GET,
-        axum::http::Method::PUT,
-        axum::http::Method::POST,
-        axum::http::Method::DELETE,
-        axum::http::Method::HEAD,
-    ];
-    let headers = [
-        axum::http::header::CONTENT_TYPE,
-        axum::http::header::AUTHORIZATION,
-        axum::http::header::HeaderName::from_static("x-amz-content-sha256"),
-        axum::http::header::HeaderName::from_static("x-amz-date"),
-    ];
-
-    let origin = std::env::var("RUSTIO_CORS_ORIGIN")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| "http://localhost:9000".to_string());
-
-    let header_value = origin
-        .trim()
-        .parse::<axum::http::HeaderValue>()
-        .with_context(|| {
-            format!("RUSTIO_CORS_ORIGIN 无效 / invalid RUSTIO_CORS_ORIGIN value: {origin}")
-        })?;
-
-    Ok(CorsLayer::new()
-        .allow_origin(header_value)
-        .allow_methods(methods)
-        .allow_headers(headers))
 }
 
 async fn shutdown_signal() {
