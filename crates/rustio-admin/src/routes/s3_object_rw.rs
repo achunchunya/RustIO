@@ -854,10 +854,11 @@ pub(crate) async fn s3_root_put_object(
     }
 
     // 单次 PUT 对象数据（非子资源/copy）走流式：不全量收集 body，验签后边读边写盘，内存恒定。
-    // 其余分支（legal-hold/retention/tagging/copy）body 小或为空，保持全量收集后验签。
+    // 其余分支（legal-hold/retention/tagging/acl/copy）body 小或为空，保持全量收集后验签。
     let is_object_data_put = !query_has_key(uri.query(), "legal-hold")
         && !query_has_key(uri.query(), "retention")
         && !query_has_key(uri.query(), "tagging")
+        && !query_has_key(uri.query(), "acl")
         && !headers.contains_key("x-amz-copy-source");
 
     let mut streaming_body: Option<axum::body::Body> = None;
@@ -922,6 +923,10 @@ pub(crate) async fn s3_root_put_object(
             body_bytes,
         )
         .await;
+    }
+
+    if query_has_key(uri.query(), "acl") {
+        return s3_put_object_acl(state, bucket, key, headers, body_bytes).await;
     }
 
     if is_reserved_internal_key(&key) {
@@ -1003,6 +1008,37 @@ pub(crate) async fn s3_root_put_object(
         }
     }
 
+    // PUT 条件写(S3 语义): If-None-Match: * 对象已存在 → 412(防覆盖); If-Match 对现有对象 etag 不符 → 412。
+    if let Some(if_none_match) = headers
+        .get(axum::http::header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+    {
+        if if_none_match.trim() == "*" && current_meta.is_some() {
+            return s3_error(
+                StatusCode::PRECONDITION_FAILED,
+                "PreconditionFailed",
+                "At least one of the pre-conditions you specified did not hold",
+                &key,
+            );
+        }
+    }
+    if let Some(if_match) = headers
+        .get(axum::http::header::IF_MATCH)
+        .and_then(|value| value.to_str().ok())
+    {
+        let matched = current_meta
+            .as_ref()
+            .map(|meta| if_header_matches_etag(if_match, &meta.etag, &format!("\"{}\"", meta.etag)))
+            .unwrap_or(false);
+        if !matched {
+            return s3_error(
+                StatusCode::PRECONDITION_FAILED,
+                "PreconditionFailed",
+                "At least one of the pre-conditions you specified did not hold",
+                &key,
+            );
+        }
+    }
     let versioning_enabled = state
         .buckets
         .read()
@@ -1588,6 +1624,26 @@ pub(crate) async fn s3_root_put_object(
     }
 
     let etag = etag_hasher.finalize();
+    // Content-MD5 完整性校验(S3 语义): 请求头为 body MD5 的 base64; etag 即 MD5 hex,转字节后比对。
+    if let Some(content_md5) = headers
+        .get("content-md5")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let computed_b64 = hex::decode(&etag)
+            .ok()
+            .map(|bytes| BASE64.encode(bytes))
+            .unwrap_or_default();
+        if content_md5 != computed_b64 {
+            return s3_error(
+                StatusCode::BAD_REQUEST,
+                "BadDigest",
+                "The Content-MD5 you specified did not match what we received",
+                &key,
+            );
+        }
+    }
     let mut meta =
         build_object_meta_for_current_version(&state, &bucket, &key, total, etag.clone(), false, request_system_meta)
             .await;
@@ -1595,6 +1651,11 @@ pub(crate) async fn s3_root_put_object(
     meta.tags = request_tags;
     meta.encryption = requested_encryption;
     meta.checksum = stored_checksum;
+    // PUT object 携带 canned x-amz-acl 头时记录到对象 meta(非法值忽略,沿用默认 private)。
+    meta.acl = headers
+        .get(axum::http::header::HeaderName::from_static("x-amz-acl"))
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| normalize_bucket_acl_value(value).ok());
 
     if !encryption_enabled(&meta) {
         // 非加密：从已落盘的目标文件流式 EC 编码，内存恒定

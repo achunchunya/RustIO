@@ -1331,6 +1331,8 @@ pub struct S3ObjectMeta {
     pub expires: Option<String>,
     #[serde(default)]
     pub website_redirect_location: Option<String>,
+    #[serde(default)]
+    pub acl: Option<String>,
     pub created_at: DateTime<Utc>,
     #[serde(default = "default_object_storage_class")]
     pub storage_class: String,

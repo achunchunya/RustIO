@@ -65,6 +65,10 @@ pub(crate) async fn s3_root_get_object(
             .await;
     }
 
+    if query_has_key(uri.query(), "acl") {
+        return s3_get_object_acl(state, bucket, key).await;
+    }
+
     if let Some(upload_id) = query_value(uri.query(), "uploadId") {
         let part_number_marker = query_value(uri.query(), "part-number-marker")
             .and_then(|value| value.parse::<u32>().ok())
@@ -990,6 +994,112 @@ pub(crate) async fn s3_get_object_tagging(
         );
     }
     response
+}
+
+/// GetObjectAcl：返回对象 ACL(canned ACL → AccessControlPolicy XML)。owner ID 以 bucket/key 为种子。
+pub(crate) async fn s3_get_object_acl(state: Arc<AppState>, bucket: String, key: String) -> Response {
+    let bucket_dir = match bucket_path(&state, &bucket) {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
+    if !bucket_dir.exists() {
+        return s3_error(
+            StatusCode::NOT_FOUND,
+            "NoSuchBucket",
+            "The specified bucket does not exist",
+            &bucket,
+        );
+    }
+    let meta = match read_current_object_meta(&state, &bucket, &key).await {
+        Ok(Some(meta)) if !meta.delete_marker => meta,
+        Ok(_) => {
+            return s3_error(
+                StatusCode::NOT_FOUND,
+                "NoSuchKey",
+                "The specified key does not exist",
+                &key,
+            );
+        }
+        Err(response) => return response,
+    };
+    let acl = meta.acl.as_deref().unwrap_or("private");
+    let resource = format!("{bucket}/{key}");
+    s3_xml_response(StatusCode::OK, build_bucket_acl_xml(&resource, acl))
+}
+
+/// PutObjectAcl：接受 canned `x-amz-acl` 头或 ACL XML body,写入对象 meta.acl。
+pub(crate) async fn s3_put_object_acl(
+    state: Arc<AppState>,
+    bucket: String,
+    key: String,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let bucket_dir = match bucket_path(&state, &bucket) {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
+    if !bucket_dir.exists() {
+        return s3_error(
+            StatusCode::NOT_FOUND,
+            "NoSuchBucket",
+            "The specified bucket does not exist",
+            &bucket,
+        );
+    }
+    let mut meta = match read_current_object_meta(&state, &bucket, &key).await {
+        Ok(Some(meta)) if !meta.delete_marker => meta,
+        Ok(_) => {
+            return s3_error(
+                StatusCode::NOT_FOUND,
+                "NoSuchKey",
+                "The specified key does not exist",
+                &key,
+            );
+        }
+        Err(response) => return response,
+    };
+
+    let acl = if let Some(raw_acl) =
+        headers.get(axum::http::header::HeaderName::from_static("x-amz-acl"))
+    {
+        match raw_acl.to_str() {
+            Ok(value) => match normalize_bucket_acl_value(value) {
+                Ok(normalized) => normalized,
+                Err(err) => {
+                    return s3_error(StatusCode::BAD_REQUEST, "InvalidArgument", &err.message, &key)
+                }
+            },
+            Err(_) => {
+                return s3_error(
+                    StatusCode::BAD_REQUEST,
+                    "InvalidArgument",
+                    "x-amz-acl header is invalid",
+                    &key,
+                )
+            }
+        }
+    } else if body.is_empty() {
+        "private".to_string()
+    } else {
+        match from_xml_str::<S3AccessControlPolicyBody>(&String::from_utf8_lossy(&body)) {
+            Ok(parsed) => infer_acl_from_policy_body(&parsed),
+            Err(err) => {
+                return s3_error(
+                    StatusCode::BAD_REQUEST,
+                    "MalformedXML",
+                    &format!("Failed to parse ACL XML: {err}"),
+                    &key,
+                )
+            }
+        }
+    };
+
+    meta.acl = Some(acl);
+    if let Err(response) = persist_current_object_meta(&state, meta).await {
+        return response;
+    }
+    StatusCode::OK.into_response()
 }
 
 pub(crate) async fn s3_put_object_tagging(

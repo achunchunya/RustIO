@@ -469,6 +469,7 @@ pub(crate) async fn list_object_versions(
                 content_language: None,
                 expires: None,
                 website_redirect_location: None,
+                acl: None,
                 checksum: None,
             });
         }
@@ -810,6 +811,7 @@ pub(crate) async fn build_object_meta_for_current_version(
         content_language: system_meta.content_language,
         expires: system_meta.expires,
         website_redirect_location: system_meta.website_redirect_location,
+        acl: None,
         checksum: None,
     }
 }
