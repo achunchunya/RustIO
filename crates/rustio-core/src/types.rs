@@ -642,6 +642,13 @@ pub struct BucketCorsRule {
     pub max_age_seconds: Option<u32>,
 }
 
+/// delimiter range-seek 分页的结果项:CommonPrefix 或裸对象。
+#[derive(Debug, Clone)]
+pub enum DelimiterPageItem {
+    CommonPrefix(String),
+    Object(S3ObjectMeta),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BucketTag {
     pub key: String,

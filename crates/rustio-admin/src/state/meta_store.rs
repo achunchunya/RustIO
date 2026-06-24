@@ -13,7 +13,7 @@ use std::sync::Mutex;
 
 use lru::LruCache;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
-use rustio_core::S3ObjectMeta;
+use rustio_core::{DelimiterPageItem, S3ObjectMeta};
 
 /// redb 表:key = `bucket\0key` 编码字节,value = serde_json 序列化的 `S3ObjectMeta`。
 const OBJECT_META_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("object_meta");
@@ -238,6 +238,101 @@ impl MetaStore {
             out.push(meta);
         }
         Ok(out)
+    }
+
+    /// delimiter 范围 seek 分页:按 prefix + delimiter 折叠 CommonPrefix。
+    #[allow(dead_code)] // 即将由 s3_object_rw delimited LIST 接入使用
+    pub(crate) fn scan_bucket_delimiter_page(
+        &self,
+        bucket: &str,
+        prefix: &str,
+        delimiter: &str,
+        start_after: Option<&str>,
+        limit: usize,
+    ) -> Result<(Vec<DelimiterPageItem>, Option<String>), String> {
+        let (range_start, range_end) = Self::bucket_prefix_range(bucket);
+        let cursor = match start_after {
+            Some(key) => {
+                let mut c = Self::encode_key(bucket, key);
+                c.push(0); // exclusive
+                c
+            }
+            None => {
+                if prefix.is_empty() {
+                    range_start
+                } else {
+                    Self::encode_key(bucket, prefix) // inclusive start from prefix
+                }
+            }
+        };
+
+        let txn = self.db.begin_read().map_err(|err| err.to_string())?;
+        let table = txn
+            .open_table(OBJECT_META_TABLE)
+            .map_err(|err| err.to_string())?;
+        let mut out = Vec::with_capacity(limit.min(4096));
+        let mut last_token: Option<String> = None;
+        let delimiter_bytes = delimiter.as_bytes();
+        let bucket_prefix = format!("{bucket}\0");
+
+        // 循环:每次 range(cursor..end) 取一条 key,可能跳过整个公共前缀
+        let mut cursor_src = cursor;
+        loop {
+            if out.len() >= limit {
+                break;
+            }
+            let range = table
+                .range(cursor_src.as_slice()..range_end.as_slice())
+                .map_err(|err| err.to_string())?;
+            let mut iter = range;
+            let Some(item) = iter.next() else {
+                break;
+            };
+            let (key_bytes, value) = item.map_err(|err| err.to_string())?;
+            let raw_key = key_bytes.value();
+
+            // 剥离 bucket\0 前缀
+            let Some(stripped) = raw_key.strip_prefix(bucket_prefix.as_bytes()) else {
+                break;
+            };
+            let object_key = std::str::from_utf8(stripped).unwrap_or_default();
+
+            // prefix 过滤
+            if !prefix.is_empty() && !object_key.starts_with(prefix) {
+                break; // 已超出 prefix 范围
+            }
+
+            let rest = &object_key[prefix.len()..];
+            // 检查是否含有 delimiter——fold 成 CommonPrefix
+            if let Some(delim_pos) = rest.find(delimiter) {
+                let cp_end = prefix.len() + delim_pos + delimiter_bytes.len();
+                let common_prefix = &object_key[..cp_end];
+                // 跳过该 common_prefix 下的所有 key: cursor = encode_key(bucket, common_prefix+\xff)
+                let mut next_cursor = Self::encode_key(bucket, common_prefix);
+                next_cursor.push(0xff);
+                cursor_src = next_cursor;
+                out.push(DelimiterPageItem::CommonPrefix(common_prefix.to_string()));
+                last_token = Some(common_prefix.to_string());
+                continue;
+            }
+
+            // 无 delimiter:裸对象
+            let meta: S3ObjectMeta =
+                serde_json::from_slice(value.value()).map_err(|err| err.to_string())?;
+            let mut next_cursor = raw_key.to_vec();
+            next_cursor.push(0);
+            cursor_src = next_cursor;
+            out.push(DelimiterPageItem::Object(meta));
+            last_token = Some(object_key.to_string());
+        }
+
+        let next_token = if out.len() >= limit {
+            last_token
+        } else {
+            None
+        };
+
+        Ok((out, next_token))
     }
 
     /// 全表扫描(仅供低频管理操作使用,如统计、KMS 轮转)。
