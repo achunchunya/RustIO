@@ -49,3 +49,6 @@ lru.workspace = true
 redb.workspace = true
 openraft.workspace = true
 
+[[bench]]
+name = "ec_bench"
+harness = false
