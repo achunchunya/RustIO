@@ -175,11 +175,10 @@ pub(crate) async fn s3_root_bucket_get(
         }
     };
 
-    // ── LIST v2 真分页快路径 ──
-    // 条件:list-type=2 且无 delimiter(CommonPrefix 折叠需全量去重,故有 delimiter 走全量)
-    // 且非 walk-fs 回退模式。redb range 真分页:只读一页,延迟与 bucket 总对象数解耦。
+    // ── LIST v2 真分页快路径(含 delimiter range-seek) ──
+    // 条件:list-type=2 且非 walk-fs 回退。以前 delimiter 走全量(CommonPrefix 折叠需全量去重),
+    // 现在 scan_bucket_delimiter_page 用 redb range seek 跳过公共前缀,O(前缀数)替代 O(总对象数)。
     if query.list_type.as_deref() == Some("2")
-        && delimiter.is_empty()
         && !list_walk_fs_fallback_enabled()
     {
         let continuation_token = query
@@ -190,37 +189,100 @@ pub(crate) async fn s3_root_bucket_get(
             .start_after
             .as_deref()
             .filter(|value| !value.is_empty());
-        let boundary = continuation_token.or(start_after).unwrap_or("");
-        let (page_objects, truncated) = if max_keys == 0 {
-            (Vec::new(), false)
+        let boundary = continuation_token.or(start_after);
+
+        if delimiter.is_empty() {
+            // 无 delimiter 原有真分页快路径(不变)
+            let (page_objects, truncated) = if max_keys == 0 {
+                (Vec::new(), false)
+            } else {
+                collect_objects_page_indexed(&state, &bucket, &prefix, boundary.unwrap_or(""), max_keys)
+            };
+            let next_token = if truncated {
+                page_objects.last().map(|o| o.key.clone())
+            } else {
+                None
+            };
+            return s3_xml_response(
+                StatusCode::OK,
+                build_list_objects_v2_xml(
+                    &bucket,
+                    &prefix,
+                    &delimiter,
+                    max_keys,
+                    page_objects.len(),
+                    truncated,
+                    continuation_token,
+                    start_after,
+                    next_token.as_deref(),
+                    &page_objects,
+                    &[],
+                    encoding_url,
+                ),
+            );
         } else {
-            collect_objects_page_indexed(&state, &bucket, &prefix, boundary, max_keys)
-        };
-        let next_token = if truncated {
-            page_objects.last().map(|o| o.key.clone())
-        } else {
-            None
-        };
-        return s3_xml_response(
-            StatusCode::OK,
-            build_list_objects_v2_xml(
+            // delimiter range-seek 分页快路径(新)
+            let limit = if max_keys == 0 { 1 } else { max_keys };
+            match state.meta_store.scan_bucket_delimiter_page(
                 &bucket,
                 &prefix,
                 &delimiter,
-                max_keys,
-                page_objects.len(),
-                truncated,
-                continuation_token,
-                start_after,
-                next_token.as_deref(),
-                &page_objects,
-                &[],
-                encoding_url,
-            ),
-        );
+                boundary,
+                limit,
+            ) {
+                Ok((items, next_token)) => {
+                    let mut objects = Vec::new();
+                    let mut common_prefixes = Vec::new();
+                    let mut count = 0;
+                    for item in items {
+                        count += 1;
+                        match item {
+                            DelimiterPageItem::CommonPrefix(cp) => {
+                                common_prefixes.push(cp);
+                            }
+                            DelimiterPageItem::Object(meta) => {
+                                objects.push(DiskObjectEntry {
+                                    key: meta.key.clone(),
+                                    size: meta.size,
+                                    etag: meta.etag.clone(),
+                                    last_modified: meta.created_at.to_rfc3339_opts(SecondsFormat::Secs, true),
+                                    storage_class: object_storage_class(&meta).to_string(),
+                                });
+                            }
+                        }
+                    }
+                    let truncated = count >= max_keys;
+                    return s3_xml_response(
+                        StatusCode::OK,
+                        build_list_objects_v2_xml(
+                            &bucket,
+                            &prefix,
+                            &delimiter,
+                            max_keys,
+                            count,
+                            truncated,
+                            continuation_token,
+                            start_after,
+                            next_token.as_deref(),
+                            &objects,
+                            &common_prefixes,
+                            encoding_url,
+                        ),
+                    );
+                }
+                Err(err) => {
+                    return s3_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "InternalError",
+                        &format!("Failed to list objects with delimiter: {err}"),
+                        &bucket,
+                    );
+                }
+            }
+        }
     }
 
-    // 全量路径:有 delimiter(CommonPrefix)、list v1、或 walk-fs 回退。
+    // 全量路径:list v1、或 walk-fs 回退(保留不变)
     // LIST 主路径:纯 redb 索引枚举(无 walk-fs、无逐对象 stat);
     // RUSTIO_LIST_WALK_FS=1 回退 walk-fs(异常恢复 / 基准对比 MinIO 行为)。
     let objects = if list_walk_fs_fallback_enabled() {
