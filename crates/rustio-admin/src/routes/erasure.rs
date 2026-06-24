@@ -1274,6 +1274,113 @@ pub(crate) async fn read_ec_object_streaming(
     Ok(Some(axum::body::Body::from_stream(stream)))
 }
 
+/// 流式 EC 对象读取的 Range 变体：仅读取 [start, end] 闭区间内的字节，返回 206 响应对应的 Body。
+/// 复用与 `read_ec_object_streaming` 相同的前置检查（manifest quorum、全 data 分片本地、非加密），
+/// 不满足时返回 `Ok(None)` 让调用方回退到全量 truncate/drain 路径。
+pub(crate) async fn read_ec_object_streaming_range(
+    state: &AppState,
+    bucket: &str,
+    key: &str,
+    meta: &S3ObjectMeta,
+    start: u64,
+    end: u64,
+) -> Result<Option<axum::body::Body>, Response> {
+    if encryption_enabled(meta) {
+        return Ok(None);
+    }
+    let bucket_root = bucket_path(state, bucket)?;
+    let manifest = match read_manifest_quorum(state, &bucket_root, bucket, key).await {
+        Some(manifest) => manifest,
+        None => return Ok(None),
+    };
+    if manifest.data_shards == 0 {
+        return Ok(None);
+    }
+    if manifest
+        .shards
+        .iter()
+        .any(|shard| shard.shard_index < manifest.data_shards && shard_is_remote(shard, state.local_node_id))
+    {
+        return Ok(None);
+    }
+
+    let shard_size = manifest.shard_size as u64;
+    let total = manifest.total_size as u64;
+    let end = end.min(total.saturating_sub(1));
+    if start > end {
+        return Ok(None);
+    }
+    let want = end - start + 1;
+
+    let mut data_paths: Vec<Option<PathBuf>> = vec![None; manifest.data_shards];
+    for shard in &manifest.shards {
+        if shard.shard_index < manifest.data_shards {
+            data_paths[shard.shard_index] = Some(shard.path.clone());
+        }
+    }
+    let mut ordered_paths = Vec::with_capacity(manifest.data_shards);
+    for entry in data_paths {
+        let Some(path) = entry else {
+            return Ok(None);
+        };
+        match tokio::fs::metadata(&path).await {
+            Ok(metadata) if metadata.len() as usize == manifest.shard_size => {}
+            _ => return Ok(None),
+        }
+        ordered_paths.push(path);
+    }
+
+    touch_object_access_heat(state, bucket, key).await;
+    let first_shard = (start / shard_size) as usize;
+    let inner = start % shard_size;
+
+    let stream = async_stream::stream! {
+        let mut want_remaining = want;
+        for (idx, path) in ordered_paths.iter().enumerate().skip(first_shard) {
+            if want_remaining == 0 {
+                break;
+            }
+            let mut file = match tokio::fs::File::open(path).await {
+                Ok(file) => file,
+                Err(err) => { yield Err(err); return; }
+            };
+            if idx == first_shard && inner > 0 {
+                use tokio::io::AsyncSeekExt;
+                if let Err(err) = file.seek(std::io::SeekFrom::Start(inner)).await {
+                    yield Err(err); return;
+                }
+            }
+            // 该分片在对象内的起始偏移
+            let shard_obj_start = idx as u64 * shard_size;
+            // 该分片在对象内的结束偏移(含)
+            let shard_obj_end = ((idx + 1) as u64 * shard_size).min(total).saturating_sub(1);
+            // 当前分片的有效读取长度上限
+            let max_from_shard = if start > shard_obj_end {
+                0
+            } else if start >= shard_obj_start {
+                (shard_obj_end - start + 1).min(want_remaining)
+            } else {
+                (shard_obj_end - shard_obj_start + 1).min(want_remaining)
+            };
+            let mut buf = vec![0u8; 1024 * 1024];
+            let mut shard_read = 0u64;
+            while shard_read < max_from_shard {
+                let to_read = ((max_from_shard - shard_read) as usize).min(buf.len());
+                let read = match file.read(&mut buf[..to_read]).await {
+                    Ok(0) => break,
+                    Ok(read) => read,
+                    Err(err) => { yield Err(err); return; }
+                };
+                if read == 0 { break; }
+                yield Ok(Bytes::copy_from_slice(&buf[..read]));
+                shard_read += read as u64;
+                want_remaining -= read as u64;
+            }
+        }
+    };
+    Ok(Some(axum::body::Body::from_stream(stream)))
+}
+
 #[tracing::instrument(name = "ec_remove", skip(state), fields(bucket = %bucket, key = %key))]
 pub(crate) async fn remove_ec_object(
     state: &AppState,

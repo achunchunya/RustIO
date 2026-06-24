@@ -310,6 +310,101 @@ pub(crate) fn parse_http_date(value: &str) -> Option<DateTime<Utc>> {
         })
 }
 
+/// 补齐 GET 响应中流式非 Range / 全量路径共用的头（Content-Type / accept-ranges / Last-Modified / Content-Length / ETag / x-amz-version-id / lock 等），减少重复代码。
+pub(crate) fn apply_common_get_response_headers(
+    response: &mut Response,
+    meta: &S3ObjectMeta,
+    etag_quoted: &str,
+    last_modified: chrono::DateTime<chrono::Utc>,
+    content_length: usize,
+) {
+    let resolved_content_type = meta
+        .content_type
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+    response.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_str(&resolved_content_type)
+            .unwrap_or_else(|_| axum::http::HeaderValue::from_static("application/octet-stream")),
+    );
+    response.headers_mut().insert(
+        axum::http::header::HeaderName::from_static("accept-ranges"),
+        axum::http::HeaderValue::from_static("bytes"),
+    );
+    if let Ok(value) = axum::http::HeaderValue::from_str(&format_http_date(last_modified)) {
+        response.headers_mut().insert(axum::http::header::LAST_MODIFIED, value);
+    }
+    if let Ok(value) = axum::http::HeaderValue::from_str(&content_length.to_string()) {
+        response.headers_mut().insert(axum::http::header::CONTENT_LENGTH, value);
+    }
+    if let Ok(value) = axum::http::HeaderValue::from_str(etag_quoted) {
+        response.headers_mut().insert(axum::http::header::ETAG, value);
+    }
+    if let Ok(value) = axum::http::HeaderValue::from_str(&meta.version_id) {
+        response.headers_mut().insert(
+            axum::http::header::HeaderName::from_static("x-amz-version-id"),
+            value,
+        );
+    }
+    if let Some(mode) = meta.retention_mode.as_deref() {
+        if let Ok(value) = axum::http::HeaderValue::from_str(mode) {
+            response.headers_mut().insert(
+                axum::http::header::HeaderName::from_static("x-amz-object-lock-mode"),
+                value,
+            );
+        }
+    }
+    if let Some(retention_until) = meta.retention_until {
+        if let Ok(value) = axum::http::HeaderValue::from_str(
+            &retention_until.to_rfc3339_opts(SecondsFormat::Secs, true),
+        ) {
+            response.headers_mut().insert(
+                axum::http::header::HeaderName::from_static("x-amz-object-lock-retain-until-date"),
+                value,
+            );
+        }
+    }
+}
+
+/// 解析 Range 请求头为原始(start, end_or_suffix_len)，不依赖对象大小。
+pub(crate) fn parse_range_header_raw(headers: &HeaderMap) -> Option<(u64, u64)> {
+    let raw = headers
+        .get(axum::http::header::RANGE)
+        .and_then(|value| value.to_str().ok())?;
+    let spec = raw.strip_prefix("bytes=")?;
+    if spec.contains(',') { return None; }
+    let mut split = spec.splitn(2, '-');
+    let start_raw = split.next().unwrap_or_default().trim();
+    let end_raw = split.next()?.trim();
+    if start_raw.is_empty() {
+        let suffix = end_raw.parse::<u64>().ok()?;
+        return if suffix == 0 { None } else { Some((0, suffix)) };
+    }
+    let start = start_raw.parse::<u64>().ok()?;
+    let end = if end_raw.is_empty() { u64::MAX } else { end_raw.parse::<u64>().ok()? };
+    Some((start, end))
+}
+
+/// 将 parse_range_header_raw 的结果钳制到对象大小，返回闭区间。非法返 Err(())。
+pub(crate) fn normalize_range_bounds(raw_start: u64, raw_end: u64, size: u64) -> Result<Option<(u64, u64)>, ()> {
+    if size == 0 { return Err(()); }
+    let (start, end) = if raw_start == 0 && raw_end < size {
+        // suffix 形式: (0, suffix_len)
+        let suffix_len = raw_end;
+        if suffix_len == 0 { return Err(()); }
+        (size.saturating_sub(suffix_len), size - 1)
+    } else {
+        let start = raw_start;
+        if start >= size { return Err(()); }
+        let end = raw_end.min(size - 1);
+        if start > end { return Err(()); }
+        (start, end)
+    };
+    Ok(Some((start, end)))
+}
+
+/// 解析 Range 请求头为闭区间(start, end)，不依赖对象大小。用于流式路径。
 pub(crate) fn parse_range_header(headers: &HeaderMap, size: u64) -> Result<Option<(u64, u64)>, ()> {
     let Some(raw) = headers
         .get(axum::http::header::RANGE)

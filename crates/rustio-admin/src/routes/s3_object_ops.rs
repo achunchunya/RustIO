@@ -200,16 +200,89 @@ pub(crate) async fn s3_root_get_object(
 
     // 流式下载快路径：无 Range 请求 + 当前对象 + etag 非空 + 非加密 + 非远端层 + 非 restore-active。
     // 满足时内存恒定（不随对象大小增长）；其余情况落入下方全量加载路径（Range/归档版本/加密等）。
-    let has_range = headers.contains_key(axum::http::header::RANGE);
-    let stream_eligible = !has_range
-        && selected_is_current
+    // —— 注:Range 流式化后在 eligible 条件下另分一支,见下方。
+    let stream_eligible = selected_is_current
         && selected_meta.as_ref().is_some_and(|meta| {
             !meta.etag.is_empty()
                 && !encryption_enabled(meta)
                 && meta.remote_tier.is_none()
                 && !object_restore_is_active(meta)
         });
+
+    // ── 有 Range 时的流式快路径 ──
     if stream_eligible {
+        if let Some((start, end)) = parse_range_header_raw(&headers) {
+            let meta = selected_meta
+                .as_ref()
+                .expect("stream_eligible guarantees meta exists");
+            let total = meta.size;
+            if total > 0 {
+                let parsed = normalize_range_bounds(start, end, total);
+                if let Ok(Some((range_start, range_end))) = parsed {
+                    match read_ec_object_streaming_range(
+                        &state,
+                        &bucket,
+                        &key,
+                        meta,
+                        range_start,
+                        range_end,
+                    )
+                    .await
+                    {
+                        Ok(Some(body)) => {
+                            touch_object_access_heat(&state, &bucket, &key).await;
+                            let etag_quoted = format!("\"{}\"", meta.etag);
+                            let last_modified = meta.created_at;
+                            if let Some(response) = evaluate_object_preconditions(
+                                &method,
+                                &headers,
+                                &meta.etag,
+                                &etag_quoted,
+                                last_modified,
+                                &key,
+                            ) {
+                                return response;
+                            }
+                            let want = range_end - range_start + 1;
+                            let content_range =
+                                format!("bytes {range_start}-{range_end}/{}", meta.size);
+                            let mut response =
+                                (StatusCode::PARTIAL_CONTENT, body).into_response();
+                            apply_common_get_response_headers(
+                                &mut response,
+                                meta,
+                                &etag_quoted,
+                                last_modified,
+                                want as usize,
+                            );
+                            response.headers_mut().insert(
+                                axum::http::header::CONTENT_RANGE,
+                                axum::http::HeaderValue::from_str(&content_range)
+                                    .unwrap_or_else(|_| {
+                                        axum::http::HeaderValue::from_static("bytes */0")
+                                    }),
+                            );
+                            apply_object_metadata_headers(&mut response, meta);
+                            apply_response_override_headers(&mut response, uri.query());
+                            return response;
+                        }
+                        Ok(None) => {} // 回退全量
+                        Err(response) => return response,
+                    }
+                } else if parsed.is_err() {
+                    return s3_error(
+                        StatusCode::RANGE_NOT_SATISFIABLE,
+                        "InvalidRange",
+                        "The requested range is not satisfiable",
+                        &key,
+                    );
+                }
+            }
+        }
+    }
+
+    // ── 无 Range 时的全量流式快路径（现有逻辑）──
+    if stream_eligible && !headers.contains_key(axum::http::header::RANGE) {
         match read_ec_object_streaming(&state, &bucket, &key, selected_meta.as_ref(), customer_key)
             .await
         {
@@ -232,65 +305,13 @@ pub(crate) async fn s3_root_get_object(
                 }
                 let mut response = body.into_response();
                 *response.status_mut() = StatusCode::OK;
-                // Content-Type 取对象元数据声明值,缺失回退 octet-stream。
-                let resolved_content_type = meta
-                    .content_type
-                    .clone()
-                    .filter(|value| !value.trim().is_empty())
-                    .unwrap_or_else(|| "application/octet-stream".to_string());
-                response.headers_mut().insert(
-                    axum::http::header::CONTENT_TYPE,
-                    axum::http::HeaderValue::from_str(&resolved_content_type).unwrap_or_else(|_| {
-                        axum::http::HeaderValue::from_static("application/octet-stream")
-                    }),
+                apply_common_get_response_headers(
+                    &mut response,
+                    meta,
+                    &etag_quoted,
+                    last_modified,
+                    meta.size as usize,
                 );
-                response.headers_mut().insert(
-                    axum::http::header::HeaderName::from_static("accept-ranges"),
-                    axum::http::HeaderValue::from_static("bytes"),
-                );
-                if let Ok(value) =
-                    axum::http::HeaderValue::from_str(&format_http_date(last_modified))
-                {
-                    response
-                        .headers_mut()
-                        .insert(axum::http::header::LAST_MODIFIED, value);
-                }
-                if let Ok(value) = axum::http::HeaderValue::from_str(&meta.size.to_string()) {
-                    response
-                        .headers_mut()
-                        .insert(axum::http::header::CONTENT_LENGTH, value);
-                }
-                if let Ok(value) = axum::http::HeaderValue::from_str(&etag_quoted) {
-                    response
-                        .headers_mut()
-                        .insert(axum::http::header::ETAG, value);
-                }
-                if let Ok(value) = axum::http::HeaderValue::from_str(&meta.version_id) {
-                    response.headers_mut().insert(
-                        axum::http::header::HeaderName::from_static("x-amz-version-id"),
-                        value,
-                    );
-                }
-                if let Some(mode) = meta.retention_mode.as_deref() {
-                    if let Ok(value) = axum::http::HeaderValue::from_str(mode) {
-                        response.headers_mut().insert(
-                            axum::http::header::HeaderName::from_static("x-amz-object-lock-mode"),
-                            value,
-                        );
-                    }
-                }
-                if let Some(retention_until) = meta.retention_until {
-                    if let Ok(value) = axum::http::HeaderValue::from_str(
-                        &retention_until.to_rfc3339_opts(SecondsFormat::Secs, true),
-                    ) {
-                        response.headers_mut().insert(
-                            axum::http::header::HeaderName::from_static(
-                                "x-amz-object-lock-retain-until-date",
-                            ),
-                            value,
-                        );
-                    }
-                }
                 if meta.legal_hold {
                     response.headers_mut().insert(
                         axum::http::header::HeaderName::from_static("x-amz-object-lock-legal-hold"),
