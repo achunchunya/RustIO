@@ -284,6 +284,7 @@ impl AppState {
         let mut bucket_cors_rules = HashMap::new();
         let mut bucket_tags = HashMap::new();
         let mut bucket_encryptions = HashMap::new();
+        let mut bucket_website_configs = HashMap::new();
         if let Ok(entries) = std::fs::read_dir(&data_dir) {
             for entry in entries.flatten() {
                 if let Ok(file_type) = entry.file_type() {
@@ -400,6 +401,13 @@ impl AppState {
                 if let Ok(bytes) = std::fs::read(&tags_path) {
                     if let Ok(tags) = serde_json::from_slice::<Vec<BucketTag>>(&bytes) {
                         bucket_tags.insert(name.clone(), tags);
+                    }
+                }
+
+                let website_path = entry.path().join(".rustio_meta").join("bucket-website.json");
+                if let Ok(bytes) = std::fs::read(&website_path) {
+                    if let Ok(website) = serde_json::from_slice::<BucketWebsiteConfig>(&bytes) {
+                        bucket_website_configs.insert(name.clone(), website);
                     }
                 }
 
@@ -715,6 +723,7 @@ impl AppState {
             bucket_cors_rules: RwLock::new(bucket_cors_rules),
             bucket_tags: RwLock::new(bucket_tags),
             bucket_encryptions: RwLock::new(bucket_encryptions),
+            bucket_website_configs: RwLock::new(bucket_website_configs),
             replications: RwLock::new(vec![]),
             site_replications: RwLock::new(vec![
                 SiteReplicationStatus {

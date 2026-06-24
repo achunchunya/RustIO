@@ -232,6 +232,7 @@ pub(crate) fn is_bucket_control_plane_metadata_path(bucket_root: &FsPath, path: 
             | ".rustio_meta/bucket-cors.json"
             | ".rustio_meta/bucket-tags.json"
             | ".rustio_meta/bucket-encryption.json"
+            | ".rustio_meta/bucket-website.json"
     ) || rel == ".rustio_ec_meta"
         || rel.starts_with(".rustio_ec_meta/")
         || rel == ".rustio_payload"
@@ -528,6 +529,16 @@ pub(crate) fn evaluate_copy_source_preconditions(
     }
 
     None
+}
+
+/// 抽取 XML 中 `<tag>...</tag>`(含标签本身)的原始片段,用于 round-trip 保真存储
+/// 而不解析其内部结构(如 website RoutingRules)。多个同名标签只取第一段。
+pub(crate) fn extract_xml_fragment(xml: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = xml.find(&open)?;
+    let end = xml[start..].find(&close)? + start + close.len();
+    Some(xml[start..end].to_string())
 }
 
 pub(crate) fn xml_escape(text: &str) -> String {

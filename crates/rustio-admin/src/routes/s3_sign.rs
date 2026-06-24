@@ -384,6 +384,14 @@ pub(crate) fn infer_s3_action(request: &S3PolicyRequest<'_>) -> String {
                     _ => "s3:*".to_string(),
                 };
             }
+            if query_has_key_case_insensitive(&query_pairs, "website") {
+                return match *method {
+                    Method::GET => "s3:GetBucketWebsite".to_string(),
+                    Method::PUT => "s3:PutBucketWebsite".to_string(),
+                    Method::DELETE => "s3:DeleteBucketWebsite".to_string(),
+                    _ => "s3:*".to_string(),
+                };
+            }
             if query_has_key_case_insensitive(&query_pairs, "tagging") {
                 return match *method {
                     Method::GET => "s3:GetBucketTagging".to_string(),
@@ -2456,6 +2464,39 @@ pub(crate) fn build_bucket_cors_xml(rules: &[BucketCorsRule]) -> String {
         xml.push_str("</CORSRule>");
     }
     xml.push_str("</CORSConfiguration>");
+    xml
+}
+
+pub(crate) fn build_bucket_website_xml(config: &rustio_core::BucketWebsiteConfig) -> String {
+    let mut xml = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8"?><WebsiteConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">"#,
+    );
+    if let (Some(host), proto) = (&config.redirect_all_to_host, &config.redirect_all_protocol) {
+        xml.push_str("<RedirectAllRequestsTo><HostName>");
+        xml.push_str(&xml_escape(host));
+        xml.push_str("</HostName>");
+        if let Some(proto) = proto {
+            xml.push_str("<Protocol>");
+            xml.push_str(&xml_escape(proto));
+            xml.push_str("</Protocol>");
+        }
+        xml.push_str("</RedirectAllRequestsTo>");
+    }
+    if let Some(suffix) = &config.index_document {
+        xml.push_str("<IndexDocument><Suffix>");
+        xml.push_str(&xml_escape(suffix));
+        xml.push_str("</Suffix></IndexDocument>");
+    }
+    if let Some(key) = &config.error_document {
+        xml.push_str("<ErrorDocument><Key>");
+        xml.push_str(&xml_escape(key));
+        xml.push_str("</Key></ErrorDocument>");
+    }
+    // RoutingRules 原样回显(存储时已抽取原始片段,serving 不执行)。
+    if let Some(routing) = &config.routing_rules_xml {
+        xml.push_str(routing);
+    }
+    xml.push_str("</WebsiteConfiguration>");
     xml
 }
 

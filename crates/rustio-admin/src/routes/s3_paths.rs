@@ -87,6 +87,10 @@ pub(crate) fn bucket_encryption_path(bucket_root: &FsPath) -> PathBuf {
         .join("bucket-encryption.json")
 }
 
+pub(crate) fn bucket_website_path(bucket_root: &FsPath) -> PathBuf {
+    bucket_root.join(".rustio_meta").join("bucket-website.json")
+}
+
 pub(crate) fn object_path(bucket_root: &FsPath, key: &str) -> Result<PathBuf, Response> {
     if key.is_empty() {
         return Err(s3_error(

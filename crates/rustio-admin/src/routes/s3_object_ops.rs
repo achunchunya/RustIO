@@ -13,6 +13,10 @@ pub(crate) async fn s3_root_get_object(
         && uri.query().is_none()
         && !is_s3_signed_request(&headers, uri.query())
     {
+        // bucket 配了 website 则按静态网站语义服务(优先于 console fallback)。
+        if let Some(response) = serve_website_request(&state, &bucket, &key).await {
+            return response;
+        }
         let requested = format!("{bucket}/{key}");
         if let Some(response) = serve_console_path(&requested, request_accepts_html(&headers)).await
         {

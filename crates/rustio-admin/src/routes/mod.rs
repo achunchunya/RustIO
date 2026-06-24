@@ -27,6 +27,7 @@ mod s3_object_rw;
 mod s3_paths;
 mod s3_sign;
 mod s3_versions;
+mod s3_website;
 mod session;
 mod storage;
 mod sts;
@@ -59,6 +60,7 @@ pub(crate) use s3_object_rw::*;
 pub(crate) use s3_paths::*;
 pub(crate) use s3_sign::*;
 pub(crate) use s3_versions::*;
+pub(crate) use s3_website::*;
 pub(crate) use session::*;
 pub(crate) use storage::*;
 pub(crate) use sts::*;
@@ -113,6 +115,7 @@ use rustio_core::{
     BucketAclConfig, BucketCorsRule, BucketEncryptionConfig, BucketGovernanceUpdate,
     BucketLegalHoldConfig, BucketLifecycleRule, BucketNotificationRule, BucketObjectLockConfig,
     BucketPublicAccessBlockConfig, BucketRetentionConfig, BucketSpec, BucketTag,
+    BucketWebsiteConfig,
     ClusterConfigApplyRequest, ClusterConfigRollbackRequest, ClusterConfigSnapshot,
     ClusterConfigValidateRequest, ClusterConfigValidateResult, ClusterHealth, ConsoleSession,
     DangerActionRequest, IamGroup, IamPolicy, IamUser, JobStatus, KmsRotationFailedObject,

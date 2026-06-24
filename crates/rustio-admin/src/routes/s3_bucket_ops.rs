@@ -283,6 +283,40 @@ pub(crate) struct S3CorsRuleBody {
 
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
+pub(crate) struct S3WebsiteConfigurationBody {
+    #[serde(rename = "IndexDocument")]
+    pub(crate) index_document: Option<S3WebsiteIndexDocument>,
+    #[serde(rename = "ErrorDocument")]
+    pub(crate) error_document: Option<S3WebsiteErrorDocument>,
+    #[serde(rename = "RedirectAllRequestsTo")]
+    pub(crate) redirect_all_requests_to: Option<S3WebsiteRedirectAll>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct S3WebsiteIndexDocument {
+    #[serde(rename = "Suffix")]
+    pub(crate) suffix: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct S3WebsiteErrorDocument {
+    #[serde(rename = "Key")]
+    pub(crate) key: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct S3WebsiteRedirectAll {
+    #[serde(rename = "HostName")]
+    pub(crate) host_name: Option<String>,
+    #[serde(rename = "Protocol")]
+    pub(crate) protocol: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
 pub(crate) struct S3TaggingBody {
     #[serde(rename = "TagSet")]
     pub(crate) tag_set: Option<S3TagSetBody>,
@@ -525,6 +559,10 @@ pub(crate) async fn s3_root_create_bucket(
 
     if query_has_key(uri.query(), "cors") {
         return s3_root_put_bucket_cors(state, bucket, body).await;
+    }
+
+    if query_has_key(uri.query(), "website") {
+        return s3_root_put_bucket_website(state, bucket, body).await;
     }
 
     if query_has_key(uri.query(), "tagging") {
@@ -1429,6 +1467,203 @@ pub(crate) async fn s3_root_delete_bucket_cors(state: Arc<AppState>, bucket: Str
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "InternalError",
                 &format!("Failed to delete bucket cors: {err}"),
+                &bucket,
+            );
+        }
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
+pub(crate) async fn s3_root_get_bucket_website(state: Arc<AppState>, bucket: String) -> Response {
+    let bucket_dir = match bucket_path(&state, &bucket) {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
+    if !bucket_dir.exists() {
+        return s3_error(
+            StatusCode::NOT_FOUND,
+            "NoSuchBucket",
+            "The specified bucket does not exist",
+            &bucket,
+        );
+    }
+
+    let mut cached = state.bucket_website_configs.read().await.get(&bucket).cloned();
+    if cached.is_none() {
+        let path = bucket_website_path(&bucket_dir);
+        match tokio::fs::read(&path).await {
+            Ok(bytes) => match serde_json::from_slice::<BucketWebsiteConfig>(&bytes) {
+                Ok(parsed) => {
+                    state
+                        .bucket_website_configs
+                        .write()
+                        .await
+                        .insert(bucket.clone(), parsed.clone());
+                    cached = Some(parsed);
+                }
+                Err(err) => {
+                    return s3_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "InternalError",
+                        &format!("Failed to decode bucket website: {err}"),
+                        &bucket,
+                    )
+                }
+            },
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return s3_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "InternalError",
+                    &format!("Failed to read bucket website: {err}"),
+                    &bucket,
+                )
+            }
+        }
+    }
+
+    let Some(config) = cached else {
+        return s3_error(
+            StatusCode::NOT_FOUND,
+            "NoSuchWebsiteConfiguration",
+            "The specified bucket does not have a website configuration",
+            &bucket,
+        );
+    };
+    s3_xml_response(StatusCode::OK, build_bucket_website_xml(&config))
+}
+
+pub(crate) async fn s3_root_put_bucket_website(
+    state: Arc<AppState>,
+    bucket: String,
+    body: Bytes,
+) -> Response {
+    let bucket_dir = match bucket_path(&state, &bucket) {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
+    if !bucket_dir.exists() {
+        return s3_error(
+            StatusCode::NOT_FOUND,
+            "NoSuchBucket",
+            "The specified bucket does not exist",
+            &bucket,
+        );
+    }
+
+    let raw = String::from_utf8_lossy(&body);
+    let parsed = match from_xml_str::<S3WebsiteConfigurationBody>(&raw) {
+        Ok(value) => value,
+        Err(err) => {
+            return s3_error(
+                StatusCode::BAD_REQUEST,
+                "MalformedXML",
+                &format!("Failed to parse website XML: {err}"),
+                &bucket,
+            )
+        }
+    };
+
+    let redirect = parsed.redirect_all_requests_to.as_ref();
+    // RoutingRules 原始片段抽取(round-trip 保真,serving 不执行)。
+    let routing_rules_xml = extract_xml_fragment(&raw, "RoutingRules");
+    let config = BucketWebsiteConfig {
+        index_document: parsed
+            .index_document
+            .as_ref()
+            .and_then(|item| item.suffix.clone())
+            .filter(|value| !value.trim().is_empty()),
+        error_document: parsed
+            .error_document
+            .as_ref()
+            .and_then(|item| item.key.clone())
+            .filter(|value| !value.trim().is_empty()),
+        redirect_all_to_host: redirect
+            .and_then(|item| item.host_name.clone())
+            .filter(|value| !value.trim().is_empty()),
+        redirect_all_protocol: redirect
+            .and_then(|item| item.protocol.clone())
+            .filter(|value| !value.trim().is_empty()),
+        routing_rules_xml,
+    };
+
+    // 校验: RedirectAllRequestsTo 与 IndexDocument 互斥(对齐 S3); 二者至少其一。
+    if config.redirect_all_to_host.is_some() && config.index_document.is_some() {
+        return s3_error(
+            StatusCode::BAD_REQUEST,
+            "MalformedXML",
+            "RedirectAllRequestsTo cannot be combined with IndexDocument",
+            &bucket,
+        );
+    }
+    if config.redirect_all_to_host.is_none() && config.index_document.is_none() {
+        return s3_error(
+            StatusCode::BAD_REQUEST,
+            "InvalidArgument",
+            "WebsiteConfiguration requires IndexDocument or RedirectAllRequestsTo",
+            &bucket,
+        );
+    }
+
+    let path = bucket_website_path(&bucket_dir);
+    if let Some(parent) = path.parent() {
+        if let Err(err) = tokio::fs::create_dir_all(parent).await {
+            return s3_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "InternalError",
+                &format!("Failed to create website directory: {err}"),
+                &bucket,
+            );
+        }
+    }
+    let bytes = match serde_json::to_vec_pretty(&config) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            return s3_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "InternalError",
+                &format!("Failed to encode bucket website: {err}"),
+                &bucket,
+            )
+        }
+    };
+    if let Err(err) = tokio::fs::write(&path, &bytes).await {
+        return s3_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "InternalError",
+            &format!("Failed to persist bucket website: {err}"),
+            &bucket,
+        );
+    }
+    state
+        .bucket_website_configs
+        .write()
+        .await
+        .insert(bucket, config);
+    StatusCode::OK.into_response()
+}
+
+pub(crate) async fn s3_root_delete_bucket_website(state: Arc<AppState>, bucket: String) -> Response {
+    let bucket_dir = match bucket_path(&state, &bucket) {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
+    if !bucket_dir.exists() {
+        return s3_error(
+            StatusCode::NOT_FOUND,
+            "NoSuchBucket",
+            "The specified bucket does not exist",
+            &bucket,
+        );
+    }
+    state.bucket_website_configs.write().await.remove(&bucket);
+    let path = bucket_website_path(&bucket_dir);
+    if let Err(err) = tokio::fs::remove_file(path).await {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            return s3_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "InternalError",
+                &format!("Failed to delete bucket website: {err}"),
                 &bucket,
             );
         }

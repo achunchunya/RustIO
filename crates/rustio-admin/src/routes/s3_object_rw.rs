@@ -14,6 +14,10 @@ pub(crate) async fn s3_root_bucket_get(
         && uri.query().is_none()
         && !is_s3_signed_request(&headers, uri.query())
     {
+        // bucket 配了 website 则按静态网站语义服务根路径(优先于 console fallback)。
+        if let Some(response) = serve_website_request(&state, &bucket, "").await {
+            return response;
+        }
         if let Some(response) = serve_console_path(&bucket, request_accepts_html(&headers)).await {
             return response;
         }
@@ -50,6 +54,10 @@ pub(crate) async fn s3_root_bucket_get(
 
     if query_has_key(uri.query(), "cors") {
         return s3_root_get_bucket_cors(state, bucket).await;
+    }
+
+    if query_has_key(uri.query(), "website") {
+        return s3_root_get_bucket_website(state, bucket).await;
     }
 
     if query_has_key(uri.query(), "tagging") {
@@ -684,6 +692,10 @@ pub(crate) async fn s3_root_delete_bucket(
 
     if query_has_key(uri.query(), "cors") {
         return s3_root_delete_bucket_cors(state, bucket).await;
+    }
+
+    if query_has_key(uri.query(), "website") {
+        return s3_root_delete_bucket_website(state, bucket).await;
     }
 
     if query_has_key(uri.query(), "tagging") {

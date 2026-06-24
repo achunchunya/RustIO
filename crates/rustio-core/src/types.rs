@@ -648,6 +648,22 @@ pub struct BucketTag {
     pub value: String,
 }
 
+/// Bucket 静态网站托管配置(S3 WebsiteConfiguration)。RoutingRules 以原始 XML 片段存储,
+/// round-trip 保真但 serving 不解析执行(KISS)。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BucketWebsiteConfig {
+    #[serde(default)]
+    pub index_document: Option<String>,
+    #[serde(default)]
+    pub error_document: Option<String>,
+    #[serde(default)]
+    pub redirect_all_to_host: Option<String>,
+    #[serde(default)]
+    pub redirect_all_protocol: Option<String>,
+    #[serde(default)]
+    pub routing_rules_xml: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BucketEncryptionConfig {
     pub enabled: bool,

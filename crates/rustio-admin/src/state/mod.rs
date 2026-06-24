@@ -28,6 +28,7 @@ use rustio_core::{
     BatchRunScope, BucketAclConfig, BucketCorsRule, BucketEncryptionConfig, BucketLegalHoldConfig,
     BucketLifecycleRule, BucketNotificationRule, BucketObjectLockConfig,
     BucketPublicAccessBlockConfig, BucketRetentionConfig, BucketSpec, BucketTag,
+    BucketWebsiteConfig,
     ClusterConfigSnapshot, ClusterNode, ClusterQuota, ConsoleSession, DiagnosticReport, IamGroup,
     IamPolicy, IamUser, JobStatus, LoginResponse, RemoteTierConfig, ReplicationBacklogItem,
     ReplicationStatus, RuntimeEvent, S3ObjectEncryptionMeta, S3ObjectMeta, SecurityConfig,
@@ -202,6 +203,8 @@ pub struct MetadataRaftSnapshot {
     pub bucket_cors_rules: Vec<(String, Vec<BucketCorsRule>)>,
     pub bucket_tags: Vec<(String, Vec<BucketTag>)>,
     pub bucket_encryptions: Vec<(String, BucketEncryptionConfig)>,
+    #[serde(default)]
+    pub bucket_website_configs: Vec<(String, BucketWebsiteConfig)>,
     pub objects: Vec<MetadataObjectEntry>,
     pub credentials: Vec<(String, LocalCredential)>,
     pub iam_users: Vec<IamUser>,
@@ -351,6 +354,7 @@ pub struct AppState {
     pub bucket_cors_rules: RwLock<HashMap<String, Vec<BucketCorsRule>>>,
     pub bucket_tags: RwLock<HashMap<String, Vec<BucketTag>>>,
     pub bucket_encryptions: RwLock<HashMap<String, BucketEncryptionConfig>>,
+    pub bucket_website_configs: RwLock<HashMap<String, BucketWebsiteConfig>>,
     pub replications: RwLock<Vec<ReplicationStatus>>,
     pub site_replications: RwLock<Vec<SiteReplicationStatus>>,
     pub replication_backlog: RwLock<Vec<ReplicationBacklogItem>>,
@@ -743,6 +747,7 @@ impl AppState {
         let bucket_cors_rules = Self::sorted_map_entries(&self.bucket_cors_rules.read().await.clone());
         let bucket_tags = Self::sorted_map_entries(&self.bucket_tags.read().await.clone());
         let bucket_encryptions = Self::sorted_map_entries(&self.bucket_encryptions.read().await.clone());
+        let bucket_website_configs = Self::sorted_map_entries(&self.bucket_website_configs.read().await.clone());
         let mut iam_users = self.users.read().await.clone(); iam_users.sort_by(|l, r| l.username.cmp(&r.username));
         let credentials = Self::sorted_map_entries(&self.credentials.read().await.clone());
         let mut iam_groups = self.groups.read().await.clone(); iam_groups.sort_by(|l, r| l.name.cmp(&r.name));
@@ -764,6 +769,7 @@ impl AppState {
             generated_at: Utc::now(), buckets, remote_tiers, bucket_object_locks, bucket_retentions,
             bucket_legal_holds, bucket_notifications, bucket_lifecycle_rules, bucket_acls,
             bucket_public_access_blocks, bucket_policies, bucket_cors_rules, bucket_tags, bucket_encryptions,
+            bucket_website_configs,
             objects: Vec::new(), credentials, iam_users, iam_groups, iam_policies, service_accounts,
             admin_sessions, sts_sessions, replications, site_replications, replication_backlog,
             replication_checkpoints, cluster_config_history, security, jobs, cluster_peers,
@@ -936,6 +942,8 @@ impl AppState {
         *self.bucket_cors_rules.write().await = snapshot.bucket_cors_rules.into_iter().collect();
         *self.bucket_tags.write().await = snapshot.bucket_tags.into_iter().collect();
         *self.bucket_encryptions.write().await = snapshot.bucket_encryptions.into_iter().collect();
+        *self.bucket_website_configs.write().await =
+            snapshot.bucket_website_configs.into_iter().collect();
         *self.credentials.write().await = snapshot.credentials.into_iter().collect();
         *self.users.write().await = snapshot.iam_users;
         *self.groups.write().await = snapshot.iam_groups;
