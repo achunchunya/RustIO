@@ -392,6 +392,14 @@ pub(crate) fn infer_s3_action(request: &S3PolicyRequest<'_>) -> String {
                     _ => "s3:*".to_string(),
                 };
             }
+            if query_has_key_case_insensitive(&query_pairs, "replication") {
+                return match *method {
+                    Method::GET => "s3:GetReplicationConfiguration".to_string(),
+                    Method::PUT => "s3:PutReplicationConfiguration".to_string(),
+                    Method::DELETE => "s3:DeleteReplicationConfiguration".to_string(),
+                    _ => "s3:*".to_string(),
+                };
+            }
             if query_has_key_case_insensitive(&query_pairs, "tagging") {
                 return match *method {
                     Method::GET => "s3:GetBucketTagging".to_string(),
@@ -2497,6 +2505,61 @@ pub(crate) fn build_bucket_website_xml(config: &rustio_core::BucketWebsiteConfig
         xml.push_str(routing);
     }
     xml.push_str("</WebsiteConfiguration>");
+    xml
+}
+
+pub(crate) fn build_bucket_replication_xml(rules: &[rustio_core::ReplicationStatus]) -> String {
+    let mut xml = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8"?><ReplicationConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Role></Role>"#,
+    );
+    for rule in rules {
+        xml.push_str("<Rule><ID>");
+        xml.push_str(&xml_escape(&rule.rule_id));
+        xml.push_str("</ID><Status>");
+        xml.push_str(if rule.status == "paused" {
+            "Disabled"
+        } else {
+            "Enabled"
+        });
+        xml.push_str("</Status><Priority>");
+        xml.push_str(&rule.priority.to_string());
+        xml.push_str("</Priority>");
+        // Filter:多标签或带前缀用 And 包裹;单一前缀直接 Prefix;均空则空 Filter。
+        let has_prefix = rule.prefix.as_deref().is_some_and(|p| !p.is_empty());
+        if !rule.tags.is_empty() || (has_prefix && rule.tags.len() > 1) {
+            xml.push_str("<Filter><And>");
+            if let Some(prefix) = rule.prefix.as_deref().filter(|p| !p.is_empty()) {
+                xml.push_str("<Prefix>");
+                xml.push_str(&xml_escape(prefix));
+                xml.push_str("</Prefix>");
+            }
+            for tag in &rule.tags {
+                xml.push_str("<Tag><Key>");
+                xml.push_str(&xml_escape(&tag.key));
+                xml.push_str("</Key><Value>");
+                xml.push_str(&xml_escape(&tag.value));
+                xml.push_str("</Value></Tag>");
+            }
+            xml.push_str("</And></Filter>");
+        } else if let Some(prefix) = rule.prefix.as_deref().filter(|p| !p.is_empty()) {
+            xml.push_str("<Filter><Prefix>");
+            xml.push_str(&xml_escape(prefix));
+            xml.push_str("</Prefix></Filter>");
+        } else {
+            xml.push_str("<Filter></Filter>");
+        }
+        xml.push_str("<DeleteMarkerReplication><Status>");
+        xml.push_str(if rule.sync_deletes {
+            "Enabled"
+        } else {
+            "Disabled"
+        });
+        xml.push_str("</Status></DeleteMarkerReplication>");
+        xml.push_str("<Destination><Bucket>");
+        xml.push_str(&xml_escape(&format!("arn:aws:s3:::{}", rule.target_site)));
+        xml.push_str("</Bucket></Destination></Rule>");
+    }
+    xml.push_str("</ReplicationConfiguration>");
     xml
 }
 

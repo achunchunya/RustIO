@@ -317,6 +317,83 @@ pub(crate) struct S3WebsiteRedirectAll {
 
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
+pub(crate) struct S3ReplicationConfigurationBody {
+    // Role 是 AWS 必填但内部无对应概念,接受并忽略(回显空 Role)。
+    #[serde(rename = "Role")]
+    #[allow(dead_code)]
+    pub(crate) role: Option<String>,
+    #[serde(rename = "Rule", default)]
+    pub(crate) rules: Vec<S3ReplicationRuleBody>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct S3ReplicationRuleBody {
+    #[serde(rename = "ID")]
+    pub(crate) id: Option<String>,
+    #[serde(rename = "Status")]
+    pub(crate) status: Option<String>,
+    #[serde(rename = "Priority")]
+    pub(crate) priority: Option<i32>,
+    #[serde(rename = "Prefix")]
+    pub(crate) prefix: Option<String>,
+    #[serde(rename = "Filter")]
+    pub(crate) filter: Option<S3ReplicationFilterBody>,
+    #[serde(rename = "DeleteMarkerReplication")]
+    pub(crate) delete_marker_replication: Option<S3ReplicationDeleteMarkerBody>,
+    #[serde(rename = "Destination")]
+    pub(crate) destination: Option<S3ReplicationDestinationBody>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct S3ReplicationFilterBody {
+    #[serde(rename = "Prefix")]
+    pub(crate) prefix: Option<String>,
+    #[serde(rename = "Tag")]
+    pub(crate) tag: Option<S3ReplicationTagBody>,
+    #[serde(rename = "And")]
+    pub(crate) and: Option<S3ReplicationAndBody>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct S3ReplicationAndBody {
+    #[serde(rename = "Prefix")]
+    pub(crate) prefix: Option<String>,
+    #[serde(rename = "Tag", default)]
+    pub(crate) tags: Vec<S3ReplicationTagBody>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct S3ReplicationTagBody {
+    #[serde(rename = "Key")]
+    pub(crate) key: String,
+    #[serde(rename = "Value")]
+    pub(crate) value: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct S3ReplicationDeleteMarkerBody {
+    #[serde(rename = "Status")]
+    pub(crate) status: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct S3ReplicationDestinationBody {
+    #[serde(rename = "Bucket")]
+    pub(crate) bucket: Option<String>,
+    // StorageClass 接受但内部 ReplicationStatus 无对应字段,忽略。
+    #[serde(rename = "StorageClass")]
+    #[allow(dead_code)]
+    pub(crate) storage_class: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
 pub(crate) struct S3TaggingBody {
     #[serde(rename = "TagSet")]
     pub(crate) tag_set: Option<S3TagSetBody>,
@@ -563,6 +640,10 @@ pub(crate) async fn s3_root_create_bucket(
 
     if query_has_key(uri.query(), "website") {
         return s3_root_put_bucket_website(state, bucket, body).await;
+    }
+
+    if query_has_key(uri.query(), "replication") {
+        return s3_root_put_bucket_replication(state, bucket, body).await;
     }
 
     if query_has_key(uri.query(), "tagging") {
@@ -1668,6 +1749,242 @@ pub(crate) async fn s3_root_delete_bucket_website(state: Arc<AppState>, bucket: 
             );
         }
     }
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// 内部 target_site 与 AWS Destination/Bucket ARN 互转(arn:aws:s3:::<target_site>)。
+fn replication_arn_to_site(arn: &str) -> String {
+    arn.trim()
+        .strip_prefix("arn:aws:s3:::")
+        .unwrap_or(arn.trim())
+        .to_string()
+}
+
+pub(crate) async fn s3_root_get_bucket_replication(
+    state: Arc<AppState>,
+    bucket: String,
+) -> Response {
+    let bucket_dir = match bucket_path(&state, &bucket) {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
+    if !bucket_dir.exists() {
+        return s3_error(
+            StatusCode::NOT_FOUND,
+            "NoSuchBucket",
+            "The specified bucket does not exist",
+            &bucket,
+        );
+    }
+
+    let rules: Vec<ReplicationStatus> = state
+        .replications
+        .read()
+        .await
+        .iter()
+        .filter(|rule| rule.source_bucket == bucket)
+        .cloned()
+        .collect();
+    if rules.is_empty() {
+        return s3_error(
+            StatusCode::NOT_FOUND,
+            "ReplicationConfigurationNotFoundError",
+            "The replication configuration was not found",
+            &bucket,
+        );
+    }
+    s3_xml_response(StatusCode::OK, build_bucket_replication_xml(&rules))
+}
+
+pub(crate) async fn s3_root_put_bucket_replication(
+    state: Arc<AppState>,
+    bucket: String,
+    body: Bytes,
+) -> Response {
+    let bucket_dir = match bucket_path(&state, &bucket) {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
+    if !bucket_dir.exists() {
+        return s3_error(
+            StatusCode::NOT_FOUND,
+            "NoSuchBucket",
+            "The specified bucket does not exist",
+            &bucket,
+        );
+    }
+
+    let parsed = match from_xml_str::<S3ReplicationConfigurationBody>(&String::from_utf8_lossy(&body))
+    {
+        Ok(value) => value,
+        Err(err) => {
+            return s3_error(
+                StatusCode::BAD_REQUEST,
+                "MalformedXML",
+                &format!("Failed to parse replication XML: {err}"),
+                &bucket,
+            )
+        }
+    };
+    if parsed.rules.is_empty() {
+        return s3_error(
+            StatusCode::BAD_REQUEST,
+            "MalformedXML",
+            "ReplicationConfiguration requires at least one Rule",
+            &bucket,
+        );
+    }
+
+    // 站点名 → endpoint 映射(从已注册站点复制配置查;未注册则 endpoint 留空)。
+    let site_endpoints: HashMap<String, String> = state
+        .site_replications
+        .read()
+        .await
+        .iter()
+        .map(|site| (site.site_id.clone(), site.endpoint.clone()))
+        .collect();
+
+    let mut new_rules: Vec<ReplicationStatus> = Vec::with_capacity(parsed.rules.len());
+    for (index, rule) in parsed.rules.iter().enumerate() {
+        let target_site = match rule
+            .destination
+            .as_ref()
+            .and_then(|dest| dest.bucket.as_deref())
+            .map(replication_arn_to_site)
+            .filter(|site| !site.is_empty())
+        {
+            Some(site) => site,
+            None => {
+                return s3_error(
+                    StatusCode::BAD_REQUEST,
+                    "MalformedXML",
+                    "Replication Rule requires Destination/Bucket",
+                    &bucket,
+                )
+            }
+        };
+
+        // Filter:支持 Prefix / Tag / And(Prefix+Tag[]),以及 legacy 顶层 Prefix。
+        let (raw_prefix, raw_tags) = match rule.filter.as_ref() {
+            Some(filter) => {
+                if let Some(and) = filter.and.as_ref() {
+                    (
+                        and.prefix.clone(),
+                        and.tags
+                            .iter()
+                            .map(|tag| BucketTag {
+                                key: tag.key.clone(),
+                                value: tag.value.clone(),
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                } else {
+                    let tags = filter
+                        .tag
+                        .as_ref()
+                        .map(|tag| {
+                            vec![BucketTag {
+                                key: tag.key.clone(),
+                                value: tag.value.clone(),
+                            }]
+                        })
+                        .unwrap_or_default();
+                    (filter.prefix.clone(), tags)
+                }
+            }
+            None => (rule.prefix.clone(), Vec::new()),
+        };
+
+        let prefix = normalize_replication_prefix(raw_prefix.as_deref());
+        let tags = match normalize_replication_filter_tags(raw_tags) {
+            Ok(tags) => tags,
+            Err(err) => {
+                return s3_error(StatusCode::BAD_REQUEST, "InvalidArgument", &err.message, &bucket)
+            }
+        };
+        let status = match rule.status.as_deref().map(|value| value.trim()) {
+            Some("Enabled") => "healthy".to_string(),
+            Some("Disabled") => "paused".to_string(),
+            _ => {
+                return s3_error(
+                    StatusCode::BAD_REQUEST,
+                    "MalformedXML",
+                    "Replication Rule Status must be Enabled or Disabled",
+                    &bucket,
+                )
+            }
+        };
+        // DeleteMarkerReplication: 缺省视为启用(对齐内部默认 sync_deletes=true)。
+        let sync_deletes = rule
+            .delete_marker_replication
+            .as_ref()
+            .and_then(|item| item.status.as_deref())
+            .map(|value| value.trim().eq_ignore_ascii_case("Enabled"))
+            .unwrap_or(true);
+        let rule_id = normalize_replication_optional_text(rule.id.as_deref())
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+
+        new_rules.push(ReplicationStatus {
+            rule_id,
+            source_bucket: bucket.clone(),
+            target_site: target_site.clone(),
+            rule_name: rule.id.clone(),
+            endpoint: site_endpoints
+                .get(&target_site)
+                .filter(|endpoint| !endpoint.trim().is_empty())
+                .cloned(),
+            prefix,
+            suffix: None,
+            tags,
+            priority: rule.priority.unwrap_or((index as i32) + 1).clamp(0, 1000),
+            replicate_existing: true,
+            sync_deletes,
+            lag_seconds: 0,
+            status,
+        });
+    }
+
+    // 整体替换该 bucket 的全部复制规则(S3 PUT replication 为整配置替换语义)。
+    {
+        let mut rules = state.replications.write().await;
+        rules.retain(|rule| rule.source_bucket != bucket);
+        rules.extend(new_rules.iter().cloned());
+    }
+
+    // 对启用且回填的规则触发存量 catch-up,并同步站点复制拓扑(与 JSON 路径行为一致)。
+    for rule in &new_rules {
+        if rule.status != "paused" && rule.replicate_existing {
+            enqueue_bucket_replication_catch_up(&state, rule).await;
+        }
+    }
+    state.persist_replication_runtime_state().await;
+    sync_site_replication_from_rules(&state).await;
+
+    StatusCode::OK.into_response()
+}
+
+pub(crate) async fn s3_root_delete_bucket_replication(
+    state: Arc<AppState>,
+    bucket: String,
+) -> Response {
+    let bucket_dir = match bucket_path(&state, &bucket) {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
+    if !bucket_dir.exists() {
+        return s3_error(
+            StatusCode::NOT_FOUND,
+            "NoSuchBucket",
+            "The specified bucket does not exist",
+            &bucket,
+        );
+    }
+    {
+        let mut rules = state.replications.write().await;
+        rules.retain(|rule| rule.source_bucket != bucket);
+    }
+    state.persist_replication_runtime_state().await;
+    sync_site_replication_from_rules(&state).await;
     StatusCode::NO_CONTENT.into_response()
 }
 

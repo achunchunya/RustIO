@@ -60,6 +60,10 @@ pub(crate) async fn s3_root_bucket_get(
         return s3_root_get_bucket_website(state, bucket).await;
     }
 
+    if query_has_key(uri.query(), "replication") {
+        return s3_root_get_bucket_replication(state, bucket).await;
+    }
+
     if query_has_key(uri.query(), "tagging") {
         return s3_root_get_bucket_tagging(state, bucket).await;
     }
@@ -696,6 +700,10 @@ pub(crate) async fn s3_root_delete_bucket(
 
     if query_has_key(uri.query(), "website") {
         return s3_root_delete_bucket_website(state, bucket).await;
+    }
+
+    if query_has_key(uri.query(), "replication") {
+        return s3_root_delete_bucket_replication(state, bucket).await;
     }
 
     if query_has_key(uri.query(), "tagging") {
