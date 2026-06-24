@@ -66,6 +66,7 @@ impl<R: tokio::io::AsyncRead + Unpin> AwsChunkedDecoder<R> {
     /// 解码整个流（逐块解帧 + 验签），返回明文数据。
     ///
     /// 内部累积到 Vec——part 上传通常几十到几百 MB，内存可控。后续可优化为流式写文件边验签。
+    #[allow(dead_code)] // 保留给非 streaming 场景作为逃生舱口
     pub(crate) async fn decode_all(&mut self) -> Result<Vec<u8>, std::io::Error> {
         let mut result = Vec::new();
         loop {

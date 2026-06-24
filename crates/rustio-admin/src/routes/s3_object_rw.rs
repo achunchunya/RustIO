@@ -1374,17 +1374,29 @@ pub(crate) async fn s3_root_put_object(
                 &key,
             );
         }
-        if let Err(response) = write_ec_object(
-            &state,
-            &bucket,
-            &key,
-            &source_bytes,
-            &mut meta,
-            sse_customer_key.as_ref(),
-        )
-        .await
-        {
-            return response;
+        // 明文文件已就位。非加密 Copy 用流式 EC 编码(从目标文件读,消除 source_bytes 二次驻留);
+        // 加密对象仍需整体 AES-GCM 全量(整体 AEAD 限制)。
+        if !encryption_enabled(&meta) {
+            let total = source_bytes.len() as u64;
+            drop(source_bytes);
+            if let Err(response) =
+                write_ec_object_streaming(&state, &bucket, &key, &target_path, total).await
+            {
+                return response;
+            }
+        } else {
+            if let Err(response) = write_ec_object(
+                &state,
+                &bucket,
+                &key,
+                &source_bytes,
+                &mut meta,
+                sse_customer_key.as_ref(),
+            )
+            .await
+            {
+                return response;
+            }
         }
         if let Err(response) = persist_current_object_meta(&state, meta.clone()).await {
             return response;

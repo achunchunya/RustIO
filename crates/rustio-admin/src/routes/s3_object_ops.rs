@@ -2229,52 +2229,44 @@ pub(crate) async fn s3_upload_part_streaming(
         auth_outcome.streaming_context.is_some() || auth_outcome.unsigned_chunked;
 
     if is_chunked_body {
-        // aws-chunked（签名或 unsigned，可带 trailer）：解码 + 链式验签 → 写出
-        let mut full_body = Vec::new();
-        let mut stream = body.into_data_stream();
-        while let Some(result) = stream.next().await {
-            let frame = result.map_err(|err| {
-                s3_error(
-                    StatusCode::BAD_REQUEST,
-                    "IncompleteBody",
-                    &format!("Failed to read request body: {err}"),
-                    &key,
-                )
-            })?;
-            full_body.extend_from_slice(&frame);
-        }
-        let reader = std::io::Cursor::new(full_body);
+        // aws-chunked（签名或 unsigned，可带 trailer）：流式解码 + 链式验签 → 边读边写出,
+        // 不再全量收集 body 到 Vec + Cursor 中转（消除双份驻留）。
+        use futures::TryStreamExt;
+        use tokio_util::io::StreamReader;
+        let reader = StreamReader::new(body.into_data_stream().map_err(std::io::Error::other));
         let mut decoder = AwsChunkedDecoder::with_options(
             reader,
             auth_outcome.streaming_context.take(),
             auth_outcome.chunked_trailer,
         );
-        let decoded = decoder.decode_all().await.map_err(|err| {
-            s3_error(
-                StatusCode::BAD_REQUEST,
-                "InvalidChunk",
-                &format!("aws-chunked decode failed: {err}"),
-                &key,
-            )
-        })?;
-        for (name, value) in decoder.trailers() {
-            if name.starts_with("x-amz-checksum-") {
-                trailer_checksum = Some((name.clone(), value.clone()));
+        total_size = match decoder
+            .decode_into(&mut file, &mut hasher, None)
+            .await
+        {
+            Ok(total) => {
+                for (name, value) in decoder.trailers() {
+                    if name.starts_with("x-amz-checksum-") {
+                        trailer_checksum = Some((name.clone(), value.clone()));
+                    }
+                }
+                total
             }
-        }
-        file.write_all(&decoded).await.map_err(|err| {
-            s3_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "InternalError",
-                &format!("Failed to write part: {err}"),
-                &key,
-            )
-        })?;
-        hasher.update(&decoded);
-        if let Some(checksum) = checksum_hasher.as_mut() {
-            checksum.update(&decoded);
-        }
-        total_size = decoded.len() as u64;
+            Err(err) => {
+                let _ = tokio::fs::remove_file(&part_path).await;
+                let (code, message) = if err.kind() == std::io::ErrorKind::PermissionDenied {
+                    (
+                        "SignatureDoesNotMatch",
+                        "aws-chunked chunk signature does not match".to_string(),
+                    )
+                } else {
+                    (
+                        "InvalidChunk",
+                        format!("aws-chunked decode failed: {err}"),
+                    )
+                };
+                return Err(s3_error(StatusCode::BAD_REQUEST, code, &message, &key));
+            }
+        };
     } else {
         // 非 chunked：直接消费 body 帧，边写边喂 hasher
         let mut stream = body.into_data_stream();
