@@ -24,7 +24,7 @@ fn encode_bench(c: &mut Criterion) {
                 }
 
                 b.iter(|| {
-                    rs.encode(&mut black_box(&mut shards)).unwrap();
+                    rs.encode(black_box(&mut shards)).unwrap();
                 });
             });
 
@@ -41,13 +41,13 @@ fn encode_bench(c: &mut Criterion) {
                     let mut produced = 0usize;
                     while produced < shard_size {
                         let this_block = BLOCK.min(shard_size - produced);
-                        for (idx, block) in blocks.iter_mut().enumerate() {
+                        for block in blocks.iter_mut() {
                             block.resize(this_block, 0u8);
                         }
                         for (idx, src) in src_shards.iter().enumerate() {
                             blocks[idx].copy_from_slice(&src[produced..produced + this_block]);
                         }
-                        rs.encode(&mut black_box(&mut blocks)).unwrap();
+                        rs.encode(black_box(&mut blocks)).unwrap();
                         produced += this_block;
                     }
                 });
@@ -87,7 +87,7 @@ fn reconstruct_bench(c: &mut Criterion) {
                         .enumerate()
                         .map(|(idx, shard)| if idx == 0 { None } else { Some(shard) })
                         .collect();
-                    rs.reconstruct(&mut black_box(&mut loaded)).unwrap();
+                    rs.reconstruct(black_box(&mut loaded)).unwrap();
                 });
             });
         }

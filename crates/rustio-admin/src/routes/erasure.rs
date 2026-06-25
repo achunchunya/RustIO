@@ -1,7 +1,30 @@
 //! 纠删码（EC）对象读写
 
 use super::*;
+use std::os::fd::AsRawFd;
 use tokio::io::AsyncSeekExt;
+
+/// 设置文件绕过/弱化 page cache，减少大对象分片读写的双重拷贝。
+/// - macOS：`F_NOCACHE`（无对齐要求，直接绕过缓存）。
+/// - Linux：**不用 `O_DIRECT`**（它要求缓冲区/IO 大小/偏移三重 4096 对齐，当前 `Vec<u8>`
+///   缓冲区与非对齐分片尾块会触发 `EINVAL` 写损坏）；改在 I/O 结束后用
+///   `posix_fadvise(DONTNEED)` 提示内核丢弃页缓存（顾问式，无对齐要求，不破坏写入）。
+fn set_nocache(file: &tokio::fs::File) {
+    let _fd = file.as_raw_fd();
+    #[cfg(target_os = "macos")]
+    unsafe {
+        libc::fcntl(_fd, libc::F_NOCACHE, 1);
+    }
+}
+
+/// I/O 结束后丢弃文件的页缓存（仅 Linux，顾问式，安全无对齐要求）。macOS 由 F_NOCACHE 处理。
+fn drop_page_cache(file: &tokio::fs::File) {
+    let _fd = file.as_raw_fd();
+    #[cfg(target_os = "linux")]
+    unsafe {
+        libc::posix_fadvise(_fd, 0, 0, libc::POSIX_FADV_DONTNEED);
+    }
+}
 
 /// 拼接远程 EC 分片端点 URL。
 fn remote_shard_url(
@@ -649,7 +672,10 @@ pub(crate) async fn write_ec_object_streaming(
         }
         if ok {
             match tokio::fs::File::create(&shard_path).await {
-                Ok(file) => handle = Some(file),
+                Ok(file) => {
+                    set_nocache(&file);
+                    handle = Some(file);
+                }
                 Err(_) => ok = false,
             }
         }
@@ -670,6 +696,7 @@ pub(crate) async fn write_ec_object_streaming(
                 key,
             )
         })?;
+        set_nocache(&file);
         // 源文件短于 i*shard_size 时 seek 失败，该分片全为补零，照常使用受限读取器
         let _ = file
             .seek(std::io::SeekFrom::Start((i * shard_size) as u64))
@@ -748,7 +775,13 @@ pub(crate) async fn write_ec_object_streaming(
         let mut ok = ok_flag;
         if ok {
             let flushed = match file_opt.as_mut() {
-                Some(file) => file.flush().await.is_ok(),
+                Some(file) => {
+                    let ok = file.flush().await.is_ok();
+                    if ok {
+                        drop_page_cache(file);
+                    }
+                    ok
+                }
                 None => false,
             };
             if flushed {
@@ -1255,6 +1288,7 @@ pub(crate) async fn read_ec_object_streaming(
                     return;
                 }
             };
+            set_nocache(&file);
             let mut buf = vec![0u8; 1024 * 1024];
             while remaining > 0 {
                 let read = match file.read(&mut buf).await {
@@ -1344,6 +1378,7 @@ pub(crate) async fn read_ec_object_streaming_range(
                 Ok(file) => file,
                 Err(err) => { yield Err(err); return; }
             };
+            set_nocache(&file);
             if idx == first_shard && inner > 0 {
                 use tokio::io::AsyncSeekExt;
                 if let Err(err) = file.seek(std::io::SeekFrom::Start(inner)).await {
