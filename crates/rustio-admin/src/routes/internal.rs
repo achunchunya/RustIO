@@ -1060,3 +1060,93 @@ pub(crate) struct LdapIdentityRecord {
     pub(crate) groups: Vec<String>,
 }
 
+// ── 对象元数据多副本 RPC（照搬 manifest RPC 模式，目标改为 redb MetaStore） ──
+
+/// 接收远程 S3ObjectMeta JSON 副本，写入本地 redb + 更新 LRU。
+pub(crate) async fn internal_meta_put(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((_bucket, _key)): Path<(String, String)>,
+    body: Bytes,
+) -> Response {
+    if let Err(response) = ensure_internal_token(&headers) {
+        return response;
+    }
+    let meta: S3ObjectMeta = match serde_json::from_slice(&body) {
+        Ok(m) => m,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": bilingual_text("元数据反序列化失败", &format!("failed to deserialize meta: {err}")) })),
+            )
+                .into_response();
+        }
+    };
+    if let Err(err) = state.meta_store.put(&meta) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": bilingual_text("写入元数据失败", &format!("failed to write meta: {err}")) })),
+        )
+            .into_response();
+    }
+    (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
+}
+
+/// 返回本地 S3ObjectMeta JSON（不存在返回 404）。
+pub(crate) async fn internal_meta_get(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((bucket, key)): Path<(String, String)>,
+) -> Response {
+    if let Err(response) = ensure_internal_token(&headers) {
+        return response;
+    }
+    match state.meta_store.get(&bucket, &key) {
+        Ok(Some(meta)) => {
+            match serde_json::to_vec(&meta) {
+                Ok(bytes) => (StatusCode::OK, bytes).into_response(),
+                Err(err) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": bilingual_text("元数据序列化失败", &format!("failed to serialize meta: {err}")) })),
+                )
+                    .into_response(),
+            }
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": bilingual_text("元数据不存在", "meta not found") })),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": bilingual_text("读取元数据失败", &format!("failed to read meta: {err}")) })),
+        )
+            .into_response(),
+    }
+}
+
+/// 返回本地 S3ObjectMeta 的存在性 + created_at（healing 探测用，不存在返 200 exists:false）。
+pub(crate) async fn internal_meta_stat(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path((bucket, key)): Path<(String, String)>,
+) -> Response {
+    if let Err(response) = ensure_internal_token(&headers) {
+        return response;
+    }
+    match state.meta_store.get(&bucket, &key) {
+        Ok(Some(meta)) => {
+            let created_at = meta.created_at.to_rfc3339();
+            (StatusCode::OK, Json(json!({ "exists": true, "created_at": created_at }))).into_response()
+        }
+        Ok(None) => {
+            (StatusCode::OK, Json(json!({ "exists": false }))).into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": bilingual_text("探测元数据失败", &format!("failed to stat meta: {err}")) })),
+        )
+            .into_response(),
+    }
+}
+

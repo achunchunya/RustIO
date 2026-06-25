@@ -21,7 +21,7 @@ mod s3_chunked;
 mod s3_cors;
 mod s3_form_upload;
 mod s3_helpers;
-mod s3_meta;
+pub(crate) mod s3_meta;
 mod s3_object_ops;
 mod s3_object_rw;
 mod s3_paths;
@@ -660,6 +660,14 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/v1/internal/ec/manifest-list",
             get(internal_ec_manifest_list),
+        )
+        .route(
+            "/api/v1/internal/meta/{bucket}/{key}",
+            put(internal_meta_put).get(internal_meta_get),
+        )
+        .route(
+            "/api/v1/internal/meta-stat/{bucket}/{key}",
+            get(internal_meta_stat),
         )
         // console CORS 层仅作用于此前注册的「管理路由」(axum .layer 只覆盖之前的路由)；
         // 下面的 S3 路由不受其影响,改走 per-bucket CORS(预检 + inject 中间件)。

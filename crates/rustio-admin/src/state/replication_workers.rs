@@ -1166,6 +1166,19 @@ impl AppState {
                 }
             });
         }
+        // 对象元数据主动 healing：集群模式下周期扫描本地 redb，从远程 peer 拉取更新的 meta 写回本地。
+        if self.local_node_id > 0 {
+            let meta_heal_state = Arc::clone(self);
+            handle.spawn(async move {
+                loop {
+                    supervised!(
+                        "meta-governance-heal",
+                        process_meta_heal_once(&meta_heal_state)
+                    );
+                    tokio::time::sleep(Self::meta_heal_worker_interval()).await;
+                }
+            });
+        }
         let managed_async_state = Arc::clone(self);
         let managed_async_worker_id = format!("async-worker-{}", Uuid::new_v4().simple());
         handle.spawn(async move {
@@ -1311,5 +1324,43 @@ impl AppState {
             missing_planes,
             planes,
         }
+    }
+}
+
+/// 对象元数据主动 healing 单轮扫描：遍历本地 redb 中的对象元数据，从远程 peer 拉取更新版本写回本地。
+/// 仅集群模式调用（spawn 条件 `local_node_id > 0`）。每轮最多扫描 500 个对象避免长时间持锁。
+async fn process_meta_heal_once(state: &AppState) {
+    use crate::routes::s3_meta::read_meta_quorum;
+    const MAX_PER_ROUND: usize = 500;
+
+    // 获取本地所有对象元数据的 bucket+key 列表
+    let entries = match state.meta_store.scan_all() {
+        Ok(v) => v,
+        Err(err) => {
+            tracing::warn!("meta-heal: scan_all failed: {err}");
+            return;
+        }
+    };
+    let mut healed = 0usize;
+    let mut scanned = 0usize;
+    for meta in entries.into_iter().take(MAX_PER_ROUND) {
+        scanned += 1;
+        // 用 read_meta_quorum 触发 inline healing：本地命中则直接返回（无开销），
+        // 本地缺失/损坏则从远程拉取最新版本并回写本地。
+        match read_meta_quorum(state, &meta.bucket, &meta.key).await {
+            Ok(Some(remote_meta)) => {
+                // 如果远程返回的 created_at 比本地更新，说明本地版本落后，read_meta_quorum 已 inline healing 回写。
+                if remote_meta.created_at > meta.created_at {
+                    healed += 1;
+                }
+            }
+            Ok(None) => {}
+            Err(_err) => {
+                tracing::debug!("meta-heal: heal {}/{} failed", meta.bucket, meta.key);
+            }
+        }
+    }
+    if healed > 0 {
+        tracing::info!("meta-heal: scanned {scanned}, healed {healed}");
     }
 }

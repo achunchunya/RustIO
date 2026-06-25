@@ -648,22 +648,280 @@ pub(crate) async fn persist_archived_object_meta(
     Ok(())
 }
 
+// ── 对象元数据多副本：远程客户端 + quorum 读写（照搬 manifest quorum 模式） ──
+
+/// 远程 PUT S3ObjectMeta 副本到目标节点。
+async fn put_remote_meta(node_addr: &str, bucket: &str, key: &str, meta_bytes: &[u8]) -> Result<(), String> {
+    let url = format!("{node_addr}/api/v1/internal/meta/{bucket}/{key}");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|err| format!("failed to build reqwest client: {err}"))?;
+    let resp = client
+        .put(&url)
+        .header("x-rustio-internal-token", AppState::internal_control_token())
+        .header("content-type", "application/json")
+        .body(meta_bytes.to_vec())
+        .send()
+        .await
+        .map_err(|err| format!("remote meta put to {node_addr} failed: {err}"))?;
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("remote meta put to {node_addr} returned {}", resp.status()))
+    }
+}
+
+/// 远程 GET S3ObjectMeta 副本（不存在返回 Ok(None)）。
+async fn get_remote_meta(node_addr: &str, bucket: &str, key: &str) -> Result<Option<S3ObjectMeta>, String> {
+    let url = format!("{node_addr}/api/v1/internal/meta/{bucket}/{key}");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|err| format!("failed to build reqwest client: {err}"))?;
+    let resp = client
+        .get(&url)
+        .header("x-rustio-internal-token", AppState::internal_control_token())
+        .send()
+        .await
+        .map_err(|err| format!("remote meta get from {node_addr} failed: {err}"))?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !resp.status().is_success() {
+        return Err(format!("remote meta get from {node_addr} returned {}", resp.status()));
+    }
+    let bytes = resp.bytes().await.map_err(|err| format!("failed to read meta body from {node_addr}: {err}"))?;
+    let meta: S3ObjectMeta = serde_json::from_slice(&bytes)
+        .map_err(|err| format!("failed to deserialize meta from {node_addr}: {err}"))?;
+    Ok(Some(meta))
+}
+
+/// 远程 stat（存在性 + created_at，不存在返 exists:false）。
+pub(crate) async fn stat_remote_meta(
+    node_addr: &str,
+    bucket: &str,
+    key: &str,
+) -> Result<(bool, String), String> {
+    let url = format!("{node_addr}/api/v1/internal/meta-stat/{bucket}/{key}");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|err| format!("failed to build reqwest client: {err}"))?;
+    let resp = client
+        .get(&url)
+        .header("x-rustio-internal-token", AppState::internal_control_token())
+        .send()
+        .await
+        .map_err(|err| format!("remote meta stat from {node_addr} failed: {err}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("remote meta stat from {node_addr} returned {}", resp.status()));
+    }
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|err| format!("failed to parse meta stat from {node_addr}: {err}"))?;
+    let exists = body.get("exists").and_then(|v| v.as_bool()).unwrap_or(false);
+    let created_at = body
+        .get("created_at")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    Ok((exists, created_at))
+}
+
+/// 选 meta 副本节点：本节点优先 + 其余取 manifest shard 所属不同节点。
+async fn meta_replica_nodes(state: &AppState) -> Vec<(u64, String)> {
+    if state.local_node_id == 0 {
+        return vec![(0, String::new())];
+    }
+    let peers: Vec<(u64, String)> = {
+        let guard = state.cluster_peers.read().await;
+        guard
+            .values()
+            .filter(|p| p.node_id != state.local_node_id && !p.api_addr.is_empty())
+            .map(|p| (p.node_id, p.api_addr.clone()))
+            .collect()
+    };
+    // 本节点优先 + 最多 parity 个远程节点
+    let (_, parity) = ec_layout_for(state).await;
+    let want = parity + 1; // 与数据容错等级一致
+    let mut replicas = Vec::with_capacity(want);
+    replicas.push((0, String::new())); // 本节点（node_id=0 语义=本地）
+    for (node_id, addr) in peers.iter().take(want - 1) {
+        replicas.push((*node_id, addr.clone()));
+    }
+    replicas
+}
+
+/// quorum 写入 S3ObjectMeta：本地 redb + 远程副本，floor(N/2)+1 成功才算成功。
+pub(crate) async fn write_meta_quorum(
+    state: &AppState,
+    meta: &S3ObjectMeta,
+) -> Result<(), Response> {
+    // 单机模式：只写本地
+    if state.local_node_id == 0 {
+        return state.meta_store.put(meta).map_err(|err| {
+            s3_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "InternalError",
+                &format!("Failed to persist object metadata: {err}"),
+                &meta.key,
+            )
+        });
+    }
+
+    let meta_bytes = serde_json::to_vec(meta).map_err(|err| {
+        s3_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "InternalError",
+            &format!("Failed to serialize object metadata: {err}"),
+            &meta.key,
+        )
+    })?;
+
+    // 集群模式：本地 + 远程 quorum
+    let peers: Vec<(u64, String)> = {
+        let guard = state.cluster_peers.read().await;
+        guard
+            .values()
+            .filter(|p| p.node_id != state.local_node_id && !p.api_addr.is_empty())
+            .map(|p| (p.node_id, p.api_addr.clone()))
+            .collect()
+    };
+    let (_, parity) = ec_layout_for(state).await;
+    let want = parity + 1;
+    let quorum = want / 2 + 1;
+
+    let mut ok = 0usize;
+    // 本地写入
+    if state.meta_store.put(meta).is_ok() {
+        ok += 1;
+    }
+    // 远程并发写入（取 want-1 个 peer）
+    let remote_futs: Vec<_> = peers
+        .iter()
+        .take(want - 1)
+        .map(|(_, addr)| put_remote_meta(addr, &meta.bucket, &meta.key, &meta_bytes))
+        .collect();
+    let results = futures::future::join_all(remote_futs).await;
+    for r in results {
+        if r.is_ok() {
+            ok += 1;
+        }
+    }
+
+    if ok >= quorum {
+        Ok(())
+    } else {
+        Err(s3_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "InternalError",
+            &format!("Object metadata quorum not reached ({ok}/{quorum}); meta quorum write failed ({ok}/{quorum})"),
+            &meta.key,
+        ))
+    }
+}
+
+/// 本地优先读 + inline healing（照搬 read_manifest_quorum 模式）。
+pub(crate) async fn read_meta_quorum(
+    state: &AppState,
+    bucket: &str,
+    key: &str,
+) -> Result<Option<S3ObjectMeta>, Response> {
+    // 快路径：本地命中
+    match state.meta_store.get(bucket, key) {
+        Ok(Some(meta)) => return Ok(Some(meta)),
+        Ok(None) => {}
+        Err(_) => {}
+    }
+    // 单机模式：本地没有就没了
+    if state.local_node_id == 0 {
+        return Ok(None);
+    }
+    // 集群模式：从 online peer 并发拉取，取 created_at 最新者，inline healing 回写本地
+    let peers: Vec<(u64, String)> = {
+        let guard = state.cluster_peers.read().await;
+        guard
+            .values()
+            .filter(|p| p.node_id != state.local_node_id && !p.api_addr.is_empty())
+            .map(|p| (p.node_id, p.api_addr.clone()))
+            .collect()
+    };
+    let remote_futs: Vec<_> = peers
+        .iter()
+        .map(|(_, addr)| get_remote_meta(addr, bucket, key))
+        .collect();
+    let results = futures::future::join_all(remote_futs).await;
+    let mut best: Option<S3ObjectMeta> = None;
+    for r in results {
+        if let Ok(Some(meta)) = r {
+            let is_better = match &best {
+                Some(existing) => meta.created_at > existing.created_at,
+                None => true,
+            };
+            if is_better {
+                best = Some(meta);
+            }
+        }
+    }
+    // inline healing：远程取到的最新 meta 写回本地
+    if let Some(ref meta) = best {
+        let _ = state.meta_store.put(meta);
+    }
+    Ok(best)
+}
+
+/// quorum 删除：本地删除 + 远程同步删除（尽力而为，不阻塞）。
+pub(crate) async fn remove_meta_quorum(
+    state: &AppState,
+    bucket: &str,
+    key: &str,
+) -> Result<(), Response> {
+    state.meta_store.remove(bucket, key).map_err(|err| {
+        s3_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "InternalError",
+            &format!("Failed to remove object metadata: {err}"),
+            key,
+        )
+    })?;
+    // 集群模式：尽力通知远程节点删除（不阻塞、不回滚）
+    if state.local_node_id != 0 {
+        let peers: Vec<(u64, String)> = {
+            let guard = state.cluster_peers.read().await;
+            guard
+                .values()
+                .filter(|p| p.node_id != state.local_node_id && !p.api_addr.is_empty())
+                .map(|p| (p.node_id, p.api_addr.clone()))
+                .collect()
+        };
+        let url = |addr: &str| format!("{addr}/api/v1/internal/meta/{bucket}/{key}");
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap_or_default();
+        let futs: Vec<_> = peers
+            .iter()
+            .map(|(_, addr)| {
+                client
+                    .delete(url(addr))
+                    .header("x-rustio-internal-token", AppState::internal_control_token())
+                    .send()
+            })
+            .collect();
+        let _ = futures::future::join_all(futs).await;
+    }
+    Ok(())
+}
+
 pub(crate) async fn persist_current_object_meta(
     state: &AppState,
     meta: S3ObjectMeta,
 ) -> Result<(), Response> {
-    // 对象元数据已完全下沉 redb(真相源 + LRU 缓存),不再写 .rustio_meta JSON——
-    // list/versions/lifecycle/KMS 等扫描路径均已改 redb scan。
-    // 未来分布式集群:在 MetaStore::put 处提交增量 op 到 openraft,复制到各节点本地 redb。
-    state.meta_store.put(&meta).map_err(|err| {
-        s3_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "InternalError",
-            &format!("Failed to persist object metadata: {err}"),
-            &meta.key,
-        )
-    })?;
-    Ok(())
+    // 集群模式走 quorum 多副本写入（本地 redb + 远程 peer，floor(N/2)+1 成功）；
+    // 单机模式退化为本地单写。
+    write_meta_quorum(state, &meta).await
 }
 
 pub(crate) async fn read_current_object_meta(
@@ -671,15 +929,8 @@ pub(crate) async fn read_current_object_meta(
     bucket: &str,
     key: &str,
 ) -> Result<Option<S3ObjectMeta>, Response> {
-    // 真相源已下沉 redb;MetaStore::get 内部 LRU 命中 / redb 点查回填。
-    state.meta_store.get(bucket, key).map_err(|err| {
-        s3_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "InternalError",
-            &format!("Failed to read object metadata: {err}"),
-            key,
-        )
-    })
+    // 集群模式走 quorum 读（本地优先 + inline healing 回写）；单机模式直查 redb。
+    read_meta_quorum(state, bucket, key).await
 }
 
 pub(crate) async fn read_current_object_meta_from_disk(
@@ -703,16 +954,8 @@ pub(crate) async fn remove_current_object_meta(
     bucket: &str,
     key: &str,
 ) -> Result<(), Response> {
-    // 对象元数据已完全下沉 redb,不再写/删 .rustio_meta JSON。
-    state.meta_store.remove(bucket, key).map_err(|err| {
-        s3_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "InternalError",
-            &format!("Failed to remove object metadata: {err}"),
-            key,
-        )
-    })?;
-    Ok(())
+    // 集群模式走 quorum 删除（本地 + 远程尽力同步）；单机模式退化为本地删除。
+    remove_meta_quorum(state, bucket, key).await
 }
 
 pub(crate) async fn build_object_meta_for_current_version(

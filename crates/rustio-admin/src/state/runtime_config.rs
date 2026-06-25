@@ -620,6 +620,16 @@ impl AppState {
         std::time::Duration::from_millis(ms)
     }
 
+    /// 对象元数据主动 healing 扫描间隔（仅集群模式生效）。
+    pub(crate) fn meta_heal_worker_interval() -> std::time::Duration {
+        let ms = std::env::var("RUSTIO_META_HEAL_INTERVAL_MS")
+            .ok()
+            .and_then(|raw| raw.parse::<u64>().ok())
+            .unwrap_or(60_000)
+            .clamp(5_000, 600_000);
+        std::time::Duration::from_millis(ms)
+    }
+
     pub(crate) fn memory_trim_enabled() -> bool {
         std::env::var("RUSTIO_MEMORY_TRIM_ENABLED")
             .map(|value| !(value.eq_ignore_ascii_case("false") || value == "0"))
