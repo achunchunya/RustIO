@@ -548,6 +548,28 @@ pub(crate) async fn raft_metadata_write(
     }
 }
 
+/// 触发本节点立即发起选举(用于 graceful leader transfer)。
+pub(crate) async fn raft_trigger_elect(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = ensure_internal_token(&headers) {
+        return response;
+    }
+    let Some(raft) = state.meta_raft.get() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":"raft not initialized"})))
+            .into_response();
+    };
+    match raft.trigger().elect().await {
+        Ok(_) => (StatusCode::OK, Json(json!({"ok": true}))).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("trigger_elect: {err:?}")})),
+        )
+            .into_response(),
+    }
+}
+
 /// 加节点请求(管理员端点或新节点自动 join 转发来):若本节点非 leader 则转发到 leader,
 /// leader 执行 add_learner+change_membership。
 pub(crate) async fn raft_membership_add(

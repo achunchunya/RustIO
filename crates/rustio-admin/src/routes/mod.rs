@@ -196,6 +196,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/system/raft/peers", post(system_raft_peer_add))
         .route("/api/v1/system/raft/elect/{id}", post(system_raft_elect))
         .route(
+            "/api/v1/system/raft/transfer/{id}",
+            post(system_raft_transfer),
+        )
+        .route(
             "/api/v1/system/raft/peers/{id}/offline",
             post(system_raft_peer_offline),
         )
@@ -626,6 +630,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/internal/metadata-raft/vote", post(raft_vote))
         .route("/api/v1/internal/metadata-raft/install-snapshot", post(raft_install_snapshot))
         .route("/api/v1/internal/metadata-raft/write", post(raft_metadata_write))
+        .route(
+            "/api/v1/internal/metadata-raft/trigger-elect",
+            post(raft_trigger_elect),
+        )
         .route("/api/v1/internal/cluster/membership/add", post(raft_membership_add))
         .route(
             "/api/v1/internal/cluster/membership/remove",
@@ -2556,6 +2564,41 @@ async fn system_raft_elect(
             "success",
             Some(body.reason),
             json!({ "leader_id": id }),
+        )
+        .await;
+    Ok(wrap(status))
+}
+
+async fn system_raft_transfer(
+    State(state): State<Arc<AppState>>,
+    auth: AuthContext,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<DangerActionRequest>,
+) -> Result<Json<ApiEnvelope<MetadataRaftStatus>>, AppError> {
+    auth.require(Permission::ClusterWrite)?;
+    ensure_confirm_header(&headers)?;
+    if body.reason.trim().is_empty() {
+        return Err(AppError::bad_request(
+            "原因不能为空 / reason cannot be empty",
+        ));
+    }
+    let target_id: u64 = id
+        .parse()
+        .map_err(|_| AppError::bad_request(format!("无效节点 ID: {id}")))?;
+    state
+        .raft_transfer_leader(target_id)
+        .await
+        .map_err(AppError::internal)?;
+    let status = state.metadata_raft_status().await;
+    state
+        .append_audit(
+            &auth.username,
+            "system.raft.leader.transfer",
+            &format!("system/raft/transfer/{id}"),
+            "success",
+            Some(body.reason),
+            json!({ "target_id": id }),
         )
         .await;
     Ok(wrap(status))

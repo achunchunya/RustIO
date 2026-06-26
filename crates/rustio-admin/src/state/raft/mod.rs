@@ -247,6 +247,89 @@ impl AppState {
         addr.filter(|addr| !addr.is_empty())
     }
 
+    /// Graceful leader transfer:当前 leader 主动让位给指定目标节点。
+    ///
+    /// 流程:
+    /// 1. 停止发送 heartbeat → follower 检测到超时
+    /// 2. HTTP RPC 触发目标节点立即发起 election
+    /// 3. 等待目标节点赢得选举(≤5s)
+    /// 4. 恢复 heartbeat
+    pub(crate) async fn raft_transfer_leader(
+        &self,
+        target_node_id: u64,
+    ) -> Result<(), String> {
+        let raft = self
+            .meta_raft
+            .get()
+            .ok_or_else(|| "metadata raft 未初始化".to_string())?;
+
+        // 必须在 leader 上发起 transfer
+        if !self.is_metadata_leader() {
+            return Err("仅 leader 可发起 transfer;请在 leader 节点调用".to_string());
+        }
+        if target_node_id == self.local_node_id {
+            return Err("目标节点已是 leader,无需转移".to_string());
+        }
+
+        // 查找目标节点地址
+        let target_addr = {
+            let metrics = raft.metrics();
+            let m = metrics.borrow();
+            let mut found = None;
+            for (id, node) in m.membership_config.nodes() {
+                if *id == target_node_id && !node.addr.is_empty() {
+                    found = Some(node.addr.clone());
+                    break;
+                }
+            }
+            found.ok_or_else(|| format!("目标节点 {target_node_id} 不在集群成员中"))?
+        };
+
+        // 1) 停止发送 heartbeat → follower election_timeout 后自动超时
+        raft.runtime_config().heartbeat(false);
+
+        // 2) HTTP RPC 触发目标节点立即发起 election
+        let token = Self::internal_control_token();
+        let url = format!("{target_addr}/api/v1/internal/metadata-raft/trigger-elect");
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+            .map_err(|err| format!("构建 HTTP client 失败: {err}"))?;
+
+        let send_result = client
+            .post(&url)
+            .header("x-rustio-internal-token", &token)
+            .send()
+            .await;
+        // 即使 RPC 失败也继续 — follower 超时后仍会自行触发 election
+        if let Err(err) = send_result {
+            eprintln!("  [raft] trigger-elect RPC 失败(将依赖超时): {err}");
+        }
+
+        // 3) 等待目标节点成为 leader(最长 5s)
+        let mut target_is_leader = false;
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let metrics = raft.metrics();
+            let m = metrics.borrow();
+            if m.current_leader == Some(target_node_id) {
+                target_is_leader = true;
+                break;
+            }
+        }
+
+        // 4) 恢复 heartbeat(无论成功与否)
+        raft.runtime_config().heartbeat(true);
+
+        if !target_is_leader {
+            return Err(format!(
+                "leader 转移超时:目标节点 {target_node_id} 未在 5s 内成为 leader"
+            ));
+        }
+
+        Ok(())
+    }
+
     /// 启动元数据 raft(集群检测:有已知 peer 则多节点初始化)。
     /// async 上下文(server 启动)调用一次,幂等。
     pub async fn init_metadata_raft(self: &Arc<Self>, node_id: u64) -> Result<(), String> {
