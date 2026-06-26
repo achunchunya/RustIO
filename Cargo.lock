@@ -2507,6 +2507,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "http",
  "rustio-admin",
  "tokio",
  "tower-http",

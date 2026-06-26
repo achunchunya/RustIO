@@ -1605,7 +1605,7 @@ pub(crate) fn ensure_s3_auth(
             "AccessDenied",
             "Invalid access key or secret key",
         )?;
-        if pass == identity.secret_key {
+        if crate::state::password::constant_time_eq(pass.as_bytes(), identity.secret_key.as_bytes()) {
             ensure_session_token(&identity, headers, uri)?;
             ensure_s3_policy_allowed(
                 state,

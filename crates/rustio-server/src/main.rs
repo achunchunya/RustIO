@@ -44,6 +44,7 @@ use anyhow::Context;
 use rustio_admin::{build_router, AppState};
 use tower_http::{
     classify::ServerErrorsFailureClass,
+    set_header::SetResponseHeaderLayer,
     trace::{DefaultMakeSpan, TraceLayer},
 };
 use tracing::{error, info, Level};
@@ -80,6 +81,27 @@ async fn main() -> anyhow::Result<()> {
     }
     // console CORS 已下沉 build_router(仅作用于管理路由);S3 路由走 per-bucket CORS。
     let app = build_router(state)
+        // 安全响应头:防 MIME 嗅探、点击劫持、XSS、信息泄露
+        .layer(SetResponseHeaderLayer::overriding(
+            http::header::X_CONTENT_TYPE_OPTIONS,
+            http::HeaderValue::from_static("nosniff"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            http::header::X_FRAME_OPTIONS,
+            http::HeaderValue::from_static("DENY"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            http::header::HeaderName::from_static("referrer-policy"),
+            http::HeaderValue::from_static("strict-origin-when-cross-origin"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            http::header::HeaderName::from_static("permissions-policy"),
+            http::HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            http::header::HeaderName::from_static("x-xss-protection"),
+            http::HeaderValue::from_static("0"),
+        ))
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(

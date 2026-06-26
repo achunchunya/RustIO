@@ -34,13 +34,14 @@ pub(crate) fn verify_password(plain: &str, stored: &str) -> bool {
 }
 
 /// 恒定时间字节比较,避免明文/令牌比较的时序侧信道。
+/// 长度不等时仍遍历较长者的全部字节,消除长度泄漏。
 pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
     let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
+    // 长度差异纳入 diff,不提前返回
+    diff |= (a.len() != b.len()) as u8;
+    let min_len = a.len().min(b.len());
+    for i in 0..min_len {
+        diff |= a[i] ^ b[i];
     }
     diff == 0
 }
