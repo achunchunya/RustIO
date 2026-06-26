@@ -1788,7 +1788,8 @@ pub(crate) async fn s3_root_put_object(
             return response;
         }
     } else {
-        // 加密对象：需整体 AES-GCM 加密，读回明文后走全量路径 TODO: 未来流式分块加密
+        // 加密对象:整体 AES-GCM 加密(AES-GCM 认证标签依赖全文,无法流式;与 S3 SSE 语义一致)。
+        // 内存峰值 = 1 份 payload(加密后立即 drop 源数据);大对象走 staging 文件不驻留双份。
         let plaintext = match tokio::fs::read(&target_path).await {
             Ok(bytes) => bytes,
             Err(err) => {
