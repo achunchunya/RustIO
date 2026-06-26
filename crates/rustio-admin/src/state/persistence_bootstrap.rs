@@ -134,10 +134,10 @@ impl AppState {
     }
 
     /// 打开 redb 元数据库,若文件损坏则自动删除重建(元数据可从 bucket 目录扫描恢复)。
-    fn open_meta_store_or_recover(data_dir: &Path) -> MetaStore {
+    fn open_meta_store_or_recover(data_dir: &Path) -> Result<MetaStore, String> {
         let path = data_dir.join(".rustio_meta.redb");
         match MetaStore::open(&path) {
-            Ok(store) => return store,
+            Ok(store) => return Ok(store),
             Err(err) => {
                 tracing::warn!("元数据库打开失败,尝试删除损坏文件重建: {err}");
             }
@@ -145,12 +145,12 @@ impl AppState {
         // 尝试恢复:删除可能损坏的 redb 文件后重建。
         if let Err(err) = std::fs::remove_file(&path) {
             tracing::error!("无法删除损坏的元数据库文件 {path:?}: {err}");
-            panic!(
-                "元数据库文件损坏且无法自动删除,请手动删除后重启 / corrupted metadata db cannot be auto-removed: {path:?}"
-            );
+            return Err(format!(
+                "元数据库文件损坏且无法自动删除,请手动删除后重启 / corrupted metadata db cannot be auto-removed: {path:?}: {err}"
+            ));
         }
-        MetaStore::open(&path).unwrap_or_else(|err| {
-            panic!(
+        MetaStore::open(&path).map_err(|err| {
+            format!(
                 "删除损坏文件后仍无法创建元数据库 {path:?}: {err}。请检查磁盘空间与权限 / cannot create metadata db after recovery"
             )
         })
@@ -183,10 +183,14 @@ impl AppState {
             })
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("./data"));
-        let _ = std::fs::create_dir_all(&data_dir);
+        if let Err(err) = std::fs::create_dir_all(&data_dir) {
+            tracing::error!(path = %data_dir.display(), error = %err, "无法创建数据目录 / cannot create data dir");
+        }
         let data_disks = Self::resolve_data_disks(&data_dir);
         for disk in &data_disks {
-            let _ = std::fs::create_dir_all(disk);
+            if let Err(err) = std::fs::create_dir_all(disk) {
+                tracing::error!(path = %disk.display(), error = %err, "无法创建磁盘目录 / cannot create disk dir");
+            }
         }
 
         let cluster_config = crate::state::cluster::ClusterConfig::parse();
@@ -476,7 +480,10 @@ impl AppState {
         let cluster_config_history = Self::load_cluster_config_history(&data_dir, &security);
         let console_sessions = Self::load_console_sessions(&data_dir);
 
-        let meta_store = Self::open_meta_store_or_recover(&data_dir);
+        let meta_store = Self::open_meta_store_or_recover(&data_dir).unwrap_or_else(|err| {
+            tracing::error!("{err}");
+            std::process::exit(1);
+        });
         match meta_store.migrate_from_data_dir(&data_dir) {
             Ok(0) => {}
             Ok(count) => tracing::info!("已迁移 {count} 条对象元数据到 redb"),
@@ -484,8 +491,17 @@ impl AppState {
         }
 
         let state = Arc::new(Self {
-            jwt_secret: std::env::var("RUSTIO_JWT_SECRET")
-                .unwrap_or_else(|_| "rustio-dev-secret".to_string()),
+            jwt_secret: std::env::var("RUSTIO_JWT_SECRET").unwrap_or_else(|_| {
+                tracing::warn!("RUSTIO_JWT_SECRET 未设置,使用随机密钥(重启后失效,仅供开发) / RUSTIO_JWT_SECRET not set, using random key (dev only)");
+                // UUID v4 拼接 4 次 = 128 字节随机密钥
+                format!(
+                    "{}{}{}{}",
+                    uuid::Uuid::new_v4(),
+                    uuid::Uuid::new_v4(),
+                    uuid::Uuid::new_v4(),
+                    uuid::Uuid::new_v4()
+                )
+            }),
             s3_access_key: s3_access_key.clone(),
             s3_secret_key: s3_secret_key.clone(),
             data_dir,

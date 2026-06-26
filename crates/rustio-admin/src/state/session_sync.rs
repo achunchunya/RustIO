@@ -49,12 +49,15 @@ impl AppState {
                 continue;
             }
             let url = format!("{endpoint}/api/v1/internal/auth/sessions/sync");
-            let _ = client
+            if let Err(err) = client
                 .post(url)
                 .header("x-rustio-internal-token", &internal_token)
                 .json(session)
                 .send()
-                .await;
+                .await
+            {
+                tracing::debug!(error = %err, peer = peer_id, "会话同步失败(非致命) / session sync failed (non-fatal)");
+            }
         }
     }
 
@@ -77,11 +80,14 @@ impl AppState {
                 continue;
             }
             let url = format!("{endpoint}/api/v1/internal/auth/sessions/sync/{session_id}");
-            let _ = client
+            if let Err(err) = client
                 .delete(url)
                 .header("x-rustio-internal-token", &internal_token)
                 .send()
-                .await;
+                .await
+            {
+                tracing::debug!(error = %err, peer = peer_id, "会话删除同步失败(非致命) / session delete sync failed (non-fatal)");
+            }
         }
     }
 }

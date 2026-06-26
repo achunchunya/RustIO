@@ -843,10 +843,18 @@ impl AppState {
             checkpoints: self.replication_checkpoints.read().await.clone(),
         };
         let path = self.replication_state_path();
-        if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
+        if let Some(parent) = path.parent() {
+            if let Err(err) = std::fs::create_dir_all(parent) {
+                tracing::warn!(path = %parent.display(), error = %err, "复制状态目录创建失败 / replication state dir create failed");
+            }
+        }
         if let Ok(bytes) = serde_json::to_vec_pretty(&runtime) {
             let temp_path = path.with_extension("tmp");
-            if std::fs::write(&temp_path, bytes).is_ok() { let _ = std::fs::rename(temp_path, &path); }
+            if std::fs::write(&temp_path, &bytes).is_ok() {
+                if let Err(err) = std::fs::rename(&temp_path, &path) {
+                    tracing::warn!(error = %err, "复制状态文件重命名失败 / replication state rename failed");
+                }
+            }
         }
     }
 
