@@ -322,7 +322,7 @@ impl MetaStore {
             let mut next_cursor = raw_key.to_vec();
             next_cursor.push(0);
             cursor_src = next_cursor;
-            out.push(DelimiterPageItem::Object(meta));
+            out.push(DelimiterPageItem::Object(Box::new(meta)));
             last_token = Some(object_key.to_string());
         }
 

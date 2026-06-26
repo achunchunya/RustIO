@@ -176,6 +176,7 @@ impl IoUringBridge {
                             let mut file = tokio::fs::OpenOptions::new()
                                 .write(true)
                                 .create(true)
+                                .truncate(offset == 0)
                                 .open(&path)
                                 .await
                                 .map_err(|e| format!("open for write: {e}"))?;

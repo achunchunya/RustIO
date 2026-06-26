@@ -698,6 +698,7 @@ async fn get_remote_meta(node_addr: &str, bucket: &str, key: &str) -> Result<Opt
 }
 
 /// 远程 stat（存在性 + created_at，不存在返 exists:false）。
+#[allow(dead_code)]
 pub(crate) async fn stat_remote_meta(
     node_addr: &str,
     bucket: &str,
@@ -731,6 +732,7 @@ pub(crate) async fn stat_remote_meta(
 }
 
 /// 选 meta 副本节点：本节点优先 + 其余取 manifest shard 所属不同节点。
+#[allow(dead_code)]
 async fn meta_replica_nodes(state: &AppState) -> Vec<(u64, String)> {
     if state.local_node_id == 0 {
         return vec![(0, String::new())];

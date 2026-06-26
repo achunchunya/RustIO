@@ -123,13 +123,15 @@ impl LoginRateLimiter {
         map.remove(&key);
     }
 
-    /// 管理员解锁被 lockout 的账户。
+    /// 管理员解锁被 lockout 的账户(供管理端点调用)。
+    #[allow(dead_code)]
     pub fn unlock_account(&self, username: &str) {
         let mut locked = self.locked_accounts.lock().unwrap_or_else(|e| e.into_inner());
         locked.remove(&username.to_lowercase());
     }
 
-    /// 查询账户是否被 lockout。
+    /// 查询账户是否被 lockout(供管理端点调用)。
+    #[allow(dead_code)]
     pub fn is_account_locked(&self, username: &str) -> bool {
         let now = Instant::now();
         let mut locked = self.locked_accounts.lock().unwrap_or_else(|e| e.into_inner());

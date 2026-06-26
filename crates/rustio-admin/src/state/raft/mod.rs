@@ -303,7 +303,7 @@ impl AppState {
             .await;
         // 即使 RPC 失败也继续 — follower 超时后仍会自行触发 election
         if let Err(err) = send_result {
-            eprintln!("  [raft] trigger-elect RPC 失败(将依赖超时): {err}");
+            tracing::warn!(error = %err, "trigger-elect RPC 失败,将依赖超时 / trigger-elect RPC failed, falling back to timeout");
         }
 
         // 3) 等待目标节点成为 leader(最长 5s)

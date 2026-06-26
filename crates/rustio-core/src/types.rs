@@ -646,7 +646,7 @@ pub struct BucketCorsRule {
 #[derive(Debug, Clone)]
 pub enum DelimiterPageItem {
     CommonPrefix(String),
-    Object(S3ObjectMeta),
+    Object(Box<S3ObjectMeta>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
