@@ -36,6 +36,9 @@ jobs:
         run: cargo install cross --git https://github.com/cross-rs/cross
 
       - name: Build
+        env:
+          CARGO_NET_RETRY: 10
+          CARGO_HTTP_CHECK_REVOKE: false
         run: |
           if [[ "${{ matrix.cross }}" == "true" ]]; then
             cross build --release --target ${{ matrix.target }} -p rustio
