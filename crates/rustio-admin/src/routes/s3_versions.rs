@@ -257,6 +257,9 @@ pub(crate) struct EcObjectManifest {
     pub(crate) parity_shards: usize,
     pub(crate) shards: Vec<EcShardInfo>,
     pub(crate) updated_at: DateTime<Utc>,
+    /// 对象所属组(分片放置域)。空字符串表示未分组(旧 manifest 向后兼容)。
+    #[serde(default)]
+    pub(crate) group_id: String,
 }
 
 pub(crate) fn ec_manifest_path(bucket_root: &FsPath, key: &str) -> PathBuf {
@@ -316,6 +319,61 @@ pub(crate) async fn ec_layout_for(state: &AppState) -> (usize, usize) {
         .filter(|peer| !peer.draining)
         .count();
     cluster_ec_layout(node_count)
+}
+
+/// 获取当前集群所有非空组名(去重,排序保证确定性)。
+pub(crate) async fn cluster_groups(state: &AppState) -> Vec<String> {
+    let mut groups: Vec<String> = state
+        .cluster_peers
+        .read()
+        .await
+        .values()
+        .filter(|p| !p.draining)
+        .map(|p| p.group_id.clone())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    groups.sort();
+    groups
+}
+
+/// SHA-256(key) 确定性映射到组(均匀分布)。
+pub(crate) fn route_to_group(key: &str, groups: &[String]) -> String {
+    if groups.len() <= 1 {
+        return groups.first().cloned().unwrap_or_else(|| "default".to_string());
+    }
+    let digest = sha2::Sha256::digest(key.as_bytes());
+    let mut buf = [0u8; 8];
+    buf.copy_from_slice(&digest[..8]);
+    let idx = u64::from_le_bytes(buf) as usize % groups.len();
+    groups[idx].clone()
+}
+
+/// 按指定组内的节点数派生 EC 布局(组内每节点 1 分片)。
+pub(crate) async fn ec_layout_for_in_group(state: &AppState, group_id: &str) -> (usize, usize) {
+    if state.local_node_id == 0 {
+        return ec_layout();
+    }
+    let node_count = state
+        .cluster_peers
+        .read()
+        .await
+        .values()
+        .filter(|p| !p.draining && p.group_id == group_id)
+        .count();
+    cluster_ec_layout(node_count)
+}
+
+/// 组感知的 EC 布局解析:单组(或 "default")走原逻辑,多组按 key 路由。
+pub(crate) async fn ec_layout_for_grouped(state: &AppState, key: &str) -> ((usize, usize), String) {
+    let groups = cluster_groups(state).await;
+    if groups.len() <= 1 {
+        let group_id = groups.first().cloned().unwrap_or_else(|| "default".to_string());
+        return (ec_layout_for(state).await, group_id);
+    }
+    let group_id = route_to_group(key, &groups);
+    let layout = ec_layout_for_in_group(state, &group_id).await;
+    (layout, group_id)
 }
 
 pub(crate) fn encryption_enabled(meta: &S3ObjectMeta) -> bool {

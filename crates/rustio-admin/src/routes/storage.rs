@@ -595,6 +595,97 @@ pub(crate) async fn resolve_shard_placements(
     Ok(placements)
 }
 
+/// 组感知的分片放置:候选池仅含指定组内的节点。
+/// 单机模式或单组时退化为 `resolve_shard_placements`。
+pub(crate) async fn resolve_shard_placements_in_group(
+    state: &AppState,
+    key: &str,
+    total_shards: usize,
+    group_id: &str,
+) -> Result<Vec<ShardPlacement>, String> {
+    // 单机模式或只有 1 个组:退化为全局放置。
+    let groups = crate::routes::s3_versions::cluster_groups(state).await;
+    if state.local_node_id == 0 || groups.len() <= 1 {
+        return resolve_shard_placements(state, key, total_shards).await;
+    }
+
+    // 集群模式:构建组内磁盘候选池。
+    let peers = state.cluster_peers.read().await;
+    let mut candidates: Vec<(u64, String, usize, PathBuf)> = Vec::new();
+    let mut sorted_peers: Vec<_> = peers
+        .values()
+        .filter(|p| p.group_id == group_id)
+        .collect();
+    sorted_peers.sort_by_key(|p| p.node_id);
+    for peer in sorted_peers {
+        if peer.draining {
+            continue;
+        }
+        for disk in &peer.disks {
+            candidates.push((
+                peer.node_id,
+                peer.api_addr.clone(),
+                disk.local_index,
+                disk.local_path.clone(),
+            ));
+        }
+    }
+    if candidates.len() < total_shards {
+        return Err(format!(
+            "组 {group_id} 可用磁盘不足,至少需要 {total_shards} 个,当前 {} 个",
+            candidates.len()
+        ));
+    }
+
+    // SHA-256(key) 确定性起点 + 跨节点优先轮询。
+    let digest = sha2::Sha256::digest(key.as_bytes());
+    let mut seed_bytes = [0u8; 8];
+    seed_bytes.copy_from_slice(&digest[..8]);
+    let start = u64::from_le_bytes(seed_bytes) as usize % candidates.len();
+
+    let mut by_node: std::collections::BTreeMap<u64, Vec<&(u64, String, usize, PathBuf)>> =
+        std::collections::BTreeMap::new();
+    for cand in &candidates {
+        by_node.entry(cand.0).or_default().push(cand);
+    }
+    let node_ids: Vec<u64> = by_node.keys().copied().collect();
+    let node_start = start % node_ids.len();
+
+    let mut placements = Vec::with_capacity(total_shards);
+    let mut per_node_cursor: std::collections::HashMap<u64, usize> =
+        std::collections::HashMap::new();
+    let mut assigned = 0usize;
+    let mut round = 0usize;
+    while assigned < total_shards {
+        let node_id = node_ids[(node_start + round) % node_ids.len()];
+        let disks = &by_node[&node_id];
+        let cursor = per_node_cursor.entry(node_id).or_insert(0);
+        if *cursor < disks.len() {
+            let (nid, addr, disk_idx, path) = disks[*cursor];
+            let is_remote = *nid != state.local_node_id;
+            let write_path = if is_remote || path.as_os_str().is_empty() {
+                let local_len = state.data_disks.len().max(1);
+                state.data_disks[*disk_idx % local_len].clone()
+            } else {
+                path.clone()
+            };
+            placements.push(ShardPlacement {
+                node_id: *nid,
+                node_addr: addr.clone(),
+                local_disk_index: *disk_idx,
+                local_disk_path: write_path,
+            });
+            *cursor += 1;
+            assigned += 1;
+        }
+        round += 1;
+        if round > candidates.len() * 2 {
+            return Err("分片放置轮询异常 / shard placement round overflow".to_string());
+        }
+    }
+    Ok(placements)
+}
+
 /// 推导某个 shard_index 在集群中的归属信息(节点、远程标记、本地落盘路径)。
 ///
 /// 用于 manifest 中缺失该分片条目时(写入失败未记录、旧版 manifest 等)的派生:

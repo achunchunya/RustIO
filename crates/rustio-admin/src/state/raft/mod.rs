@@ -438,6 +438,7 @@ impl AppState {
                 zone: "default".to_string(),
                 disks,
                 draining: false,
+                group_id: "default".to_string(),
             };
             let token = AppState::internal_control_token();
             let client = match reqwest::Client::builder()

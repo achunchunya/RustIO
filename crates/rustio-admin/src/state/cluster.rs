@@ -21,6 +21,14 @@ pub struct ClusterPeerInfo {
     /// EC 布局/放置自动排除该节点,存量数据经 rebalance 迁出后再从成员集移除。
     #[serde(default)]
     pub draining: bool,
+    /// 节点所属组(分片放置域)。同一组内的节点构成独立 EC 域;
+    /// 不同组的节点互不可见于分片放置。默认 "default"(单组集群向后兼容)。
+    #[serde(default = "default_group_id")]
+    pub group_id: String,
+}
+
+fn default_group_id() -> String {
+    "default".to_string()
 }
 
 /// 节点的单个本地磁盘（全局唯一 ID + 本地路径）。
@@ -38,6 +46,7 @@ pub(crate) struct ClusterConfig {
     pub local_node_name: String,
     pub local_api_addr: String,
     pub local_zone: String,
+    pub local_group_id: String,
     #[allow(dead_code)] // openraft 多节点加入时使用
     pub seed_peers: HashMap<u64, String>, // node_id → api_addr
 }
@@ -55,8 +64,10 @@ impl ClusterConfig {
             .unwrap_or_else(|_| "http://127.0.0.1:9000".to_string());
         let local_zone = std::env::var("RUSTIO_CLUSTER_NODE_ZONE")
             .unwrap_or_else(|_| "default".to_string());
+        let local_group_id = std::env::var("RUSTIO_GROUP_ID")
+            .unwrap_or_else(|_| "default".to_string());
         let seed_peers = parse_seed_peers();
-        ClusterConfig { local_node_id, local_node_name, local_api_addr, local_zone, seed_peers }
+        ClusterConfig { local_node_id, local_node_name, local_api_addr, local_zone, local_group_id, seed_peers }
     }
 
     /// 是否集群模式。

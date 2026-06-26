@@ -2259,6 +2259,35 @@ pub(crate) async fn list_cluster_peers(
     Ok(wrap(peers))
 }
 
+/// 集群分组列表:每组的组名、节点数、节点 ID 列表。
+pub(crate) async fn list_cluster_groups(
+    State(state): State<Arc<AppState>>,
+    auth: AuthContext,
+) -> Result<Json<ApiEnvelope<Vec<serde_json::Value>>>, AppError> {
+    auth.require(Permission::ClusterRead)?;
+    let peers = state.cluster_peers.read().await;
+    let mut groups: std::collections::BTreeMap<String, Vec<u64>> = std::collections::BTreeMap::new();
+    for peer in peers.values() {
+        if !peer.draining {
+            groups
+                .entry(peer.group_id.clone())
+                .or_default()
+                .push(peer.node_id);
+        }
+    }
+    let result: Vec<serde_json::Value> = groups
+        .into_iter()
+        .map(|(group_id, node_ids)| {
+            serde_json::json!({
+                "group_id": group_id,
+                "node_count": node_ids.len(),
+                "node_ids": node_ids,
+            })
+        })
+        .collect();
+    Ok(wrap(result))
+}
+
 /// 动态成员变更:加节点请求体。
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct AddClusterMemberRequest {
@@ -2270,6 +2299,9 @@ pub(crate) struct AddClusterMemberRequest {
     pub zone: Option<String>,
     #[serde(default)]
     pub disks: Vec<crate::state::cluster::ClusterDiskInfo>,
+    /// 节点所属组(分片放置域)。默认 "default"。
+    #[serde(default)]
+    pub group_id: Option<String>,
 }
 
 /// 把新节点加入集群(动态成员变更,leader-only;非 leader 自动转发到 leader)。
@@ -2297,6 +2329,7 @@ pub(crate) async fn add_cluster_member(
         zone: body.zone.unwrap_or_else(|| "default".to_string()),
         disks: body.disks.clone(),
         draining: false,
+        group_id: body.group_id.unwrap_or_else(|| "default".to_string()),
     };
 
     // 非 leader:把加节点请求转发到 leader(add_learner/change_membership 是 leader-only)。

@@ -419,7 +419,7 @@ pub(crate) async fn write_ec_object(
     customer_key: Option<&[u8; 32]>,
 ) -> Result<(), Response> {
     let payload = encrypt_payload_for_storage(state, key, payload, meta, customer_key).await?;
-    let (data_shards, parity_shards) = ec_layout_for(state).await;
+    let ((data_shards, parity_shards), group_id) = ec_layout_for_grouped(state, key).await;
     let total_shards = data_shards + parity_shards;
     // 单机模式分片全部落本地盘,需本地盘数 ≥ total;集群模式由 resolve_shard_placements 校验全局磁盘池。
     if state.local_node_id == 0 && state.data_disks.len() < total_shards {
@@ -430,7 +430,7 @@ pub(crate) async fn write_ec_object(
             key,
         ));
     }
-    let placement = resolve_shard_placements(state, key, total_shards)
+    let placement = resolve_shard_placements_in_group(state, key, total_shards, &group_id)
         .await
         .map_err(|message| {
             s3_error(
@@ -573,6 +573,7 @@ pub(crate) async fn write_ec_object(
         parity_shards,
         shards: shard_infos.clone(),
         updated_at: Utc::now(),
+        group_id,
     };
     let manifest_path = ec_manifest_path(&bucket_root, key);
     // manifest 多副本 quorum 写(对齐 MinIO 元数据多副本);单机退化本地单写。
@@ -615,7 +616,7 @@ pub(crate) async fn write_ec_object_streaming(
     src_path: &FsPath,
     total: u64,
 ) -> Result<(), Response> {
-    let (data_shards, parity_shards) = ec_layout_for(state).await;
+    let ((data_shards, parity_shards), group_id) = ec_layout_for_grouped(state, key).await;
     let total_shards = data_shards + parity_shards;
     // 单机模式分片全部落本地盘,需本地盘数 ≥ total;集群模式由 resolve_shard_placements 校验全局磁盘池。
     if state.local_node_id == 0 && state.data_disks.len() < total_shards {
@@ -626,7 +627,7 @@ pub(crate) async fn write_ec_object_streaming(
             key,
         ));
     }
-    let placement = resolve_shard_placements(state, key, total_shards)
+    let placement = resolve_shard_placements_in_group(state, key, total_shards, &group_id)
         .await
         .map_err(|message| {
             s3_error(
@@ -902,6 +903,7 @@ pub(crate) async fn write_ec_object_streaming(
         parity_shards,
         shards: shard_infos,
         updated_at: Utc::now(),
+        group_id,
     };
     let manifest_path = ec_manifest_path(&bucket_root, key);
     // manifest 多副本 quorum 写;单机退化本地单写。

@@ -214,6 +214,7 @@ impl AppState {
                     zone: cluster_config.local_zone.clone(),
                     disks,
                     draining: false,
+                    group_id: cluster_config.local_group_id.clone(),
                 },
             );
             // Seed peers:同构集群假设(磁盘数与本地相同)。远程节点的 local_path 仅占位,
@@ -240,6 +241,7 @@ impl AppState {
                         zone: "unknown".to_string(),
                         disks,
                         draining: false,
+                        group_id: "default".to_string(),
                     },
                 );
             }

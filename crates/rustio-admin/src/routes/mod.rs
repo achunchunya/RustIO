@@ -224,6 +224,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/cluster/health", get(cluster_health))
         .route("/api/v1/cluster/nodes", get(list_nodes))
         .route("/api/v1/cluster/peers", get(list_cluster_peers))
+        .route("/api/v1/cluster/groups", get(list_cluster_groups))
         .route("/api/v1/cluster/membership/add", post(add_cluster_member))
         .route(
             "/api/v1/cluster/membership/remove",

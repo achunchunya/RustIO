@@ -60,9 +60,18 @@ pub(crate) async fn migrate_ec_object_layout(
     let total_size = manifest.total_size as usize;
 
     // 2) 推导期望布局与放置;一致则幂等跳过。
-    let (exp_data, exp_parity) = ec_layout_for(state).await;
+    // 优先使用 manifest 中记录的 group_id(组感知),旧 manifest 无 group_id 时退化全局。
+    let (exp_data, exp_parity) = if manifest.group_id.is_empty() {
+        ec_layout_for(state).await
+    } else {
+        ec_layout_for_in_group(state, &manifest.group_id).await
+    };
     let exp_total = exp_data + exp_parity;
-    let expected_placement = resolve_shard_placements(state, key, exp_total).await?;
+    let expected_placement = if manifest.group_id.is_empty() {
+        resolve_shard_placements(state, key, exp_total).await?
+    } else {
+        resolve_shard_placements_in_group(state, key, exp_total, &manifest.group_id).await?
+    };
 
     // 检查是否已一致:分片数与归属节点完全匹配。
     // 归一化口径:manifest 中本节点分片 node_id=None(写入时 is_remote=false 不记 node_id),
