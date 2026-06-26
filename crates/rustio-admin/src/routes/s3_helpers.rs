@@ -374,7 +374,15 @@ pub(crate) fn apply_common_get_response_headers(
 }
 
 /// 解析 Range 请求头为原始(start, end_or_suffix_len)，不依赖对象大小。
-pub(crate) fn parse_range_header_raw(headers: &HeaderMap) -> Option<(u64, u64)> {
+/// Range 头的原始解析结果(区分正常 range 与 suffix range)。
+pub(crate) enum RawRange {
+    /// 正常形式: bytes=start-end (闭区间,end 可为 u64::MAX 表示到末尾)。
+    Normal(u64, u64),
+    /// suffix 形式: bytes=-suffix_len。
+    Suffix(u64),
+}
+
+pub(crate) fn parse_range_header_raw(headers: &HeaderMap) -> Option<RawRange> {
     let raw = headers
         .get(axum::http::header::RANGE)
         .and_then(|value| value.to_str().ok())?;
@@ -385,29 +393,29 @@ pub(crate) fn parse_range_header_raw(headers: &HeaderMap) -> Option<(u64, u64)> 
     let end_raw = split.next()?.trim();
     if start_raw.is_empty() {
         let suffix = end_raw.parse::<u64>().ok()?;
-        return if suffix == 0 { None } else { Some((0, suffix)) };
+        return if suffix == 0 { None } else { Some(RawRange::Suffix(suffix)) };
     }
     let start = start_raw.parse::<u64>().ok()?;
     let end = if end_raw.is_empty() { u64::MAX } else { end_raw.parse::<u64>().ok()? };
-    Some((start, end))
+    Some(RawRange::Normal(start, end))
 }
 
 /// 将 parse_range_header_raw 的结果钳制到对象大小，返回闭区间。非法返 Err(())。
-pub(crate) fn normalize_range_bounds(raw_start: u64, raw_end: u64, size: u64) -> Result<Option<(u64, u64)>, ()> {
+pub(crate) fn normalize_range_bounds(raw: RawRange, size: u64) -> Result<Option<(u64, u64)>, ()> {
     if size == 0 { return Err(()); }
-    let (start, end) = if raw_start == 0 && raw_end < size {
-        // suffix 形式: (0, suffix_len)
-        let suffix_len = raw_end;
-        if suffix_len == 0 { return Err(()); }
-        (size.saturating_sub(suffix_len), size - 1)
-    } else {
-        let start = raw_start;
-        if start >= size { return Err(()); }
-        let end = raw_end.min(size - 1);
-        if start > end { return Err(()); }
-        (start, end)
-    };
-    Ok(Some((start, end)))
+    match raw {
+        RawRange::Suffix(suffix_len) => {
+            if suffix_len == 0 { return Err(()); }
+            let start = size.saturating_sub(suffix_len);
+            Ok(Some((start, size - 1)))
+        }
+        RawRange::Normal(start, raw_end) => {
+            if start >= size { return Err(()); }
+            let end = raw_end.min(size - 1);
+            if start > end { return Err(()); }
+            Ok(Some((start, end)))
+        }
+    }
 }
 
 /// 解析 Range 请求头为闭区间(start, end)，不依赖对象大小。用于流式路径。

@@ -215,13 +215,13 @@ pub(crate) async fn s3_root_get_object(
 
     // ── 有 Range 时的流式快路径 ──
     if stream_eligible {
-        if let Some((start, end)) = parse_range_header_raw(&headers) {
+        if let Some(raw_range) = parse_range_header_raw(&headers) {
             let meta = selected_meta
                 .as_ref()
                 .expect("stream_eligible guarantees meta exists");
             let total = meta.size;
             if total > 0 {
-                let parsed = normalize_range_bounds(start, end, total);
+                let parsed = normalize_range_bounds(raw_range, total);
                 if let Ok(Some((range_start, range_end))) = parsed {
                     match read_ec_object_streaming_range(
                         &state,
