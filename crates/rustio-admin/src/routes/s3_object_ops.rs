@@ -73,6 +73,10 @@ pub(crate) async fn s3_root_get_object(
         return s3_get_object_acl(state, bucket, key).await;
     }
 
+    if query_has_key(uri.query(), "torrent") {
+        return s3_xml_response(StatusCode::OK, build_torrent_xml());
+    }
+
     if let Some(upload_id) = query_value(uri.query(), "uploadId") {
         let part_number_marker = query_value(uri.query(), "part-number-marker")
             .and_then(|value| value.parse::<u32>().ok())

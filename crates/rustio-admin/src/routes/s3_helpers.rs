@@ -233,6 +233,12 @@ pub(crate) fn is_bucket_control_plane_metadata_path(bucket_root: &FsPath, path: 
             | ".rustio_meta/bucket-tags.json"
             | ".rustio_meta/bucket-encryption.json"
             | ".rustio_meta/bucket-website.json"
+            | ".rustio_meta/bucket-accelerate.json"
+            | ".rustio_meta/bucket-logging.json"
+            | ".rustio_meta/bucket-request-payment.json"
+            | ".rustio_meta/bucket-analytics.json"
+            | ".rustio_meta/bucket-metrics.json"
+            | ".rustio_meta/bucket-inventory.json"
     ) || rel == ".rustio_ec_meta"
         || rel.starts_with(".rustio_ec_meta/")
         || rel == ".rustio_payload"

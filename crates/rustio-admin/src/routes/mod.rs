@@ -116,6 +116,8 @@ use rustio_core::{
     BucketLegalHoldConfig, BucketLifecycleRule, BucketNotificationRule, BucketObjectLockConfig,
     BucketPublicAccessBlockConfig, BucketRetentionConfig, BucketSpec, BucketTag,
     BucketWebsiteConfig,
+    BucketAccelerateConfig, BucketLoggingConfig, BucketRequestPaymentConfig,
+    BucketAnalyticsConfig, BucketMetricsConfig, BucketInventoryConfig,
     ClusterConfigApplyRequest, ClusterConfigRollbackRequest, ClusterConfigSnapshot,
     ClusterConfigValidateRequest, ClusterConfigValidateResult, ClusterHealth, ConsoleSession,
     DangerActionRequest, DelimiterPageItem, IamGroup, IamPolicy, IamUser, JobStatus, KmsRotationFailedObject,

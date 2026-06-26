@@ -744,9 +744,17 @@ pub(crate) async fn write_ec_object_streaming(
             if !shard_ok[shard_index] {
                 continue;
             }
-            let write_failed = match shard_files[shard_index].as_mut() {
-                Some(file) => file.write_all(&blocks[shard_index]).await.is_err(),
-                None => true,
+            let write_failed = if let Some(bridge) = &state.io_uring_bridge {
+                let offset = produced as u64;
+                bridge
+                    .write_file(&shard_paths[shard_index], offset, blocks[shard_index].clone())
+                    .await
+                    .is_err()
+            } else {
+                match shard_files[shard_index].as_mut() {
+                    Some(file) => file.write_all(&blocks[shard_index]).await.is_err(),
+                    None => true,
+                }
             };
             if write_failed {
                 shard_ok[shard_index] = false;
@@ -758,8 +766,18 @@ pub(crate) async fn write_ec_object_streaming(
         produced += this_block;
     }
 
-    // 收尾：flush + 定稿校验和；失败分片删除文件并置空校验和（read 时检测到后触发重建）
-    let mut shard_infos = Vec::with_capacity(total_shards);
+    // flush + 定稿校验和(顺序,本地 I/O)
+    struct FinalizedShard {
+        shard_index: usize,
+        disk_index: usize,
+        path: PathBuf,
+        checksum: String,
+        is_remote: bool,
+        ok: bool,
+        node_id: u64,
+        node_addr: String,
+    }
+    let mut finalized: Vec<FinalizedShard> = Vec::with_capacity(total_shards);
     let mut successful = 0usize;
     for (shard_index, ((mut file_opt, hasher), ok_flag)) in shard_files
         .into_iter()
@@ -776,11 +794,9 @@ pub(crate) async fn write_ec_object_streaming(
         if ok {
             let flushed = match file_opt.as_mut() {
                 Some(file) => {
-                    let ok = file.flush().await.is_ok();
-                    if ok {
-                        drop_page_cache(file);
-                    }
-                    ok
+                    let f = file.flush().await.is_ok();
+                    if f { drop_page_cache(file); }
+                    f
                 }
                 None => false,
             };
@@ -791,55 +807,69 @@ pub(crate) async fn write_ec_object_streaming(
                 ok = false;
             }
         }
-        // 远程分片:本地临时文件定稿后流式 PUT 到目标节点,成功则删除本地副本(manifest path 留空)。
-        let mut manifest_path = path.clone();
-        if ok && is_remote {
-            match put_remote_shard_file(
-                &place.node_addr,
-                bucket,
-                &object_hash,
-                disk_index,
-                shard_index,
-                &path,
-            )
-            .await
-            {
+        finalized.push(FinalizedShard {
+            shard_index, disk_index, path, checksum, is_remote, ok,
+            node_id: place.node_id, node_addr: place.node_addr.clone(),
+        });
+    }
+
+    // 远程分片并行传输(FuturesUnordered,不再串行等待)
+    {
+        use futures::stream::{FuturesUnordered, StreamExt};
+        let remote_futs: FuturesUnordered<_> = finalized
+            .iter_mut()
+            .filter(|s| s.ok && s.is_remote)
+            .map(|s| {
+                let addr = s.node_addr.clone();
+                let bkt = bucket.to_string();
+                let hash = object_hash.clone();
+                let di = s.disk_index;
+                let si = s.shard_index;
+                let p = s.path.clone();
+                async move {
+                    let result = put_remote_shard_file(&addr, &bkt, &hash, di, si, &p).await;
+                    (si, result)
+                }
+            })
+            .collect();
+        let results: Vec<_> = remote_futs.collect().await;
+        for (si, result) in results {
+            let shard = &mut finalized[si];
+            match result {
                 Ok(()) => {
-                    let _ = tokio::fs::remove_file(&path).await;
-                    manifest_path = PathBuf::new();
+                    let _ = tokio::fs::remove_file(&shard.path).await;
+                    shard.path = PathBuf::new();
                 }
                 Err(message) => {
                     tracing::warn!(
-                        shard_index,
-                        node = %place.node_addr,
+                        shard_index = si,
+                        node = %shard.node_addr,
                         error = %message,
                         "远程分片流式写入失败 / remote shard streaming write failed"
                     );
-                    ok = false;
+                    shard.ok = false;
                     successful = successful.saturating_sub(1);
-                    checksum = String::new();
+                    shard.checksum = String::new();
                 }
             }
         }
-        if !ok {
-            let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    // 构建 manifest 分片信息
+    let mut shard_infos = Vec::with_capacity(total_shards);
+    for shard in &finalized {
+        if !shard.ok {
+            let _ = tokio::fs::remove_file(&shard.path).await;
+            continue;
         }
-        // 仅成功写入的分片进入 manifest;失败分片由读/治理按真实放置派生并触发重建,
-        // 保持与非流式写路径一致,避免空 checksum 分片造成判定分歧。
-        if ok {
-            shard_infos.push(EcShardInfo {
-                shard_index,
-                disk_index,
-                path: manifest_path,
-                checksum,
-                node_id: if is_remote { Some(place.node_id) } else { None },
-                node_addr: if is_remote {
-                    Some(place.node_addr.clone())
-                } else {
-                    None
-                },
-            });
-        }
+        shard_infos.push(EcShardInfo {
+            shard_index: shard.shard_index,
+            disk_index: shard.disk_index,
+            path: shard.path.clone(),
+            checksum: shard.checksum.clone(),
+            node_id: if shard.is_remote { Some(shard.node_id) } else { None },
+            node_addr: if shard.is_remote { Some(shard.node_addr.clone()) } else { None },
+        });
     }
 
     if successful < data_shards {

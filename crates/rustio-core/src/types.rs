@@ -678,6 +678,63 @@ pub struct BucketEncryptionConfig {
     pub kms_key_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BucketAccelerateConfig {
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BucketLoggingConfig {
+    #[serde(default)]
+    pub target_bucket: String,
+    #[serde(default)]
+    pub target_prefix: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BucketRequestPaymentConfig {
+    #[serde(default = "default_requester_payer")]
+    pub payer: String,
+}
+
+fn default_requester_payer() -> String {
+    "BucketOwner".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BucketAnalyticsConfig {
+    pub id: String,
+    #[serde(default)]
+    pub prefix: Option<String>,
+    #[serde(default)]
+    pub storage_class_analysis: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BucketMetricsConfig {
+    pub id: String,
+    #[serde(default)]
+    pub prefix: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BucketInventoryConfig {
+    pub id: String,
+    #[serde(default)]
+    pub destination_bucket: String,
+    #[serde(default)]
+    pub destination_prefix: Option<String>,
+    #[serde(default)]
+    pub frequency: String,
+    #[serde(default)]
+    pub included_object_versions: String,
+    #[serde(default)]
+    pub optional_fields: Vec<String>,
+    #[serde(default)]
+    pub prefix: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplicationStatus {
     pub rule_id: String,

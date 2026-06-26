@@ -4,6 +4,7 @@
 
 pub mod auth;
 pub mod error;
+pub(crate) mod io_uring_bridge;
 pub mod routes;
 pub mod state;
 

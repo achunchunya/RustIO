@@ -2790,6 +2790,85 @@ pub(crate) fn build_bucket_public_access_block_xml(
     )
 }
 
+pub(crate) fn build_bucket_accelerate_xml(config: &BucketAccelerateConfig) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?><AccelerateConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>{}</Status></AccelerateConfiguration>"#,
+        if config.enabled { "Enabled" } else { "Suspended" },
+    )
+}
+
+pub(crate) fn build_bucket_logging_xml(config: &BucketLoggingConfig) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?><BucketLoggingStatus xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><LoggingEnabled><TargetBucket>{}</TargetBucket><TargetPrefix>{}</TargetPrefix></LoggingEnabled></BucketLoggingStatus>"#,
+        xml_escape(&config.target_bucket),
+        xml_escape(&config.target_prefix),
+    )
+}
+
+pub(crate) fn build_bucket_request_payment_xml(config: &BucketRequestPaymentConfig) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?><RequestPaymentConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Payer>{}</Payer></RequestPaymentConfiguration>"#,
+        xml_escape(&config.payer),
+    )
+}
+
+pub(crate) fn build_bucket_analytics_xml(configs: &[BucketAnalyticsConfig]) -> String {
+    let mut xml = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8"?><ListAnalyticsConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">"#,
+    );
+    for cfg in configs {
+        xml.push_str("<AnalyticsConfiguration><Id>");
+        xml.push_str(&xml_escape(&cfg.id));
+        xml.push_str("</Id><Filter><Prefix>");
+        xml.push_str(&xml_escape(cfg.prefix.as_deref().unwrap_or("")));
+        xml.push_str("</Prefix></Filter></AnalyticsConfiguration>");
+    }
+    xml.push_str("<IsTruncated>false</IsTruncated></ListAnalyticsConfiguration>");
+    xml
+}
+
+pub(crate) fn build_bucket_metrics_xml(configs: &[BucketMetricsConfig]) -> String {
+    let mut xml = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8"?><ListMetricsConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">"#,
+    );
+    for cfg in configs {
+        xml.push_str("<MetricsConfiguration><Id>");
+        xml.push_str(&xml_escape(&cfg.id));
+        xml.push_str("</Id><Filter><Prefix>");
+        xml.push_str(&xml_escape(cfg.prefix.as_deref().unwrap_or("")));
+        xml.push_str("</Prefix></Filter></MetricsConfiguration>");
+    }
+    xml.push_str("<IsTruncated>false</IsTruncated></ListMetricsConfiguration>");
+    xml
+}
+
+pub(crate) fn build_bucket_inventory_xml(configs: &[BucketInventoryConfig]) -> String {
+    let mut xml = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8"?><ListInventoryConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">"#,
+    );
+    for cfg in configs {
+        xml.push_str("<InventoryConfiguration><Id>");
+        xml.push_str(&xml_escape(&cfg.id));
+        xml.push_str("</Id><Destination><S3BucketDestination><Bucket>arn:aws:s3:::");
+        xml.push_str(&xml_escape(&cfg.destination_bucket));
+        xml.push_str("</Bucket><Prefix>");
+        xml.push_str(&xml_escape(cfg.destination_prefix.as_deref().unwrap_or("")));
+        xml.push_str("</Prefix></S3BucketDestination></Destination><IsEnabled>true</IsEnabled><Filter><Prefix>");
+        xml.push_str(&xml_escape(cfg.prefix.as_deref().unwrap_or("")));
+        xml.push_str("</Prefix></Filter><Schedule><Frequency>");
+        xml.push_str(&xml_escape(&cfg.frequency));
+        xml.push_str("</Frequency></Schedule><IncludedObjectVersions>");
+        xml.push_str(&xml_escape(&cfg.included_object_versions));
+        xml.push_str("</IncludedObjectVersions></InventoryConfiguration>");
+    }
+    xml.push_str("<IsTruncated>false</IsTruncated></ListInventoryConfiguration>");
+    xml
+}
+
+pub(crate) fn build_torrent_xml() -> String {
+    r#"<?xml version="1.0" encoding="UTF-8"?><Torrent xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated></Torrent>"#.to_string()
+}
+
 pub(crate) fn build_delete_objects_result_xml(
     deleted: &[S3DeleteObjectResultEntry],
     errors: &[S3DeleteObjectErrorEntry],

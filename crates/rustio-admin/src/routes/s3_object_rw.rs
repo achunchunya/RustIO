@@ -90,6 +90,25 @@ pub(crate) async fn s3_root_bucket_get(
         return s3_root_get_bucket_public_access_block(state, bucket).await;
     }
 
+    if query_has_key(uri.query(), "accelerate") {
+        return s3_root_get_bucket_accelerate(state, bucket).await;
+    }
+    if query_has_key(uri.query(), "logging") {
+        return s3_root_get_bucket_logging(state, bucket).await;
+    }
+    if query_has_key(uri.query(), "requestPayment") {
+        return s3_root_get_bucket_request_payment(state, bucket).await;
+    }
+    if query_has_key(uri.query(), "analytics") {
+        return s3_root_get_bucket_analytics(state, bucket).await;
+    }
+    if query_has_key(uri.query(), "metrics") {
+        return s3_root_get_bucket_metrics(state, bucket).await;
+    }
+    if query_has_key(uri.query(), "inventory") {
+        return s3_root_get_bucket_inventory(state, bucket).await;
+    }
+
     if query_has_key(uri.query(), "versioning") {
         // S3 三态:从未配置(versioning_configured=false)→ 空响应(无 Status);
         // 配置过 → Enabled(versioning=true)/ Suspended(false)。
@@ -802,6 +821,16 @@ pub(crate) async fn s3_root_delete_bucket(
         || query_has_key(uri.query(), "public-access-block")
     {
         return s3_root_delete_bucket_public_access_block(state, bucket).await;
+    }
+
+    if query_has_key(uri.query(), "analytics") {
+        return s3_root_delete_bucket_analytics(state, bucket).await;
+    }
+    if query_has_key(uri.query(), "metrics") {
+        return s3_root_delete_bucket_metrics(state, bucket).await;
+    }
+    if query_has_key(uri.query(), "inventory") {
+        return s3_root_delete_bucket_inventory(state, bucket).await;
     }
 
     let bucket_dir = match bucket_path(&state, &bucket) {

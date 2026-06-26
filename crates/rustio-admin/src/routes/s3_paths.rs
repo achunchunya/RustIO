@@ -91,6 +91,32 @@ pub(crate) fn bucket_website_path(bucket_root: &FsPath) -> PathBuf {
     bucket_root.join(".rustio_meta").join("bucket-website.json")
 }
 
+pub(crate) fn bucket_accelerate_path(bucket_root: &FsPath) -> PathBuf {
+    bucket_root.join(".rustio_meta").join("bucket-accelerate.json")
+}
+
+pub(crate) fn bucket_logging_path(bucket_root: &FsPath) -> PathBuf {
+    bucket_root.join(".rustio_meta").join("bucket-logging.json")
+}
+
+pub(crate) fn bucket_request_payment_path(bucket_root: &FsPath) -> PathBuf {
+    bucket_root
+        .join(".rustio_meta")
+        .join("bucket-request-payment.json")
+}
+
+pub(crate) fn bucket_analytics_path(bucket_root: &FsPath) -> PathBuf {
+    bucket_root.join(".rustio_meta").join("bucket-analytics.json")
+}
+
+pub(crate) fn bucket_metrics_path(bucket_root: &FsPath) -> PathBuf {
+    bucket_root.join(".rustio_meta").join("bucket-metrics.json")
+}
+
+pub(crate) fn bucket_inventory_path(bucket_root: &FsPath) -> PathBuf {
+    bucket_root.join(".rustio_meta").join("bucket-inventory.json")
+}
+
 pub(crate) fn object_path(bucket_root: &FsPath, key: &str) -> Result<PathBuf, Response> {
     if key.is_empty() {
         return Err(s3_error(

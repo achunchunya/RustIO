@@ -48,6 +48,10 @@ rustio-core = { path = "../rustio-core" }
 lru.workspace = true
 redb.workspace = true
 openraft.workspace = true
+tokio-uring = { version = "0.5", optional = true }
+
+[features]
+io-uring = ["tokio-uring"]
 
 [[bench]]
 name = "ec_bench"

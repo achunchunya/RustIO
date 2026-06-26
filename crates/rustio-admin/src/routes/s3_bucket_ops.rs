@@ -676,6 +676,25 @@ pub(crate) async fn s3_root_create_bucket(
         return s3_root_update_bucket_versioning(state, bucket, body).await;
     }
 
+    if query_has_key(uri.query(), "accelerate") {
+        return s3_root_put_bucket_accelerate(state, bucket, body).await;
+    }
+    if query_has_key(uri.query(), "logging") {
+        return s3_root_put_bucket_logging(state, bucket, body).await;
+    }
+    if query_has_key(uri.query(), "requestPayment") {
+        return s3_root_put_bucket_request_payment(state, bucket, body).await;
+    }
+    if query_has_key(uri.query(), "analytics") {
+        return s3_root_put_bucket_analytics(state, bucket, body).await;
+    }
+    if query_has_key(uri.query(), "metrics") {
+        return s3_root_put_bucket_metrics(state, bucket, body).await;
+    }
+    if query_has_key(uri.query(), "inventory") {
+        return s3_root_put_bucket_inventory(state, bucket, body).await;
+    }
+
     let bucket_path = match bucket_path(&state, &bucket) {
         Ok(path) => path,
         Err(response) => return response,
@@ -3001,4 +3020,326 @@ pub(crate) async fn s3_root_put_bucket_notification(
         .await
         .insert(bucket, normalized);
     StatusCode::OK.into_response()
+}
+
+// ── Transfer Acceleration ──
+
+pub(crate) async fn s3_root_put_bucket_accelerate(
+    state: Arc<AppState>,
+    bucket: String,
+    body: Bytes,
+) -> Response {
+    let config: BucketAccelerateConfig = match from_xml_str(&String::from_utf8_lossy(&body)) {
+        Ok(c) => c,
+        Err(err) => {
+            return s3_error(
+                StatusCode::BAD_REQUEST,
+                "MalformedXML",
+                &format!("Invalid accelerate configuration: {err}"),
+                &bucket,
+            );
+        }
+    };
+    let bucket_dir = match bucket_path(&state, &bucket) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    let meta_dir = bucket_dir.join(".rustio_meta");
+    if let Err(err) = tokio::fs::create_dir_all(&meta_dir).await {
+        return s3_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "InternalError",
+            &format!("Failed to persist accelerate configuration: {err}"),
+            &bucket,
+        );
+    }
+    let path = bucket_accelerate_path(&bucket_dir);
+    if let Err(err) = tokio::fs::write(&path, serde_json::to_vec_pretty(&config).unwrap_or_default()).await {
+        return s3_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "InternalError",
+            &format!("Failed to persist accelerate configuration: {err}"),
+            &bucket,
+        );
+    }
+    state.bucket_accelerate_configs.write().await.insert(bucket, config);
+    StatusCode::OK.into_response()
+}
+
+pub(crate) async fn s3_root_get_bucket_accelerate(
+    state: Arc<AppState>,
+    bucket: String,
+) -> Response {
+    let bucket_dir = match bucket_path(&state, &bucket) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    let mut cached = state.bucket_accelerate_configs.read().await.get(&bucket).cloned();
+    if cached.is_none() {
+        let path = bucket_accelerate_path(&bucket_dir);
+        if let Ok(bytes) = tokio::fs::read(&path).await {
+            if let Ok(cfg) = serde_json::from_slice::<BucketAccelerateConfig>(&bytes) {
+                state.bucket_accelerate_configs.write().await.insert(bucket.clone(), cfg.clone());
+                cached = Some(cfg);
+            }
+        }
+    }
+    let Some(config) = cached else {
+        return s3_error(StatusCode::NOT_FOUND, "NoSuchConfiguration", "The accelerate configuration does not exist", &bucket);
+    };
+    s3_xml_response(StatusCode::OK, build_bucket_accelerate_xml(&config))
+}
+
+// ── Server Access Logging ──
+
+pub(crate) async fn s3_root_put_bucket_logging(
+    state: Arc<AppState>,
+    bucket: String,
+    body: Bytes,
+) -> Response {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "PascalCase")]
+    struct LoggingBody {
+        #[serde(rename = "LoggingEnabled")]
+        logging_enabled: Option<LoggingEnabledBody>,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "PascalCase")]
+    struct LoggingEnabledBody {
+        target_bucket: String,
+        #[serde(default)]
+        target_prefix: String,
+    }
+    let parsed: LoggingBody = match from_xml_str(&String::from_utf8_lossy(&body)) {
+        Ok(p) => p,
+        Err(err) => return s3_error(StatusCode::BAD_REQUEST, "MalformedXML", &format!("Invalid logging configuration: {err}"), &bucket),
+    };
+    let config = match parsed.logging_enabled {
+        Some(le) => BucketLoggingConfig { target_bucket: le.target_bucket, target_prefix: le.target_prefix },
+        None => BucketLoggingConfig::default(),
+    };
+    let bucket_dir = match bucket_path(&state, &bucket) { Ok(p) => p, Err(r) => return r };
+    let meta_dir = bucket_dir.join(".rustio_meta");
+    if let Err(err) = tokio::fs::create_dir_all(&meta_dir).await {
+        return s3_error(StatusCode::INTERNAL_SERVER_ERROR, "InternalError", &format!("Failed to persist: {err}"), &bucket);
+    }
+    let path = bucket_logging_path(&bucket_dir);
+    if let Err(err) = tokio::fs::write(&path, serde_json::to_vec_pretty(&config).unwrap_or_default()).await {
+        return s3_error(StatusCode::INTERNAL_SERVER_ERROR, "InternalError", &format!("Failed to persist: {err}"), &bucket);
+    }
+    state.bucket_logging_configs.write().await.insert(bucket, config);
+    StatusCode::OK.into_response()
+}
+
+pub(crate) async fn s3_root_get_bucket_logging(state: Arc<AppState>, bucket: String) -> Response {
+    let bucket_dir = match bucket_path(&state, &bucket) { Ok(p) => p, Err(r) => return r };
+    let mut cached = state.bucket_logging_configs.read().await.get(&bucket).cloned();
+    if cached.is_none() {
+        let path = bucket_logging_path(&bucket_dir);
+        if let Ok(bytes) = tokio::fs::read(&path).await {
+            if let Ok(cfg) = serde_json::from_slice::<BucketLoggingConfig>(&bytes) {
+                state.bucket_logging_configs.write().await.insert(bucket.clone(), cfg.clone());
+                cached = Some(cfg);
+            }
+        }
+    }
+    let Some(config) = cached else {
+        return s3_xml_response(StatusCode::OK, r#"<?xml version="1.0" encoding="UTF-8"?><BucketLoggingStatus xmlns="http://s3.amazonaws.com/doc/2006-03-01/"></BucketLoggingStatus>"#.to_string());
+    };
+    s3_xml_response(StatusCode::OK, build_bucket_logging_xml(&config))
+}
+
+// ── Requester Pays ──
+
+pub(crate) async fn s3_root_put_bucket_request_payment(
+    state: Arc<AppState>,
+    bucket: String,
+    body: Bytes,
+) -> Response {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "PascalCase")]
+    struct RequestPaymentBody {
+        payer: String,
+    }
+    let parsed: RequestPaymentBody = match from_xml_str(&String::from_utf8_lossy(&body)) {
+        Ok(p) => p,
+        Err(err) => return s3_error(StatusCode::BAD_REQUEST, "MalformedXML", &format!("Invalid request payment config: {err}"), &bucket),
+    };
+    let config = BucketRequestPaymentConfig { payer: parsed.payer };
+    let bucket_dir = match bucket_path(&state, &bucket) { Ok(p) => p, Err(r) => return r };
+    let meta_dir = bucket_dir.join(".rustio_meta");
+    if let Err(err) = tokio::fs::create_dir_all(&meta_dir).await {
+        return s3_error(StatusCode::INTERNAL_SERVER_ERROR, "InternalError", &format!("Failed to persist: {err}"), &bucket);
+    }
+    let path = bucket_request_payment_path(&bucket_dir);
+    if let Err(err) = tokio::fs::write(&path, serde_json::to_vec_pretty(&config).unwrap_or_default()).await {
+        return s3_error(StatusCode::INTERNAL_SERVER_ERROR, "InternalError", &format!("Failed to persist: {err}"), &bucket);
+    }
+    state.bucket_request_payment_configs.write().await.insert(bucket, config);
+    StatusCode::OK.into_response()
+}
+
+pub(crate) async fn s3_root_get_bucket_request_payment(state: Arc<AppState>, bucket: String) -> Response {
+    let bucket_dir = match bucket_path(&state, &bucket) { Ok(p) => p, Err(r) => return r };
+    let mut cached = state.bucket_request_payment_configs.read().await.get(&bucket).cloned();
+    if cached.is_none() {
+        let path = bucket_request_payment_path(&bucket_dir);
+        if let Ok(bytes) = tokio::fs::read(&path).await {
+            if let Ok(cfg) = serde_json::from_slice::<BucketRequestPaymentConfig>(&bytes) {
+                state.bucket_request_payment_configs.write().await.insert(bucket.clone(), cfg.clone());
+                cached = Some(cfg);
+            }
+        }
+    }
+    let Some(config) = cached else {
+        return s3_xml_response(StatusCode::OK, build_bucket_request_payment_xml(&BucketRequestPaymentConfig::default()));
+    };
+    s3_xml_response(StatusCode::OK, build_bucket_request_payment_xml(&config))
+}
+
+// ── Analytics ──
+
+pub(crate) async fn s3_root_put_bucket_analytics(state: Arc<AppState>, bucket: String, body: Bytes) -> Response {
+    let config: BucketAnalyticsConfig = match from_xml_str(&String::from_utf8_lossy(&body)) {
+        Ok(c) => c,
+        Err(err) => return s3_error(StatusCode::BAD_REQUEST, "MalformedXML", &format!("Invalid analytics config: {err}"), &bucket),
+    };
+    let bucket_dir = match bucket_path(&state, &bucket) { Ok(p) => p, Err(r) => return r };
+    let mut configs = {
+        let cache = state.bucket_analytics_configs.read().await;
+        cache.get(&bucket).cloned().unwrap_or_default()
+    };
+    configs.retain(|c| c.id != config.id);
+    configs.push(config);
+    let meta_dir = bucket_dir.join(".rustio_meta");
+    if let Err(err) = tokio::fs::create_dir_all(&meta_dir).await {
+        return s3_error(StatusCode::INTERNAL_SERVER_ERROR, "InternalError", &format!("Failed to persist: {err}"), &bucket);
+    }
+    let path = bucket_analytics_path(&bucket_dir);
+    if let Err(err) = tokio::fs::write(&path, serde_json::to_vec_pretty(&configs).unwrap_or_default()).await {
+        return s3_error(StatusCode::INTERNAL_SERVER_ERROR, "InternalError", &format!("Failed to persist: {err}"), &bucket);
+    }
+    state.bucket_analytics_configs.write().await.insert(bucket, configs);
+    StatusCode::OK.into_response()
+}
+
+pub(crate) async fn s3_root_get_bucket_analytics(state: Arc<AppState>, bucket: String) -> Response {
+    let bucket_dir = match bucket_path(&state, &bucket) { Ok(p) => p, Err(r) => return r };
+    let mut cached = state.bucket_analytics_configs.read().await.get(&bucket).cloned();
+    if cached.is_none() {
+        let path = bucket_analytics_path(&bucket_dir);
+        if let Ok(bytes) = tokio::fs::read(&path).await {
+            if let Ok(cfgs) = serde_json::from_slice::<Vec<BucketAnalyticsConfig>>(&bytes) {
+                state.bucket_analytics_configs.write().await.insert(bucket.clone(), cfgs.clone());
+                cached = Some(cfgs);
+            }
+        }
+    }
+    s3_xml_response(StatusCode::OK, build_bucket_analytics_xml(&cached.unwrap_or_default()))
+}
+
+pub(crate) async fn s3_root_delete_bucket_analytics(state: Arc<AppState>, bucket: String) -> Response {
+    let bucket_dir = match bucket_path(&state, &bucket) { Ok(p) => p, Err(r) => return r };
+    let path = bucket_analytics_path(&bucket_dir);
+    let _ = tokio::fs::remove_file(&path).await;
+    state.bucket_analytics_configs.write().await.remove(&bucket);
+    StatusCode::NO_CONTENT.into_response()
+}
+
+// ── Metrics ──
+
+pub(crate) async fn s3_root_put_bucket_metrics(state: Arc<AppState>, bucket: String, body: Bytes) -> Response {
+    let config: BucketMetricsConfig = match from_xml_str(&String::from_utf8_lossy(&body)) {
+        Ok(c) => c,
+        Err(err) => return s3_error(StatusCode::BAD_REQUEST, "MalformedXML", &format!("Invalid metrics config: {err}"), &bucket),
+    };
+    let bucket_dir = match bucket_path(&state, &bucket) { Ok(p) => p, Err(r) => return r };
+    let mut configs = {
+        let cache = state.bucket_metrics_configs.read().await;
+        cache.get(&bucket).cloned().unwrap_or_default()
+    };
+    configs.retain(|c| c.id != config.id);
+    configs.push(config);
+    let meta_dir = bucket_dir.join(".rustio_meta");
+    if let Err(err) = tokio::fs::create_dir_all(&meta_dir).await {
+        return s3_error(StatusCode::INTERNAL_SERVER_ERROR, "InternalError", &format!("Failed to persist: {err}"), &bucket);
+    }
+    let path = bucket_metrics_path(&bucket_dir);
+    if let Err(err) = tokio::fs::write(&path, serde_json::to_vec_pretty(&configs).unwrap_or_default()).await {
+        return s3_error(StatusCode::INTERNAL_SERVER_ERROR, "InternalError", &format!("Failed to persist: {err}"), &bucket);
+    }
+    state.bucket_metrics_configs.write().await.insert(bucket, configs);
+    StatusCode::OK.into_response()
+}
+
+pub(crate) async fn s3_root_get_bucket_metrics(state: Arc<AppState>, bucket: String) -> Response {
+    let bucket_dir = match bucket_path(&state, &bucket) { Ok(p) => p, Err(r) => return r };
+    let mut cached = state.bucket_metrics_configs.read().await.get(&bucket).cloned();
+    if cached.is_none() {
+        let path = bucket_metrics_path(&bucket_dir);
+        if let Ok(bytes) = tokio::fs::read(&path).await {
+            if let Ok(cfgs) = serde_json::from_slice::<Vec<BucketMetricsConfig>>(&bytes) {
+                state.bucket_metrics_configs.write().await.insert(bucket.clone(), cfgs.clone());
+                cached = Some(cfgs);
+            }
+        }
+    }
+    s3_xml_response(StatusCode::OK, build_bucket_metrics_xml(&cached.unwrap_or_default()))
+}
+
+pub(crate) async fn s3_root_delete_bucket_metrics(state: Arc<AppState>, bucket: String) -> Response {
+    let bucket_dir = match bucket_path(&state, &bucket) { Ok(p) => p, Err(r) => return r };
+    let path = bucket_metrics_path(&bucket_dir);
+    let _ = tokio::fs::remove_file(&path).await;
+    state.bucket_metrics_configs.write().await.remove(&bucket);
+    StatusCode::NO_CONTENT.into_response()
+}
+
+// ── Inventory ──
+
+pub(crate) async fn s3_root_put_bucket_inventory(state: Arc<AppState>, bucket: String, body: Bytes) -> Response {
+    let config: BucketInventoryConfig = match from_xml_str(&String::from_utf8_lossy(&body)) {
+        Ok(c) => c,
+        Err(err) => return s3_error(StatusCode::BAD_REQUEST, "MalformedXML", &format!("Invalid inventory config: {err}"), &bucket),
+    };
+    let bucket_dir = match bucket_path(&state, &bucket) { Ok(p) => p, Err(r) => return r };
+    let mut configs = {
+        let cache = state.bucket_inventory_configs.read().await;
+        cache.get(&bucket).cloned().unwrap_or_default()
+    };
+    configs.retain(|c| c.id != config.id);
+    configs.push(config);
+    let meta_dir = bucket_dir.join(".rustio_meta");
+    if let Err(err) = tokio::fs::create_dir_all(&meta_dir).await {
+        return s3_error(StatusCode::INTERNAL_SERVER_ERROR, "InternalError", &format!("Failed to persist: {err}"), &bucket);
+    }
+    let path = bucket_inventory_path(&bucket_dir);
+    if let Err(err) = tokio::fs::write(&path, serde_json::to_vec_pretty(&configs).unwrap_or_default()).await {
+        return s3_error(StatusCode::INTERNAL_SERVER_ERROR, "InternalError", &format!("Failed to persist: {err}"), &bucket);
+    }
+    state.bucket_inventory_configs.write().await.insert(bucket, configs);
+    StatusCode::OK.into_response()
+}
+
+pub(crate) async fn s3_root_get_bucket_inventory(state: Arc<AppState>, bucket: String) -> Response {
+    let bucket_dir = match bucket_path(&state, &bucket) { Ok(p) => p, Err(r) => return r };
+    let mut cached = state.bucket_inventory_configs.read().await.get(&bucket).cloned();
+    if cached.is_none() {
+        let path = bucket_inventory_path(&bucket_dir);
+        if let Ok(bytes) = tokio::fs::read(&path).await {
+            if let Ok(cfgs) = serde_json::from_slice::<Vec<BucketInventoryConfig>>(&bytes) {
+                state.bucket_inventory_configs.write().await.insert(bucket.clone(), cfgs.clone());
+                cached = Some(cfgs);
+            }
+        }
+    }
+    s3_xml_response(StatusCode::OK, build_bucket_inventory_xml(&cached.unwrap_or_default()))
+}
+
+pub(crate) async fn s3_root_delete_bucket_inventory(state: Arc<AppState>, bucket: String) -> Response {
+    let bucket_dir = match bucket_path(&state, &bucket) { Ok(p) => p, Err(r) => return r };
+    let path = bucket_inventory_path(&bucket_dir);
+    let _ = tokio::fs::remove_file(&path).await;
+    state.bucket_inventory_configs.write().await.remove(&bucket);
+    StatusCode::NO_CONTENT.into_response()
 }

@@ -29,6 +29,8 @@ use rustio_core::{
     BucketLifecycleRule, BucketNotificationRule, BucketObjectLockConfig,
     BucketPublicAccessBlockConfig, BucketRetentionConfig, BucketSpec, BucketTag,
     BucketWebsiteConfig,
+    BucketAccelerateConfig, BucketLoggingConfig, BucketRequestPaymentConfig,
+    BucketAnalyticsConfig, BucketMetricsConfig, BucketInventoryConfig,
     ClusterConfigSnapshot, ClusterNode, ClusterQuota, ConsoleSession, DiagnosticReport, IamGroup,
     IamPolicy, IamUser, JobStatus, LoginResponse, RemoteTierConfig, ReplicationBacklogItem,
     ReplicationStatus, RuntimeEvent, S3ObjectEncryptionMeta, S3ObjectMeta, SecurityConfig,
@@ -205,6 +207,18 @@ pub struct MetadataRaftSnapshot {
     pub bucket_encryptions: Vec<(String, BucketEncryptionConfig)>,
     #[serde(default)]
     pub bucket_website_configs: Vec<(String, BucketWebsiteConfig)>,
+    #[serde(default)]
+    pub bucket_accelerate_configs: Vec<(String, BucketAccelerateConfig)>,
+    #[serde(default)]
+    pub bucket_logging_configs: Vec<(String, BucketLoggingConfig)>,
+    #[serde(default)]
+    pub bucket_request_payment_configs: Vec<(String, BucketRequestPaymentConfig)>,
+    #[serde(default)]
+    pub bucket_analytics_configs: Vec<(String, Vec<BucketAnalyticsConfig>)>,
+    #[serde(default)]
+    pub bucket_metrics_configs: Vec<(String, Vec<BucketMetricsConfig>)>,
+    #[serde(default)]
+    pub bucket_inventory_configs: Vec<(String, Vec<BucketInventoryConfig>)>,
     pub objects: Vec<MetadataObjectEntry>,
     pub credentials: Vec<(String, LocalCredential)>,
     pub iam_users: Vec<IamUser>,
@@ -355,6 +369,12 @@ pub struct AppState {
     pub bucket_tags: RwLock<HashMap<String, Vec<BucketTag>>>,
     pub bucket_encryptions: RwLock<HashMap<String, BucketEncryptionConfig>>,
     pub bucket_website_configs: RwLock<HashMap<String, BucketWebsiteConfig>>,
+    pub bucket_accelerate_configs: RwLock<HashMap<String, BucketAccelerateConfig>>,
+    pub bucket_logging_configs: RwLock<HashMap<String, BucketLoggingConfig>>,
+    pub bucket_request_payment_configs: RwLock<HashMap<String, BucketRequestPaymentConfig>>,
+    pub bucket_analytics_configs: RwLock<HashMap<String, Vec<BucketAnalyticsConfig>>>,
+    pub bucket_metrics_configs: RwLock<HashMap<String, Vec<BucketMetricsConfig>>>,
+    pub bucket_inventory_configs: RwLock<HashMap<String, Vec<BucketInventoryConfig>>>,
     pub replications: RwLock<Vec<ReplicationStatus>>,
     pub site_replications: RwLock<Vec<SiteReplicationStatus>>,
     pub replication_backlog: RwLock<Vec<ReplicationBacklogItem>>,
@@ -383,6 +403,8 @@ pub struct AppState {
     pub(crate) meta_raft: std::sync::OnceLock<raft::MetadataRaft>,
     /// state machine 的 AppState 弱引用 holder(init_metadata_raft 时回填,打破循环)。
     pub(crate) meta_raft_app: raft::AppStateRef,
+    /// io_uring 线程桥接器(Linux 5.10+ 且启用 io-uring feature 时 Some,否则 None)。
+    pub(crate) io_uring_bridge: Option<crate::io_uring_bridge::IoUringBridge>,
 }
 
 impl AppState {
@@ -748,6 +770,12 @@ impl AppState {
         let bucket_tags = Self::sorted_map_entries(&self.bucket_tags.read().await.clone());
         let bucket_encryptions = Self::sorted_map_entries(&self.bucket_encryptions.read().await.clone());
         let bucket_website_configs = Self::sorted_map_entries(&self.bucket_website_configs.read().await.clone());
+        let bucket_accelerate_configs = Self::sorted_map_entries(&self.bucket_accelerate_configs.read().await.clone());
+        let bucket_logging_configs = Self::sorted_map_entries(&self.bucket_logging_configs.read().await.clone());
+        let bucket_request_payment_configs = Self::sorted_map_entries(&self.bucket_request_payment_configs.read().await.clone());
+        let bucket_analytics_configs = Self::sorted_map_entries(&self.bucket_analytics_configs.read().await.clone());
+        let bucket_metrics_configs = Self::sorted_map_entries(&self.bucket_metrics_configs.read().await.clone());
+        let bucket_inventory_configs = Self::sorted_map_entries(&self.bucket_inventory_configs.read().await.clone());
         let mut iam_users = self.users.read().await.clone(); iam_users.sort_by(|l, r| l.username.cmp(&r.username));
         let credentials = Self::sorted_map_entries(&self.credentials.read().await.clone());
         let mut iam_groups = self.groups.read().await.clone(); iam_groups.sort_by(|l, r| l.name.cmp(&r.name));
@@ -769,7 +797,9 @@ impl AppState {
             generated_at: Utc::now(), buckets, remote_tiers, bucket_object_locks, bucket_retentions,
             bucket_legal_holds, bucket_notifications, bucket_lifecycle_rules, bucket_acls,
             bucket_public_access_blocks, bucket_policies, bucket_cors_rules, bucket_tags, bucket_encryptions,
-            bucket_website_configs,
+            bucket_website_configs, bucket_accelerate_configs, bucket_logging_configs,
+            bucket_request_payment_configs, bucket_analytics_configs, bucket_metrics_configs,
+            bucket_inventory_configs,
             objects: Vec::new(), credentials, iam_users, iam_groups, iam_policies, service_accounts,
             admin_sessions, sts_sessions, replications, site_replications, replication_backlog,
             replication_checkpoints, cluster_config_history, security, jobs, cluster_peers,
@@ -944,6 +974,18 @@ impl AppState {
         *self.bucket_encryptions.write().await = snapshot.bucket_encryptions.into_iter().collect();
         *self.bucket_website_configs.write().await =
             snapshot.bucket_website_configs.into_iter().collect();
+        *self.bucket_accelerate_configs.write().await =
+            snapshot.bucket_accelerate_configs.into_iter().collect();
+        *self.bucket_logging_configs.write().await =
+            snapshot.bucket_logging_configs.into_iter().collect();
+        *self.bucket_request_payment_configs.write().await =
+            snapshot.bucket_request_payment_configs.into_iter().collect();
+        *self.bucket_analytics_configs.write().await =
+            snapshot.bucket_analytics_configs.into_iter().collect();
+        *self.bucket_metrics_configs.write().await =
+            snapshot.bucket_metrics_configs.into_iter().collect();
+        *self.bucket_inventory_configs.write().await =
+            snapshot.bucket_inventory_configs.into_iter().collect();
         *self.credentials.write().await = snapshot.credentials.into_iter().collect();
         *self.users.write().await = snapshot.iam_users;
         *self.groups.write().await = snapshot.iam_groups;

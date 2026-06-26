@@ -285,6 +285,12 @@ impl AppState {
         let mut bucket_tags = HashMap::new();
         let mut bucket_encryptions = HashMap::new();
         let mut bucket_website_configs = HashMap::new();
+        let mut bucket_accelerate_configs = HashMap::new();
+        let mut bucket_logging_configs = HashMap::new();
+        let mut bucket_request_payment_configs = HashMap::new();
+        let mut bucket_analytics_configs: HashMap<String, Vec<BucketAnalyticsConfig>> = HashMap::new();
+        let mut bucket_metrics_configs: HashMap<String, Vec<BucketMetricsConfig>> = HashMap::new();
+        let mut bucket_inventory_configs: HashMap<String, Vec<BucketInventoryConfig>> = HashMap::new();
         if let Ok(entries) = std::fs::read_dir(&data_dir) {
             for entry in entries.flatten() {
                 if let Ok(file_type) = entry.file_type() {
@@ -418,7 +424,49 @@ impl AppState {
                 if let Ok(bytes) = std::fs::read(&encryption_path) {
                     if let Ok(encryption) = serde_json::from_slice::<BucketEncryptionConfig>(&bytes)
                     {
-                        bucket_encryptions.insert(name, encryption);
+                        bucket_encryptions.insert(name.clone(), encryption);
+                    }
+                }
+
+                let accelerate_path = entry.path().join(".rustio_meta").join("bucket-accelerate.json");
+                if let Ok(bytes) = std::fs::read(&accelerate_path) {
+                    if let Ok(cfg) = serde_json::from_slice::<BucketAccelerateConfig>(&bytes) {
+                        bucket_accelerate_configs.insert(name.clone(), cfg);
+                    }
+                }
+
+                let logging_path = entry.path().join(".rustio_meta").join("bucket-logging.json");
+                if let Ok(bytes) = std::fs::read(&logging_path) {
+                    if let Ok(cfg) = serde_json::from_slice::<BucketLoggingConfig>(&bytes) {
+                        bucket_logging_configs.insert(name.clone(), cfg);
+                    }
+                }
+
+                let reqpay_path = entry.path().join(".rustio_meta").join("bucket-request-payment.json");
+                if let Ok(bytes) = std::fs::read(&reqpay_path) {
+                    if let Ok(cfg) = serde_json::from_slice::<BucketRequestPaymentConfig>(&bytes) {
+                        bucket_request_payment_configs.insert(name.clone(), cfg);
+                    }
+                }
+
+                let analytics_path = entry.path().join(".rustio_meta").join("bucket-analytics.json");
+                if let Ok(bytes) = std::fs::read(&analytics_path) {
+                    if let Ok(cfgs) = serde_json::from_slice::<Vec<BucketAnalyticsConfig>>(&bytes) {
+                        bucket_analytics_configs.insert(name.clone(), cfgs);
+                    }
+                }
+
+                let metrics_path = entry.path().join(".rustio_meta").join("bucket-metrics.json");
+                if let Ok(bytes) = std::fs::read(&metrics_path) {
+                    if let Ok(cfgs) = serde_json::from_slice::<Vec<BucketMetricsConfig>>(&bytes) {
+                        bucket_metrics_configs.insert(name.clone(), cfgs);
+                    }
+                }
+
+                let inventory_path = entry.path().join(".rustio_meta").join("bucket-inventory.json");
+                if let Ok(bytes) = std::fs::read(&inventory_path) {
+                    if let Ok(cfgs) = serde_json::from_slice::<Vec<BucketInventoryConfig>>(&bytes) {
+                        bucket_inventory_configs.insert(name, cfgs);
                     }
                 }
             }
@@ -724,6 +772,12 @@ impl AppState {
             bucket_tags: RwLock::new(bucket_tags),
             bucket_encryptions: RwLock::new(bucket_encryptions),
             bucket_website_configs: RwLock::new(bucket_website_configs),
+            bucket_accelerate_configs: RwLock::new(bucket_accelerate_configs),
+            bucket_logging_configs: RwLock::new(bucket_logging_configs),
+            bucket_request_payment_configs: RwLock::new(bucket_request_payment_configs),
+            bucket_analytics_configs: RwLock::new(bucket_analytics_configs),
+            bucket_metrics_configs: RwLock::new(bucket_metrics_configs),
+            bucket_inventory_configs: RwLock::new(bucket_inventory_configs),
             replications: RwLock::new(vec![]),
             site_replications: RwLock::new(vec![
                 SiteReplicationStatus {
@@ -933,6 +987,16 @@ impl AppState {
             events,
             meta_raft: std::sync::OnceLock::new(),
             meta_raft_app: std::sync::Arc::new(std::sync::OnceLock::new()),
+            io_uring_bridge: if crate::io_uring_bridge::is_io_uring_available() {
+                Some(crate::io_uring_bridge::IoUringBridge::new(
+                    std::thread::available_parallelism()
+                        .map(|n| n.get() / 2)
+                        .unwrap_or(2)
+                        .max(1),
+                ))
+            } else {
+                None
+            },
         });
         state.restore_replication_runtime_state();
         state.start_background_workers();
