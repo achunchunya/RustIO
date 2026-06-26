@@ -48,7 +48,18 @@ rustio-core = { path = "../rustio-core" }
 lru.workspace = true
 redb.workspace = true
 openraft.workspace = true
+openssl = { version = "0.10", features = ["vendored"] }
 tokio-uring = { version = "0.5", optional = true }
+
+[dev-dependencies]
+axum.workspace = true
+criterion = { version = "0.5", features = ["html_reports"] }
+ldap3_proto = "0.6"
+openssl = { version = "0.10", features = ["vendored"] }
+p256 = { version = "0.13", features = ["ecdsa", "pem", "pkcs8"] }
+reqwest = { workspace = true, features = ["multipart"] }
+rsa = { version = "0.9", features = ["pem"] }
+tokio.workspace = true
 
 [features]
 io-uring = ["tokio-uring"]
