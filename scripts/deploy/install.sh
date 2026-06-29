@@ -19,6 +19,7 @@ set -euo pipefail
 
 REPO="achunchunya/RustIO"
 GITHUB_API="https://api.github.com/repos/${REPO}"
+DOWNLOAD_BASE="https://github.com/${REPO}/releases/download"
 INSTALL_DIR="${RUSTIO_INSTALL_DIR:-/usr/local/bin}"
 BINARY="${INSTALL_DIR}/rustio"
 VERSION="${RUSTIO_VERSION:-}"
@@ -104,7 +105,7 @@ fi
 echo "  版本: ${VERSION}"
 
 # 下载
-DOWNLOAD_URL="${GITHUB_API}/releases/download/${VERSION}/${PLATFORM}.tar.gz"
+DOWNLOAD_URL="${DOWNLOAD_BASE}/${VERSION}/${PLATFORM}.tar.gz"
 TMP_DIR=$(mktemp -d)
 echo "  下载 ${DOWNLOAD_URL}..."
 if ! curl -sSfL "${DOWNLOAD_URL}" -o "${TMP_DIR}/rustio.tar.gz"; then
@@ -164,7 +165,7 @@ Wants=network-online.target
 Type=simple
 User=${RUN_USER}
 EnvironmentFile=/etc/rustio/env
-ExecStart=${BINARY} server ${DATA_DIR} --address :${PORT}
+ExecStart=${BINARY}
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65536

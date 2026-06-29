@@ -89,7 +89,7 @@ After=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=${ENV_FILE}
-ExecStart=${BINARY} server ${DATA_DIR} --address :${PORT}
+ExecStart=${BINARY}
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=65536
