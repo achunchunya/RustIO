@@ -29,6 +29,8 @@ RUN_USER="${RUSTIO_USER:-root}"
 ROOT_USER="${RUSTIO_ROOT_USER:-rustioadmin}"
 ROOT_PASS="${RUSTIO_ROOT_PASS:-}"
 JWT_SECRET="${RUSTIO_JWT_SECRET:-}"
+CONSOLE_PASS="${RUSTIO_CONSOLE_PASSWORD:-}"
+CONSOLE_USER="${RUSTIO_CONSOLE_USER:-admin}"
 SKIP_SYSTEMD="${SKIP_SYSTEMD:-0}"
 
 # ── 参数解析 ──
@@ -125,6 +127,7 @@ echo "  ✅ 二进制安装完成"
 
 # 生成凭据
 [[ -z "${ROOT_PASS}" ]] && ROOT_PASS=$(gen_password)
+[[ -z "${CONSOLE_PASS}" ]] && CONSOLE_PASS="${ROOT_PASS}"
 [[ -z "${JWT_SECRET}" ]] && JWT_SECRET=$(gen_password)
 
 # 创建数据目录
@@ -144,8 +147,8 @@ RUSTIO_DATA_DIR=${DATA_DIR}
 RUSTIO_ADDR=:${PORT}
 RUSTIO_ROOT_USER=${ROOT_USER}
 RUSTIO_ROOT_PASSWORD=${ROOT_PASS}
-RUSTIO_CONSOLE_USER=admin
-RUSTIO_CONSOLE_PASSWORD=${ROOT_PASS}
+RUSTIO_CONSOLE_USER=${CONSOLE_USER}
+RUSTIO_CONSOLE_PASSWORD=${CONSOLE_PASS}
 RUSTIO_JWT_SECRET=${JWT_SECRET}
 RUST_LOG=info
 ENVEOF
@@ -206,7 +209,8 @@ echo "  S3 端点:     http://$(hostname -I 2>/dev/null | awk '{print $1}' || ec
 echo "  管理端:      http://$(hostname -I 2>/dev/null | awk '{print $1}' || echo 'localhost'):${PORT}"
 echo "  S3 用户名:   ${ROOT_USER}"
 echo "  S3 密码:     ${ROOT_PASS}"
-echo "  控制台密码:  ${ROOT_PASS}"
+echo "  控制台用户:  ${CONSOLE_USER}"
+echo "  控制台密码:  ${CONSOLE_PASS}"
 echo ""
 echo "  配置文件:    /etc/rustio/env"
 echo "  数据目录:    ${DATA_DIR}"
