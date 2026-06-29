@@ -1,15 +1,22 @@
+import type { ReactNode } from 'react';
+
 type StatCardProps = {
   label: string;
   value: string;
   helper?: string;
+  icon?: ReactNode;
 };
 
-export function StatCard({ label, value, helper }: StatCardProps) {
+/** 统计卡:大写标签 + 大数值 + 可选辅助说明/图标。 */
+export function StatCard({ label, value, helper, icon }: StatCardProps) {
   return (
-    <article className="animate-rise rounded-2xl border border-white/10 bg-ink-800/80 p-4 shadow-panel backdrop-blur">
-      <p className="text-xs uppercase tracking-[0.2em] text-slate-400">{label}</p>
-      <p className="mt-2 font-heading text-3xl text-white">{value}</p>
-      {helper ? <p className="mt-2 text-sm text-slate-300">{helper}</p> : null}
+    <article className="animate-rise rounded-lg border border-outline/60 bg-surface-container p-5">
+      <div className="flex items-start justify-between">
+        <p className="text-xs font-medium uppercase tracking-[0.08em] text-muted">{label}</p>
+        {icon ? <span className="text-secondary">{icon}</span> : null}
+      </div>
+      <p className="mt-3 font-heading text-3xl font-semibold text-on-surface">{value}</p>
+      {helper ? <p className="mt-2 text-sm text-muted">{helper}</p> : null}
     </article>
   );
 }

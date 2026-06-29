@@ -94,9 +94,9 @@ function toFormState(config: SecurityConfig): SecurityFormState {
 }
 
 const inputClass =
-  'mt-1 h-11 w-full rounded-md border border-white/15 bg-ink-900 px-3 text-slate-100';
+  'mt-1 h-11 w-full rounded-md border border-outline/60 bg-surface-lowest px-3 text-on-surface';
 const textareaClass =
-  'mt-1 min-h-24 w-full rounded-md border border-white/15 bg-ink-900 px-3 py-3 text-slate-100';
+  'mt-1 min-h-24 w-full rounded-md border border-outline/60 bg-surface-lowest px-3 py-3 text-on-surface';
 
 export function SecurityPage({ client }: SecurityPageProps) {
   const [config, setConfig] = useState<SecurityConfig | null>(null);
@@ -153,10 +153,10 @@ export function SecurityPage({ client }: SecurityPageProps) {
 
   return (
     <section className="space-y-4">
-      <article className="rounded-2xl border border-white/10 bg-ink-800/70 p-4">
-        <h1 className="font-heading text-2xl text-white">安全与 KMS</h1>
-        {error ? <p className="mt-3 text-sm text-rose-400">{toBilingualPrompt(error)}</p> : null}
-        {message ? <p className="mt-3 text-sm text-signal-500">{toBilingualNotice(message)}</p> : null}
+      <article className="rounded-2xl border border-outline/60 bg-surface-container/70 p-4">
+        <h1 className="font-heading text-2xl text-on-surface">安全与 KMS</h1>
+        {error ? <p className="mt-3 text-sm text-error">{toBilingualPrompt(error)}</p> : null}
+        {message ? <p className="mt-3 text-sm text-primary">{toBilingualNotice(message)}</p> : null}
 
         <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <StatCard
@@ -187,29 +187,29 @@ export function SecurityPage({ client }: SecurityPageProps) {
 
         {config ? (
           <dl className="mt-4 grid gap-2 text-sm md:grid-cols-3 xl:grid-cols-6">
-            <div className="rounded-lg border border-white/10 bg-black/10 p-3">
-              <dt className="text-slate-400">OIDC</dt>
-              <dd className="text-white">{boolText(config.oidc_enabled)}</dd>
+            <div className="rounded-lg border border-outline/60 bg-surface-container-high p-3">
+              <dt className="text-muted">OIDC</dt>
+              <dd className="text-on-surface">{boolText(config.oidc_enabled)}</dd>
             </div>
-            <div className="rounded-lg border border-white/10 bg-black/10 p-3">
-              <dt className="text-slate-400">LDAP</dt>
-              <dd className="text-white">{boolText(config.ldap_enabled)}</dd>
+            <div className="rounded-lg border border-outline/60 bg-surface-container-high p-3">
+              <dt className="text-muted">LDAP</dt>
+              <dd className="text-on-surface">{boolText(config.ldap_enabled)}</dd>
             </div>
-            <div className="rounded-lg border border-white/10 bg-black/10 p-3">
-              <dt className="text-slate-400">KMS 健康</dt>
-              <dd className="text-white">{kmsStatus ? boolText(kmsStatus.healthy) : boolText(config.kms_healthy)}</dd>
+            <div className="rounded-lg border border-outline/60 bg-surface-container-high p-3">
+              <dt className="text-muted">KMS 健康</dt>
+              <dd className="text-on-surface">{kmsStatus ? boolText(kmsStatus.healthy) : boolText(config.kms_healthy)}</dd>
             </div>
-            <div className="rounded-lg border border-white/10 bg-black/10 p-3">
-              <dt className="text-slate-400">SSE 模式</dt>
-              <dd className="text-white">{config.sse_mode}</dd>
+            <div className="rounded-lg border border-outline/60 bg-surface-container-high p-3">
+              <dt className="text-muted">SSE 模式</dt>
+              <dd className="text-on-surface">{config.sse_mode}</dd>
             </div>
-            <div className="rounded-lg border border-white/10 bg-black/10 p-3">
-              <dt className="text-slate-400">最近成功</dt>
-              <dd className="text-white">{formatTime(kmsStatus?.last_success_at ?? config.kms_last_success_at)}</dd>
+            <div className="rounded-lg border border-outline/60 bg-surface-container-high p-3">
+              <dt className="text-muted">最近成功</dt>
+              <dd className="text-on-surface">{formatTime(kmsStatus?.last_success_at ?? config.kms_last_success_at)}</dd>
             </div>
-            <div className="rounded-lg border border-white/10 bg-black/10 p-3">
-              <dt className="text-slate-400">轮换状态</dt>
-              <dd className="text-white">
+            <div className="rounded-lg border border-outline/60 bg-surface-container-high p-3">
+              <dt className="text-muted">轮换状态</dt>
+              <dd className="text-on-surface">
                 {kmsRotationStatusText(kmsStatus?.rotation_status ?? config.kms_rotation_status)}
               </dd>
             </div>
@@ -218,26 +218,26 @@ export function SecurityPage({ client }: SecurityPageProps) {
 
         {kmsStatus ? (
           <div className="mt-4 grid gap-3 lg:grid-cols-[1.2fr,1fr]">
-            <article className="rounded-xl border border-white/10 bg-black/10 p-4">
-              <h2 className="font-heading text-lg text-white">KMS 运行态</h2>
-              <div className="mt-3 grid gap-2 text-sm text-slate-300 md:grid-cols-2">
+            <article className="rounded-xl border border-outline/60 bg-surface-container-high p-4">
+              <h2 className="font-heading text-lg text-on-surface">KMS 运行态</h2>
+              <div className="mt-3 grid gap-2 text-sm text-muted md:grid-cols-2">
                 <p>KMS Endpoint：{kmsStatus.endpoint_configured ? '已配置' : '未配置'}</p>
                 <p>最近检查：{formatTime(kmsStatus.last_checked_at)}</p>
                 <p>最近成功：{formatTime(kmsStatus.last_success_at)}</p>
                 <p>轮换最近完成：{formatTime(kmsStatus.rotation_last_completed_at)}</p>
               </div>
               {kmsStatus.last_error ? (
-                <p className="mt-3 rounded-lg bg-rose-500/10 p-3 text-sm text-rose-300">
+                <p className="mt-3 rounded-lg bg-error/10 p-3 text-sm text-error">
                   最近错误：{toBilingualPrompt(kmsStatus.last_error)}
                 </p>
               ) : (
-                <p className="mt-3 rounded-lg bg-signal-500/10 p-3 text-sm text-signal-400">当前未记录 KMS 错误。</p>
+                <p className="mt-3 rounded-lg bg-primary/10 p-3 text-sm text-primary">当前未记录 KMS 错误。</p>
               )}
             </article>
 
-            <article className="rounded-xl border border-white/10 bg-black/10 p-4">
-              <h2 className="font-heading text-lg text-white">轮换进度</h2>
-              <div className="mt-3 grid gap-2 text-sm text-slate-300 md:grid-cols-2">
+            <article className="rounded-xl border border-outline/60 bg-surface-container-high p-4">
+              <h2 className="font-heading text-lg text-on-surface">轮换进度</h2>
+              <div className="mt-3 grid gap-2 text-sm text-muted md:grid-cols-2">
                 <p>扫描对象：{kmsStatus.rotation_scanned}</p>
                 <p>成功轮换：{kmsStatus.rotation_rotated}</p>
                 <p>跳过对象：{kmsStatus.rotation_skipped}</p>
@@ -246,7 +246,7 @@ export function SecurityPage({ client }: SecurityPageProps) {
                 <p>重试建议：{kmsStatus.retry_recommended ? '建议重试' : '无需重试'}</p>
               </div>
               {kmsStatus.rotation_last_failure_reason ? (
-                <p className="mt-3 rounded-lg bg-amber-500/10 p-3 text-sm text-amber-300">
+                <p className="mt-3 rounded-lg bg-warning/10 p-3 text-sm text-warning">
                   失败原因：{toBilingualPrompt(kmsStatus.rotation_last_failure_reason)}
                 </p>
               ) : null}
@@ -255,7 +255,7 @@ export function SecurityPage({ client }: SecurityPageProps) {
         ) : null}
 
         <form
-          className="mt-4 space-y-4 rounded-xl border border-white/10 bg-black/10 p-4"
+          className="mt-4 space-y-4 rounded-xl border border-outline/60 bg-surface-container-high p-4"
           onSubmit={async (event) => {
             event.preventDefault();
             setSaving(true);
@@ -273,7 +273,7 @@ export function SecurityPage({ client }: SecurityPageProps) {
           }}
         >
           <section className="grid gap-3 md:grid-cols-2">
-            <label className="flex items-center gap-2 text-sm text-slate-300">
+            <label className="flex items-center gap-2 text-sm text-muted">
               <input
                 type="checkbox"
                 checked={form.oidc_enabled}
@@ -281,7 +281,7 @@ export function SecurityPage({ client }: SecurityPageProps) {
               />
               启用 OIDC
             </label>
-            <label className="flex items-center gap-2 text-sm text-slate-300">
+            <label className="flex items-center gap-2 text-sm text-muted">
               <input
                 type="checkbox"
                 checked={form.ldap_enabled}
@@ -289,7 +289,7 @@ export function SecurityPage({ client }: SecurityPageProps) {
               />
               启用 LDAP
             </label>
-            <label className="text-sm text-slate-300">
+            <label className="text-sm text-muted">
               KMS 地址
               <input
                 value={form.kms_endpoint}
@@ -297,7 +297,7 @@ export function SecurityPage({ client }: SecurityPageProps) {
                 className={inputClass}
               />
             </label>
-            <label className="text-sm text-slate-300">
+            <label className="text-sm text-muted">
               SSE 模式
               <select
                 value={form.sse_mode}
@@ -311,13 +311,13 @@ export function SecurityPage({ client }: SecurityPageProps) {
             </label>
           </section>
 
-          <section className="space-y-3 rounded-xl border border-white/10 bg-white/5 p-4">
+          <section className="space-y-3 rounded-xl border border-outline/60 bg-on-surface/5 p-4">
             <div>
-              <h2 className="font-heading text-lg text-white">OIDC 配置</h2>
-              <p className="mt-1 text-sm text-slate-400">用于 Discovery、JWKS、Claim 映射与组到角色映射。</p>
+              <h2 className="font-heading text-lg text-on-surface">OIDC 配置</h2>
+              <p className="mt-1 text-sm text-muted">用于 Discovery、JWKS、Claim 映射与组到角色映射。</p>
             </div>
             <div className="grid gap-3 md:grid-cols-2">
-              <label className="text-sm text-slate-300">
+              <label className="text-sm text-muted">
                 Discovery 地址
                 <input
                   value={form.oidc_discovery_url}
@@ -325,7 +325,7 @@ export function SecurityPage({ client }: SecurityPageProps) {
                   className={inputClass}
                 />
               </label>
-              <label className="text-sm text-slate-300">
+              <label className="text-sm text-muted">
                 Issuer
                 <input
                   value={form.oidc_issuer}
@@ -333,7 +333,7 @@ export function SecurityPage({ client }: SecurityPageProps) {
                   className={inputClass}
                 />
               </label>
-              <label className="text-sm text-slate-300">
+              <label className="text-sm text-muted">
                 Client ID
                 <input
                   value={form.oidc_client_id}
@@ -341,7 +341,7 @@ export function SecurityPage({ client }: SecurityPageProps) {
                   className={inputClass}
                 />
               </label>
-              <label className="text-sm text-slate-300">
+              <label className="text-sm text-muted">
                 JWKS 地址
                 <input
                   value={form.oidc_jwks_url}
@@ -349,7 +349,7 @@ export function SecurityPage({ client }: SecurityPageProps) {
                   className={inputClass}
                 />
               </label>
-              <label className="text-sm text-slate-300">
+              <label className="text-sm text-muted">
                 允许算法
                 <input
                   value={form.oidc_allowed_algs}
@@ -358,7 +358,7 @@ export function SecurityPage({ client }: SecurityPageProps) {
                   placeholder="如：RS256,ES256"
                 />
               </label>
-              <label className="text-sm text-slate-300">
+              <label className="text-sm text-muted">
                 用户名 Claim
                 <input
                   value={form.oidc_username_claim}
@@ -366,7 +366,7 @@ export function SecurityPage({ client }: SecurityPageProps) {
                   className={inputClass}
                 />
               </label>
-              <label className="text-sm text-slate-300">
+              <label className="text-sm text-muted">
                 用户组 Claim
                 <input
                   value={form.oidc_groups_claim}
@@ -374,7 +374,7 @@ export function SecurityPage({ client }: SecurityPageProps) {
                   className={inputClass}
                 />
               </label>
-              <label className="text-sm text-slate-300">
+              <label className="text-sm text-muted">
                 角色 Claim
                 <input
                   value={form.oidc_role_claim}
@@ -382,7 +382,7 @@ export function SecurityPage({ client }: SecurityPageProps) {
                   className={inputClass}
                 />
               </label>
-              <label className="text-sm text-slate-300">
+              <label className="text-sm text-muted">
                 默认角色
                 <input
                   value={form.oidc_default_role}
@@ -390,7 +390,7 @@ export function SecurityPage({ client }: SecurityPageProps) {
                   className={inputClass}
                 />
               </label>
-              <label className="text-sm text-slate-300 md:col-span-2">
+              <label className="text-sm text-muted md:col-span-2">
                 用户组角色映射
                 <textarea
                   value={form.oidc_group_role_map}
@@ -402,13 +402,13 @@ export function SecurityPage({ client }: SecurityPageProps) {
             </div>
           </section>
 
-          <section className="space-y-3 rounded-xl border border-white/10 bg-white/5 p-4">
+          <section className="space-y-3 rounded-xl border border-outline/60 bg-on-surface/5 p-4">
             <div>
-              <h2 className="font-heading text-lg text-white">LDAP 配置</h2>
-              <p className="mt-1 text-sm text-slate-400">用于真实 Bind / Search、组收集与组到角色映射。</p>
+              <h2 className="font-heading text-lg text-on-surface">LDAP 配置</h2>
+              <p className="mt-1 text-sm text-muted">用于真实 Bind / Search、组收集与组到角色映射。</p>
             </div>
             <div className="grid gap-3 md:grid-cols-2">
-              <label className="text-sm text-slate-300">
+              <label className="text-sm text-muted">
                 LDAP 地址
                 <input
                   value={form.ldap_url}
@@ -416,7 +416,7 @@ export function SecurityPage({ client }: SecurityPageProps) {
                   className={inputClass}
                 />
               </label>
-              <label className="text-sm text-slate-300">
+              <label className="text-sm text-muted">
                 绑定 DN
                 <input
                   value={form.ldap_bind_dn}
@@ -424,7 +424,7 @@ export function SecurityPage({ client }: SecurityPageProps) {
                   className={inputClass}
                 />
               </label>
-              <label className="text-sm text-slate-300">
+              <label className="text-sm text-muted">
                 用户 Base DN
                 <input
                   value={form.ldap_user_base_dn}
@@ -432,7 +432,7 @@ export function SecurityPage({ client }: SecurityPageProps) {
                   className={inputClass}
                 />
               </label>
-              <label className="text-sm text-slate-300">
+              <label className="text-sm text-muted">
                 用户过滤器
                 <input
                   value={form.ldap_user_filter}
@@ -440,7 +440,7 @@ export function SecurityPage({ client }: SecurityPageProps) {
                   className={inputClass}
                 />
               </label>
-              <label className="text-sm text-slate-300">
+              <label className="text-sm text-muted">
                 用户组 Base DN
                 <input
                   value={form.ldap_group_base_dn}
@@ -448,7 +448,7 @@ export function SecurityPage({ client }: SecurityPageProps) {
                   className={inputClass}
                 />
               </label>
-              <label className="text-sm text-slate-300">
+              <label className="text-sm text-muted">
                 用户组过滤器
                 <input
                   value={form.ldap_group_filter}
@@ -456,7 +456,7 @@ export function SecurityPage({ client }: SecurityPageProps) {
                   className={inputClass}
                 />
               </label>
-              <label className="text-sm text-slate-300">
+              <label className="text-sm text-muted">
                 用户组属性
                 <input
                   value={form.ldap_group_attribute}
@@ -464,7 +464,7 @@ export function SecurityPage({ client }: SecurityPageProps) {
                   className={inputClass}
                 />
               </label>
-              <label className="text-sm text-slate-300">
+              <label className="text-sm text-muted">
                 用户组名称属性
                 <input
                   value={form.ldap_group_name_attribute}
@@ -472,7 +472,7 @@ export function SecurityPage({ client }: SecurityPageProps) {
                   className={inputClass}
                 />
               </label>
-              <label className="text-sm text-slate-300">
+              <label className="text-sm text-muted">
                 默认角色
                 <input
                   value={form.ldap_default_role}
@@ -480,10 +480,10 @@ export function SecurityPage({ client }: SecurityPageProps) {
                   className={inputClass}
                 />
               </label>
-              <div className="rounded-md border border-dashed border-white/10 bg-black/10 p-3 text-sm text-slate-400">
+              <div className="rounded-md border border-dashed border-outline/60 bg-surface-container-high p-3 text-sm text-muted">
                 LDAP 绑定密码仅支持后端环境变量配置，前端不展示也不下发明文。
               </div>
-              <label className="text-sm text-slate-300 md:col-span-2">
+              <label className="text-sm text-muted md:col-span-2">
                 用户组角色映射
                 <textarea
                   value={form.ldap_group_role_map}
@@ -499,7 +499,7 @@ export function SecurityPage({ client }: SecurityPageProps) {
             <button
               type="submit"
               disabled={saving}
-              className="h-11 rounded-md bg-signal-600 px-4 text-sm font-medium text-white disabled:opacity-60"
+              className="h-11 rounded-md bg-primary px-4 text-sm font-medium text-on-surface disabled:opacity-60"
             >
               {saving ? '保存中...' : '保存安全配置'}
             </button>
@@ -507,9 +507,9 @@ export function SecurityPage({ client }: SecurityPageProps) {
         </form>
       </article>
 
-      <article className="rounded-2xl border border-white/10 bg-ink-800/70 p-4">
-        <h2 className="font-heading text-xl text-white">危险操作</h2>
-        <p className="mt-1 text-sm text-slate-300">该操作必须显式确认并填写审计原因。</p>
+      <article className="rounded-2xl border border-outline/60 bg-surface-container/70 p-4">
+        <h2 className="font-heading text-xl text-on-surface">危险操作</h2>
+        <p className="mt-1 text-sm text-muted">该操作必须显式确认并填写审计原因。</p>
         <div className="mt-4">
           <ConfirmActionDialog
             title="轮换 KMS 密钥"

@@ -1,4 +1,7 @@
 import { useState } from 'react';
+import { Button } from './ui/Button';
+import { Dialog } from './ui/Dialog';
+import { Field, Textarea } from './ui/Field';
 
 type ConfirmActionDialogProps = {
   title: string;
@@ -7,6 +10,7 @@ type ConfirmActionDialogProps = {
   onConfirm: (reason: string) => Promise<void>;
 };
 
+/** 危险操作二次确认弹窗:触发按钮 + 审计原因输入(reason 必填),保留 x-rustio-confirm 流程。 */
 export function ConfirmActionDialog({
   title,
   description,
@@ -19,55 +23,49 @@ export function ConfirmActionDialog({
 
   return (
     <>
-      <button
-        className="rounded-md border border-pulse-500/70 px-3 py-2 text-sm text-pulse-500 transition hover:bg-pulse-500/20"
-        onClick={() => setOpen(true)}
-      >
+      <Button variant="danger" size="sm" onClick={() => setOpen(true)}>
         {actionLabel}
-      </button>
+      </Button>
 
-      {open ? (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4">
-          <div className="w-full max-w-md rounded-xl border border-white/10 bg-ink-800 p-6 shadow-panel">
-            <h3 className="font-heading text-xl text-white">{title}</h3>
-            <p className="mt-2 text-sm text-slate-300">{description}</p>
-            <label className="mt-4 block text-sm text-slate-300" htmlFor="reason">
-              审计原因
-            </label>
-            <textarea
-              id="reason"
-              value={reason}
-              onChange={(event) => setReason(event.target.value)}
-              className="mt-2 h-24 w-full rounded-md border border-white/10 bg-ink-900 px-3 py-2 text-sm text-slate-100"
-            />
-            <div className="mt-4 flex justify-end gap-2">
-              <button
-                className="rounded-md border border-white/15 px-3 py-2 text-sm text-slate-200"
-                onClick={() => setOpen(false)}
-                disabled={loading}
-              >
-                取消
-              </button>
-              <button
-                className="rounded-md bg-pulse-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-60"
-                disabled={!reason || loading}
-                onClick={async () => {
-                  setLoading(true);
-                  try {
-                    await onConfirm(reason);
-                    setOpen(false);
-                    setReason('');
-                  } finally {
-                    setLoading(false);
-                  }
-                }}
-              >
-                {loading ? '提交中...' : '确认执行'}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <Dialog
+        open={open}
+        onClose={() => (loading ? undefined : setOpen(false))}
+        title={title}
+        description={description}
+        footer={
+          <>
+            <Button variant="tertiary" onClick={() => setOpen(false)} disabled={loading}>
+              取消
+            </Button>
+            <Button
+              variant="danger"
+              loading={loading}
+              disabled={!reason || loading}
+              onClick={async () => {
+                setLoading(true);
+                try {
+                  await onConfirm(reason);
+                  setOpen(false);
+                  setReason('');
+                } finally {
+                  setLoading(false);
+                }
+              }}
+            >
+              {loading ? '提交中...' : '确认执行'}
+            </Button>
+          </>
+        }
+      >
+        <Field label="审计原因" htmlFor="confirm-reason">
+          <Textarea
+            id="confirm-reason"
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            placeholder="请填写本次操作的原因,用于审计追踪"
+          />
+        </Field>
+      </Dialog>
     </>
   );
 }

@@ -1,23 +1,102 @@
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/*
+  Sandalwood & Ink 设计系统 —— 语义 token 以 CSS 变量承载,rgb 三元组形式以支持 Tailwind <alpha-value>。
+  浅色为默认(:root),`.dark` 挂在 <html> 时整体翻转为暗色。组件只引用语义 token,无需 dark: 重复。
+*/
 :root {
+  color-scheme: light;
+
+  /* 面 */
+  --surface: 245 244 240;              /* #F5F4F0 米白页底 */
+  --surface-container: 239 238 234;    /* #EFEEEA 卡片 */
+  --surface-container-high: 233 232 228; /* #E9E8E4 内层/悬浮 */
+  --surface-lowest: 255 255 255;       /* #FFFFFF 输入框白底 */
+
+  /* 文字 */
+  --on-surface: 27 28 26;              /* #1B1C1A 主文 */
+  --on-surface-variant: 71 70 75;     /* #47464B 次文 */
+
+  /* 线 */
+  --outline: 200 197 203;             /* #C8C5CB */
+  --outline-variant: 219 218 214;     /* #DBDAD6 细分隔 */
+
+  /* 品牌 */
+  --primary: 63 59 70;                /* #3F3B46 松烟墨 */
+  --on-primary: 245 244 240;          /* #F5F4F0 */
+  --primary-container: 224 221 229;   /* #E0DDE5 灰紫 */
+  --on-primary-container: 47 44 53;   /* #2F2C35 */
+
+  /* 配色 */
+  --secondary: 159 149 168;           /* #9F95A8 檀木紫 */
+  --accent: 124 116 134;              /* #7C7486 */
+
+  /* 语义状态(低饱和,贴合博物馆气质) */
+  --error: 186 26 26;                 /* #BA1A1A */
+  --on-error: 255 255 255;
+  --error-container: 255 218 214;     /* #FFDAD6 */
+  --success: 79 122 90;               /* #4F7A5A 苔绿 */
+  --warning: 154 123 79;              /* #9A7B4F 赭黄 */
+  --info: 99 91 108;                  /* #635B6C 灰紫蓝 */
+
+  /* 侧边栏(浅色态为深松烟墨) */
+  --sidebar-bg: 48 49 46;             /* #30312E */
+  --sidebar-fg: 242 241 237;          /* #F2F1ED */
+  --sidebar-muted: 168 166 162;       /* #A8A6A2 */
+  --sidebar-active: 69 70 65;         /* #454641 */
+}
+
+.dark {
   color-scheme: dark;
+
+  --surface: 27 28 26;                /* #1B1C1A */
+  --surface-container: 38 39 42;      /* #26272A */
+  --surface-container-high: 48 49 46; /* #30312E */
+  --surface-lowest: 32 33 32;         /* #202120 */
+
+  --on-surface: 242 241 237;          /* #F2F1ED */
+  --on-surface-variant: 200 197 203;  /* #C8C5CB */
+
+  --outline: 71 70 75;                /* #47464B */
+  --outline-variant: 58 57 62;        /* #3A393E */
+
+  --primary: 203 196 210;            /* #CBC4D2 灰紫亮 */
+  --on-primary: 43 41 48;            /* #2B2930 */
+  --primary-container: 71 70 76;     /* #47464C */
+  --on-primary-container: 228 225 233;/* #E4E1E9 */
+
+  --secondary: 159 149 168;          /* #9F95A8 */
+  --accent: 187 180 197;             /* #BBB4C5 */
+
+  --error: 255 180 171;              /* #FFB4AB */
+  --on-error: 105 0 5;               /* #690005 */
+  --error-container: 147 0 10;       /* #93000A */
+  --success: 143 206 159;            /* #8FCE9F */
+  --warning: 214 184 138;            /* #D6B88A */
+  --info: 202 194 214;              /* #CAC2D6 */
+
+  --sidebar-bg: 22 22 20;            /* #161614 */
+  --sidebar-fg: 242 241 237;         /* #F2F1ED */
+  --sidebar-muted: 138 137 133;      /* #8A8985 */
+  --sidebar-active: 45 46 43;        /* #2D2E2B */
 }
 
 body {
-  @apply m-0 min-h-screen bg-ink-900 font-body text-slate-100 antialiased;
-  background-image:
-    radial-gradient(circle at 15% 20%, rgba(255, 122, 24, 0.2), transparent 40%),
-    radial-gradient(circle at 90% 10%, rgba(45, 212, 191, 0.2), transparent 35%),
-    linear-gradient(160deg, #0a1015 0%, #0f1821 55%, #0d141b 100%);
+  @apply m-0 min-h-screen bg-surface font-body text-on-surface antialiased;
 }
 
 * {
   box-sizing: border-box;
+}
+
+/* 极淡点阵网格背景(贴合设计稿登录页气质,纯 CSS) */
+.bg-dot-grid {
+  background-image: radial-gradient(rgb(var(--outline) / 0.5) 1px, transparent 1px);
+  background-size: 24px 24px;
 }
 
 button:focus-visible,
@@ -25,6 +104,6 @@ a:focus-visible,
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible {
-  outline: 2px solid #2dd4bf;
+  outline: 2px solid rgb(var(--primary));
   outline-offset: 2px;
 }

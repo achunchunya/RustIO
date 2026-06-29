@@ -3,6 +3,7 @@ import { toBilingualNotice, toBilingualPrompt } from '../utils/bilingual';
 import { ApiClient } from '../api/client';
 import { alertService, jobsService, systemService } from '../api/services';
 import { StatCard } from '../components/StatCard';
+import { useConfirm } from '../components/ui';
 import type {
   AsyncJobSummary,
   AlertChannel,
@@ -123,6 +124,7 @@ function toggleId(ids: string[], id: string, checked: boolean) {
 }
 
 export function AlertsPage({ client }: AlertsPageProps) {
+  const confirm = useConfirm();
   const [channels, setChannels] = useState<AlertChannel[]>([]);
   const [rules, setRules] = useState<AlertRule[]>([]);
   const [silences, setSilences] = useState<AlertSilence[]>([]);
@@ -303,13 +305,13 @@ export function AlertsPage({ client }: AlertsPageProps) {
 
   return (
     <section className="space-y-4">
-      <article className="rounded-2xl border border-white/10 bg-ink-800/70 p-4">
-        <h1 className="font-heading text-2xl text-white">告警中心</h1>
-        <p className="mt-1 text-sm text-slate-300">
+      <article className="rounded-2xl border border-outline/60 bg-surface-container/70 p-4">
+        <h1 className="font-heading text-2xl text-on-surface">告警中心</h1>
+        <p className="mt-1 text-sm text-muted">
           告警规则、通知渠道、静默窗口、升级策略与触发历史可视化管理。
         </p>
-        {error ? <p className="mt-3 text-sm text-rose-400">{toBilingualPrompt(error)}</p> : null}
-        {message ? <p className="mt-3 text-sm text-signal-500">{toBilingualNotice(message)}</p> : null}
+        {error ? <p className="mt-3 text-sm text-error">{toBilingualPrompt(error)}</p> : null}
+        {message ? <p className="mt-3 text-sm text-primary">{toBilingualNotice(message)}</p> : null}
 
         <div className="mt-4 grid gap-4 md:grid-cols-4">
           <StatCard
@@ -343,11 +345,11 @@ export function AlertsPage({ client }: AlertsPageProps) {
         </div>
       </article>
 
-      <article className="rounded-2xl border border-white/10 bg-ink-800/70 p-4">
+      <article className="rounded-2xl border border-outline/60 bg-surface-container/70 p-4">
         <div className="flex items-center justify-between gap-3">
-          <h2 className="font-heading text-xl text-white">通知渠道</h2>
+          <h2 className="font-heading text-xl text-on-surface">通知渠道</h2>
           <button
-            className="h-10 rounded-md border border-white/15 px-3 text-sm text-slate-100 hover:bg-white/5"
+            className="h-10 rounded-md border border-outline/60 px-3 text-sm text-on-surface hover:bg-on-surface/5"
             onClick={async () => {
               setError('');
               try {
@@ -362,7 +364,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
         </div>
 
         <form
-          className="mt-3 grid gap-2 rounded-lg border border-white/10 bg-black/10 p-3 md:grid-cols-5"
+          className="mt-3 grid gap-2 rounded-lg border border-outline/60 bg-surface-container-high p-3 md:grid-cols-5"
           onSubmit={async (event) => {
             event.preventDefault();
             setCreatingChannel(true);
@@ -385,12 +387,12 @@ export function AlertsPage({ client }: AlertsPageProps) {
             value={newChannel.name}
             onChange={(event) => setNewChannel((current) => ({ ...current, name: event.target.value }))}
             placeholder="渠道名称"
-            className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+            className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
           />
           <select
             value={newChannel.kind}
             onChange={(event) => setNewChannel((current) => ({ ...current, kind: event.target.value }))}
-            className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+            className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
           >
             <option value="webhook">webhook</option>
             <option value="email">email</option>
@@ -402,10 +404,10 @@ export function AlertsPage({ client }: AlertsPageProps) {
             value={newChannel.endpoint}
             onChange={(event) => setNewChannel((current) => ({ ...current, endpoint: event.target.value }))}
             placeholder="endpoint"
-            className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100 md:col-span-2"
+            className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface md:col-span-2"
           />
           <div className="flex items-center justify-between gap-2">
-            <label className="flex items-center gap-2 text-xs text-slate-300">
+            <label className="flex items-center gap-2 text-xs text-muted">
               <input
                 type="checkbox"
                 checked={newChannel.enabled}
@@ -418,7 +420,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
             <button
               type="submit"
               disabled={creatingChannel}
-              className="h-10 rounded-md bg-signal-600 px-3 text-sm text-white disabled:opacity-60"
+              className="h-10 rounded-md bg-primary px-3 text-sm text-on-surface disabled:opacity-60"
             >
               {creatingChannel ? '创建中...' : '新增渠道'}
             </button>
@@ -434,7 +436,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
               enabled: channel.enabled
             };
             return (
-              <article key={channel.id} className="rounded-lg border border-white/10 bg-black/10 p-3">
+              <article key={channel.id} className="rounded-lg border border-outline/60 bg-surface-container-high p-3">
                 <div className="grid gap-2 md:grid-cols-6">
                   <input
                     value={draft.name}
@@ -447,7 +449,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
                         }
                       }))
                     }
-                    className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+                    className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
                   />
                   <select
                     value={draft.kind}
@@ -460,7 +462,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
                         }
                       }))
                     }
-                    className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+                    className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
                   >
                     <option value="webhook">webhook</option>
                     <option value="email">email</option>
@@ -478,9 +480,9 @@ export function AlertsPage({ client }: AlertsPageProps) {
                         }
                       }))
                     }
-                    className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100 md:col-span-2"
+                    className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface md:col-span-2"
                   />
-                  <label className="flex items-center gap-2 text-xs text-slate-300">
+                  <label className="flex items-center gap-2 text-xs text-muted">
                     <input
                       type="checkbox"
                       checked={draft.enabled}
@@ -498,7 +500,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
                   </label>
                   <div className="flex items-center justify-end gap-2">
                     <button
-                      className="h-10 rounded-md border border-white/15 px-3 text-xs text-slate-100 hover:bg-white/5 disabled:opacity-60"
+                      className="h-10 rounded-md border border-outline/60 px-3 text-xs text-on-surface hover:bg-on-surface/5 disabled:opacity-60"
                       disabled={savingKey === `${channel.id}:save`}
                       onClick={async () => {
                         setSavingKey(`${channel.id}:save`);
@@ -518,7 +520,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
                       保存
                     </button>
                     <button
-                      className="h-10 rounded-md border border-signal-500/40 px-3 text-xs text-signal-500 hover:bg-signal-500/10 disabled:opacity-60"
+                      className="h-10 rounded-md border border-primary/40 px-3 text-xs text-primary hover:bg-primary/10 disabled:opacity-60"
                       disabled={savingKey === `${channel.id}:test`}
                       onClick={async () => {
                         setSavingKey(`${channel.id}:test`);
@@ -538,10 +540,10 @@ export function AlertsPage({ client }: AlertsPageProps) {
                       测试
                     </button>
                     <button
-                      className="h-10 rounded-md border border-rose-500/40 px-3 text-xs text-rose-300 hover:bg-rose-500/10 disabled:opacity-60"
+                      className="h-10 rounded-md border border-error/40 px-3 text-xs text-error hover:bg-error/10 disabled:opacity-60"
                       disabled={savingKey === `${channel.id}:delete`}
                       onClick={async () => {
-                        if (!window.confirm(`确认删除通知渠道 ${channel.name}？`)) return;
+                        if (!await confirm(`确认删除通知渠道 ${channel.name}？`)) return;
                         setSavingKey(`${channel.id}:delete`);
                         setError('');
                         setMessage('');
@@ -560,15 +562,15 @@ export function AlertsPage({ client }: AlertsPageProps) {
                     </button>
                   </div>
                 </div>
-                <p className="mt-2 text-xs text-slate-400">
-                  ID: <span className="font-mono text-slate-300">{channel.id}</span> · 状态：
+                <p className="mt-2 text-xs text-muted">
+                  ID: <span className="font-mono text-muted">{channel.id}</span> · 状态：
                   <span
                     className={`ml-1 ${
                       channel.status === 'healthy'
-                        ? 'text-signal-500'
+                        ? 'text-primary'
                         : channel.status === 'paused'
-                          ? 'text-amber-300'
-                          : 'text-rose-300'
+                          ? 'text-warning'
+                          : 'text-error'
                     }`}
                   >
                     {channelStatusText(channel.status)}
@@ -576,7 +578,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
                   · 最近检查：{new Date(channel.last_checked_at).toLocaleString()}
                 </p>
                 {channel.error ? (
-                  <p className="mt-1 text-xs text-rose-300">错误：{toBilingualPrompt(channel.error)}</p>
+                  <p className="mt-1 text-xs text-error">错误：{toBilingualPrompt(channel.error)}</p>
                 ) : null}
               </article>
             );
@@ -584,11 +586,11 @@ export function AlertsPage({ client }: AlertsPageProps) {
         </div>
       </article>
 
-      <article className="rounded-2xl border border-white/10 bg-ink-800/70 p-4">
-        <h2 className="font-heading text-xl text-white">告警规则</h2>
+      <article className="rounded-2xl border border-outline/60 bg-surface-container/70 p-4">
+        <h2 className="font-heading text-xl text-on-surface">告警规则</h2>
 
         <form
-          className="mt-3 grid gap-2 rounded-lg border border-white/10 bg-black/10 p-3 md:grid-cols-6"
+          className="mt-3 grid gap-2 rounded-lg border border-outline/60 bg-surface-container-high p-3 md:grid-cols-6"
           onSubmit={async (event) => {
             event.preventDefault();
             if (newRule.channels.length === 0) {
@@ -615,19 +617,19 @@ export function AlertsPage({ client }: AlertsPageProps) {
             value={newRule.name}
             onChange={(event) => setNewRule((current) => ({ ...current, name: event.target.value }))}
             placeholder="规则名称"
-            className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+            className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
           />
           <input
             required
             value={newRule.metric}
             onChange={(event) => setNewRule((current) => ({ ...current, metric: event.target.value }))}
             placeholder="metric"
-            className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+            className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
           />
           <select
             value={newRule.condition}
             onChange={(event) => setNewRule((current) => ({ ...current, condition: event.target.value }))}
-            className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+            className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
           >
             <option value=">">&gt;</option>
             <option value=">=">&gt;=</option>
@@ -643,7 +645,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
             onChange={(event) =>
               setNewRule((current) => ({ ...current, threshold: Number(event.target.value) }))
             }
-            className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+            className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
           />
           <input
             type="number"
@@ -652,23 +654,23 @@ export function AlertsPage({ client }: AlertsPageProps) {
             onChange={(event) =>
               setNewRule((current) => ({ ...current, window_minutes: Number(event.target.value) }))
             }
-            className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+            className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
           />
           <select
             value={newRule.severity}
             onChange={(event) => setNewRule((current) => ({ ...current, severity: event.target.value }))}
-            className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+            className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
           >
             <option value="info">info</option>
             <option value="warning">warning</option>
             <option value="critical">critical</option>
           </select>
 
-          <div className="md:col-span-4 rounded-md border border-white/10 bg-ink-900/40 p-2">
-            <p className="text-xs text-slate-400">通知渠道</p>
+          <div className="md:col-span-4 rounded-md border border-outline/60 bg-surface-lowest/40 p-2">
+            <p className="text-xs text-muted">通知渠道</p>
             <div className="mt-2 flex flex-wrap gap-3">
               {channels.map((channel) => (
-                <label key={channel.id} className="flex items-center gap-2 text-xs text-slate-300">
+                <label key={channel.id} className="flex items-center gap-2 text-xs text-muted">
                   <input
                     type="checkbox"
                     checked={newRule.channels.includes(channel.id)}
@@ -685,7 +687,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
             </div>
           </div>
 
-          <label className="flex items-center gap-2 text-xs text-slate-300">
+          <label className="flex items-center gap-2 text-xs text-muted">
             <input
               type="checkbox"
               checked={newRule.enabled}
@@ -698,7 +700,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
             <button
               type="submit"
               disabled={creatingRule}
-              className="h-10 rounded-md bg-signal-600 px-4 text-sm text-white disabled:opacity-60"
+              className="h-10 rounded-md bg-primary px-4 text-sm text-on-surface disabled:opacity-60"
             >
               {creatingRule ? '创建中...' : '新增规则'}
             </button>
@@ -720,7 +722,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
               };
 
             return (
-              <article key={rule.id} className="rounded-lg border border-white/10 bg-black/10 p-3">
+              <article key={rule.id} className="rounded-lg border border-outline/60 bg-surface-container-high p-3">
                 <div className="grid gap-2 md:grid-cols-7">
                   <input
                     value={draft.name}
@@ -733,7 +735,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
                         }
                       }))
                     }
-                    className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+                    className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
                   />
                   <input
                     value={draft.metric}
@@ -746,7 +748,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
                         }
                       }))
                     }
-                    className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+                    className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
                   />
                   <select
                     value={draft.condition}
@@ -759,7 +761,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
                         }
                       }))
                     }
-                    className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+                    className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
                   >
                     <option value=">">&gt;</option>
                     <option value=">=">&gt;=</option>
@@ -781,7 +783,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
                         }
                       }))
                     }
-                    className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+                    className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
                   />
                   <input
                     type="number"
@@ -796,7 +798,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
                         }
                       }))
                     }
-                    className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+                    className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
                   />
                   <select
                     value={draft.severity}
@@ -809,13 +811,13 @@ export function AlertsPage({ client }: AlertsPageProps) {
                         }
                       }))
                     }
-                    className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+                    className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
                   >
                     <option value="info">info</option>
                     <option value="warning">warning</option>
                     <option value="critical">critical</option>
                   </select>
-                  <label className="flex items-center gap-2 text-xs text-slate-300">
+                  <label className="flex items-center gap-2 text-xs text-muted">
                     <input
                       type="checkbox"
                       checked={draft.enabled}
@@ -833,11 +835,11 @@ export function AlertsPage({ client }: AlertsPageProps) {
                   </label>
                 </div>
 
-                <div className="mt-2 rounded-md border border-white/10 bg-ink-900/40 p-2">
-                  <p className="text-xs text-slate-400">通知渠道</p>
+                <div className="mt-2 rounded-md border border-outline/60 bg-surface-lowest/40 p-2">
+                  <p className="text-xs text-muted">通知渠道</p>
                   <div className="mt-2 flex flex-wrap gap-3">
                     {channels.map((channel) => (
-                      <label key={`${rule.id}:${channel.id}`} className="flex items-center gap-2 text-xs text-slate-300">
+                      <label key={`${rule.id}:${channel.id}`} className="flex items-center gap-2 text-xs text-muted">
                         <input
                           type="checkbox"
                           checked={draft.channels.includes(channel.id)}
@@ -858,15 +860,15 @@ export function AlertsPage({ client }: AlertsPageProps) {
                 </div>
 
                 <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-xs text-slate-400">
-                    ID: <span className="font-mono text-slate-300">{rule.id}</span> · 严重级别：
+                  <p className="text-xs text-muted">
+                    ID: <span className="font-mono text-muted">{rule.id}</span> · 严重级别：
                     <span
                       className={`ml-1 ${
                         rule.severity === 'critical'
-                          ? 'text-rose-300'
+                          ? 'text-error'
                           : rule.severity === 'warning'
-                            ? 'text-amber-300'
-                            : 'text-signal-500'
+                            ? 'text-warning'
+                            : 'text-primary'
                       }`}
                     >
                       {severityText(rule.severity)}
@@ -880,7 +882,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
                   </p>
                   <div className="flex items-center gap-2">
                     <button
-                      className="h-10 rounded-md border border-white/15 px-3 text-xs text-slate-100 hover:bg-white/5 disabled:opacity-60"
+                      className="h-10 rounded-md border border-outline/60 px-3 text-xs text-on-surface hover:bg-on-surface/5 disabled:opacity-60"
                       disabled={savingKey === `${rule.id}:save`}
                       onClick={async () => {
                         if (draft.channels.length === 0) {
@@ -904,7 +906,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
                       保存
                     </button>
                     <button
-                      className="h-10 rounded-md border border-signal-500/40 px-3 text-xs text-signal-500 hover:bg-signal-500/10 disabled:opacity-60"
+                      className="h-10 rounded-md border border-primary/40 px-3 text-xs text-primary hover:bg-primary/10 disabled:opacity-60"
                       disabled={savingKey === `${rule.id}:simulate`}
                       onClick={async () => {
                         setSavingKey(`${rule.id}:simulate`);
@@ -924,10 +926,10 @@ export function AlertsPage({ client }: AlertsPageProps) {
                       立即评估
                     </button>
                     <button
-                      className="h-10 rounded-md border border-rose-500/40 px-3 text-xs text-rose-300 hover:bg-rose-500/10 disabled:opacity-60"
+                      className="h-10 rounded-md border border-error/40 px-3 text-xs text-error hover:bg-error/10 disabled:opacity-60"
                       disabled={savingKey === `${rule.id}:delete`}
                       onClick={async () => {
-                        if (!window.confirm(`确认删除告警规则 ${rule.name}？`)) return;
+                        if (!await confirm(`确认删除告警规则 ${rule.name}？`)) return;
                         setSavingKey(`${rule.id}:delete`);
                         setError('');
                         setMessage('');
@@ -952,10 +954,10 @@ export function AlertsPage({ client }: AlertsPageProps) {
         </div>
       </article>
 
-      <article className="rounded-2xl border border-white/10 bg-ink-800/70 p-4">
-        <h2 className="font-heading text-xl text-white">静默窗口</h2>
+      <article className="rounded-2xl border border-outline/60 bg-surface-container/70 p-4">
+        <h2 className="font-heading text-xl text-on-surface">静默窗口</h2>
         <form
-          className="mt-3 grid gap-2 rounded-lg border border-white/10 bg-black/10 p-3 md:grid-cols-6"
+          className="mt-3 grid gap-2 rounded-lg border border-outline/60 bg-surface-container-high p-3 md:grid-cols-6"
           onSubmit={async (event) => {
             event.preventDefault();
             if (newSilence.rule_ids.length === 0) {
@@ -1000,16 +1002,16 @@ export function AlertsPage({ client }: AlertsPageProps) {
             value={newSilence.name}
             onChange={(event) => setNewSilence((current) => ({ ...current, name: event.target.value }))}
             placeholder="静默名称"
-            className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+            className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
           />
           <input
             required
             value={newSilence.reason}
             onChange={(event) => setNewSilence((current) => ({ ...current, reason: event.target.value }))}
             placeholder="静默原因"
-            className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+            className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
           />
-          <label className="text-xs text-slate-400">
+          <label className="text-xs text-muted">
             开始
             <input
               type="datetime-local"
@@ -1017,10 +1019,10 @@ export function AlertsPage({ client }: AlertsPageProps) {
               onChange={(event) =>
                 setNewSilence((current) => ({ ...current, starts_at: event.target.value }))
               }
-              className="mt-1 h-10 w-full rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+              className="mt-1 h-10 w-full rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
             />
           </label>
-          <label className="text-xs text-slate-400">
+          <label className="text-xs text-muted">
             结束
             <input
               type="datetime-local"
@@ -1028,10 +1030,10 @@ export function AlertsPage({ client }: AlertsPageProps) {
               onChange={(event) =>
                 setNewSilence((current) => ({ ...current, ends_at: event.target.value }))
               }
-              className="mt-1 h-10 w-full rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+              className="mt-1 h-10 w-full rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
             />
           </label>
-          <label className="flex items-center gap-2 text-xs text-slate-300 md:mt-6">
+          <label className="flex items-center gap-2 text-xs text-muted md:mt-6">
             <input
               type="checkbox"
               checked={newSilence.enabled}
@@ -1042,16 +1044,16 @@ export function AlertsPage({ client }: AlertsPageProps) {
           <button
             type="submit"
             disabled={creatingSilence}
-            className="h-10 rounded-md bg-signal-600 px-3 text-sm text-white disabled:opacity-60 md:mt-6"
+            className="h-10 rounded-md bg-primary px-3 text-sm text-on-surface disabled:opacity-60 md:mt-6"
           >
             {creatingSilence ? '创建中...' : '新增静默'}
           </button>
 
-          <div className="md:col-span-6 rounded-md border border-white/10 bg-ink-900/40 p-2">
-            <p className="text-xs text-slate-400">静默规则范围</p>
+          <div className="md:col-span-6 rounded-md border border-outline/60 bg-surface-lowest/40 p-2">
+            <p className="text-xs text-muted">静默规则范围</p>
             <div className="mt-2 flex flex-wrap gap-3">
               {rules.map((rule) => (
-                <label key={`silence:${rule.id}`} className="flex items-center gap-2 text-xs text-slate-300">
+                <label key={`silence:${rule.id}`} className="flex items-center gap-2 text-xs text-muted">
                   <input
                     type="checkbox"
                     checked={newSilence.rule_ids.includes(rule.id)}
@@ -1071,19 +1073,19 @@ export function AlertsPage({ client }: AlertsPageProps) {
 
         <div className="mt-3 space-y-2">
           {sortedSilences.length === 0 ? (
-            <p className="rounded-md border border-white/10 bg-black/10 p-3 text-xs text-slate-400">
+            <p className="rounded-md border border-outline/60 bg-surface-container-high p-3 text-xs text-muted">
               暂无静默窗口。
             </p>
           ) : (
             sortedSilences.map((silence) => (
-              <article key={silence.id} className="rounded-lg border border-white/10 bg-black/10 p-3">
+              <article key={silence.id} className="rounded-lg border border-outline/60 bg-surface-container-high p-3">
                 <div className="flex items-center justify-between gap-2">
-                  <p className="text-sm font-medium text-white">{silence.name}</p>
+                  <p className="text-sm font-medium text-on-surface">{silence.name}</p>
                   <button
-                    className="h-9 rounded-md border border-rose-500/40 px-3 text-xs text-rose-300 hover:bg-rose-500/10 disabled:opacity-60"
+                    className="h-9 rounded-md border border-error/40 px-3 text-xs text-error hover:bg-error/10 disabled:opacity-60"
                     disabled={savingKey === `${silence.id}:delete`}
                     onClick={async () => {
-                      if (!window.confirm(`确认删除静默窗口 ${silence.name}？`)) return;
+                      if (!await confirm(`确认删除静默窗口 ${silence.name}？`)) return;
                       setSavingKey(`${silence.id}:delete`);
                       setError('');
                       setMessage('');
@@ -1101,14 +1103,14 @@ export function AlertsPage({ client }: AlertsPageProps) {
                     删除
                   </button>
                 </div>
-                <p className="mt-1 text-xs text-slate-400">
+                <p className="mt-1 text-xs text-muted">
                   范围：{silence.rule_ids.map((ruleId) => ruleNames[ruleId] ?? ruleId).join(', ')}
                 </p>
-                <p className="mt-1 text-xs text-slate-400">
+                <p className="mt-1 text-xs text-muted">
                   时间：{new Date(silence.starts_at).toLocaleString()} -{' '}
                   {new Date(silence.ends_at).toLocaleString()}
                 </p>
-                <p className="mt-1 text-xs text-slate-500">
+                <p className="mt-1 text-xs text-muted">
                   创建人：{silence.created_by} · 原因：{silence.reason} · {silence.enabled ? '已启用' : '未启用'}
                 </p>
               </article>
@@ -1117,10 +1119,10 @@ export function AlertsPage({ client }: AlertsPageProps) {
         </div>
       </article>
 
-      <article className="rounded-2xl border border-white/10 bg-ink-800/70 p-4">
-        <h2 className="font-heading text-xl text-white">升级策略</h2>
+      <article className="rounded-2xl border border-outline/60 bg-surface-container/70 p-4">
+        <h2 className="font-heading text-xl text-on-surface">升级策略</h2>
         <form
-          className="mt-3 grid gap-2 rounded-lg border border-white/10 bg-black/10 p-3 md:grid-cols-6"
+          className="mt-3 grid gap-2 rounded-lg border border-outline/60 bg-surface-container-high p-3 md:grid-cols-6"
           onSubmit={async (event) => {
             event.preventDefault();
             if (newEscalation.channels.length === 0) {
@@ -1149,14 +1151,14 @@ export function AlertsPage({ client }: AlertsPageProps) {
               setNewEscalation((current) => ({ ...current, name: event.target.value }))
             }
             placeholder="策略名称"
-            className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+            className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
           />
           <select
             value={newEscalation.severity}
             onChange={(event) =>
               setNewEscalation((current) => ({ ...current, severity: event.target.value }))
             }
-            className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+            className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
           >
             <option value="info">info</option>
             <option value="warning">warning</option>
@@ -1169,9 +1171,9 @@ export function AlertsPage({ client }: AlertsPageProps) {
             onChange={(event) =>
               setNewEscalation((current) => ({ ...current, wait_minutes: Number(event.target.value) }))
             }
-            className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+            className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
           />
-          <label className="flex items-center gap-2 text-xs text-slate-300 md:mt-2">
+          <label className="flex items-center gap-2 text-xs text-muted md:mt-2">
             <input
               type="checkbox"
               checked={newEscalation.enabled}
@@ -1185,17 +1187,17 @@ export function AlertsPage({ client }: AlertsPageProps) {
             <button
               type="submit"
               disabled={creatingEscalation}
-              className="h-10 rounded-md bg-signal-600 px-3 text-sm text-white disabled:opacity-60"
+              className="h-10 rounded-md bg-primary px-3 text-sm text-on-surface disabled:opacity-60"
             >
               {creatingEscalation ? '创建中...' : '新增升级策略'}
             </button>
           </div>
 
-          <div className="md:col-span-6 rounded-md border border-white/10 bg-ink-900/40 p-2">
-            <p className="text-xs text-slate-400">升级通知渠道</p>
+          <div className="md:col-span-6 rounded-md border border-outline/60 bg-surface-lowest/40 p-2">
+            <p className="text-xs text-muted">升级通知渠道</p>
             <div className="mt-2 flex flex-wrap gap-3">
               {channels.map((channel) => (
-                <label key={`esc-new:${channel.id}`} className="flex items-center gap-2 text-xs text-slate-300">
+                <label key={`esc-new:${channel.id}`} className="flex items-center gap-2 text-xs text-muted">
                   <input
                     type="checkbox"
                     checked={newEscalation.channels.includes(channel.id)}
@@ -1224,7 +1226,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
             };
 
             return (
-              <article key={policy.id} className="rounded-lg border border-white/10 bg-black/10 p-3">
+              <article key={policy.id} className="rounded-lg border border-outline/60 bg-surface-container-high p-3">
                 <div className="grid gap-2 md:grid-cols-5">
                   <input
                     value={draft.name}
@@ -1237,7 +1239,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
                         }
                       }))
                     }
-                    className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+                    className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
                   />
                   <select
                     value={draft.severity}
@@ -1250,7 +1252,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
                         }
                       }))
                     }
-                    className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+                    className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
                   >
                     <option value="info">info</option>
                     <option value="warning">warning</option>
@@ -1269,9 +1271,9 @@ export function AlertsPage({ client }: AlertsPageProps) {
                         }
                       }))
                     }
-                    className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+                    className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
                   />
-                  <label className="flex items-center gap-2 text-xs text-slate-300">
+                  <label className="flex items-center gap-2 text-xs text-muted">
                     <input
                       type="checkbox"
                       checked={draft.enabled}
@@ -1289,7 +1291,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
                   </label>
                   <div className="flex items-center justify-end gap-2">
                     <button
-                      className="h-10 rounded-md border border-white/15 px-3 text-xs text-slate-100 hover:bg-white/5 disabled:opacity-60"
+                      className="h-10 rounded-md border border-outline/60 px-3 text-xs text-on-surface hover:bg-on-surface/5 disabled:opacity-60"
                       disabled={savingKey === `${policy.id}:save`}
                       onClick={async () => {
                         if (draft.channels.length === 0) {
@@ -1313,10 +1315,10 @@ export function AlertsPage({ client }: AlertsPageProps) {
                       保存
                     </button>
                     <button
-                      className="h-10 rounded-md border border-rose-500/40 px-3 text-xs text-rose-300 hover:bg-rose-500/10 disabled:opacity-60"
+                      className="h-10 rounded-md border border-error/40 px-3 text-xs text-error hover:bg-error/10 disabled:opacity-60"
                       disabled={savingKey === `${policy.id}:delete`}
                       onClick={async () => {
-                        if (!window.confirm(`确认删除升级策略 ${policy.name}？`)) return;
+                        if (!await confirm(`确认删除升级策略 ${policy.name}？`)) return;
                         setSavingKey(`${policy.id}:delete`);
                         setError('');
                         setMessage('');
@@ -1336,13 +1338,13 @@ export function AlertsPage({ client }: AlertsPageProps) {
                   </div>
                 </div>
 
-                <div className="mt-2 rounded-md border border-white/10 bg-ink-900/40 p-2">
-                  <p className="text-xs text-slate-400">升级通知渠道</p>
+                <div className="mt-2 rounded-md border border-outline/60 bg-surface-lowest/40 p-2">
+                  <p className="text-xs text-muted">升级通知渠道</p>
                   <div className="mt-2 flex flex-wrap gap-3">
                     {channels.map((channel) => (
                       <label
                         key={`esc:${policy.id}:${channel.id}`}
-                        className="flex items-center gap-2 text-xs text-slate-300"
+                        className="flex items-center gap-2 text-xs text-muted"
                       >
                         <input
                           type="checkbox"
@@ -1363,8 +1365,8 @@ export function AlertsPage({ client }: AlertsPageProps) {
                   </div>
                 </div>
 
-                <p className="mt-2 text-xs text-slate-400">
-                  ID: <span className="font-mono text-slate-300">{policy.id}</span> · 严重级别：
+                <p className="mt-2 text-xs text-muted">
+                  ID: <span className="font-mono text-muted">{policy.id}</span> · 严重级别：
                   {severityText(policy.severity)} · 升级等待：{policy.wait_minutes} 分钟
                 </p>
               </article>
@@ -1373,11 +1375,11 @@ export function AlertsPage({ client }: AlertsPageProps) {
         </div>
       </article>
 
-      <article className="rounded-2xl border border-white/10 bg-ink-800/70 p-4">
+      <article className="rounded-2xl border border-outline/60 bg-surface-container/70 p-4">
         <div className="flex items-center justify-between gap-3">
-          <h2 className="font-heading text-xl text-white">触发历史</h2>
+          <h2 className="font-heading text-xl text-on-surface">触发历史</h2>
           <button
-            className="h-10 rounded-md border border-white/15 px-3 text-sm text-slate-100 hover:bg-white/5"
+            className="h-10 rounded-md border border-outline/60 px-3 text-sm text-on-surface hover:bg-on-surface/5"
             onClick={async () => {
               setError('');
               try {
@@ -1391,13 +1393,13 @@ export function AlertsPage({ client }: AlertsPageProps) {
           </button>
         </div>
 
-        <div className="mt-3 grid gap-2 rounded-lg border border-white/10 bg-black/10 p-3 md:grid-cols-5">
+        <div className="mt-3 grid gap-2 rounded-lg border border-outline/60 bg-surface-container-high p-3 md:grid-cols-5">
           <select
             value={historyFilters.severity}
             onChange={(event) =>
               setHistoryFilters((current) => ({ ...current, severity: event.target.value }))
             }
-            className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+            className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
           >
             <option value="">全部严重级别</option>
             <option value="info">info</option>
@@ -1407,7 +1409,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
           <select
             value={historyFilters.status}
             onChange={(event) => setHistoryFilters((current) => ({ ...current, status: event.target.value }))}
-            className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+            className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
           >
             <option value="">全部状态</option>
             <option value="firing">firing</option>
@@ -1420,12 +1422,12 @@ export function AlertsPage({ client }: AlertsPageProps) {
             value={historyFilters.source}
             onChange={(event) => setHistoryFilters((current) => ({ ...current, source: event.target.value }))}
             placeholder="来源"
-            className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+            className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
           />
           <select
             value={historyFilters.rule_id}
             onChange={(event) => setHistoryFilters((current) => ({ ...current, rule_id: event.target.value }))}
-            className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+            className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
           >
             <option value="">全部规则</option>
             {rules.map((rule) => (
@@ -1439,7 +1441,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
             onChange={(event) =>
               setHistoryFilters((current) => ({ ...current, limit: Number(event.target.value) }))
             }
-            className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+            className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
           >
             <option value={50}>50</option>
             <option value={100}>100</option>
@@ -1449,7 +1451,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
 
           <div className="md:col-span-5 flex gap-2">
             <button
-              className="h-10 rounded-md bg-signal-600 px-4 text-sm text-white"
+              className="h-10 rounded-md bg-primary px-4 text-sm text-on-surface"
               onClick={async () => {
                 setError('');
                 try {
@@ -1462,7 +1464,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
               应用筛选
             </button>
             <button
-              className="h-10 rounded-md border border-white/15 px-4 text-sm text-slate-100 hover:bg-white/5"
+              className="h-10 rounded-md border border-outline/60 px-4 text-sm text-on-surface hover:bg-on-surface/5"
               onClick={async () => {
                 const reset: HistoryFilters = {
                   severity: '',
@@ -1487,30 +1489,30 @@ export function AlertsPage({ client }: AlertsPageProps) {
 
         <ul className="mt-3 max-h-[28rem] space-y-2 overflow-auto pr-1">
           {history.map((entry) => (
-            <li key={entry.id} className="rounded-lg border border-white/10 bg-black/10 p-3">
+            <li key={entry.id} className="rounded-lg border border-outline/60 bg-surface-container-high p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-sm font-medium text-white">{entry.rule_name ?? '系统事件'}</p>
+                <p className="text-sm font-medium text-on-surface">{entry.rule_name ?? '系统事件'}</p>
                 <div className="flex items-center gap-2 text-xs">
                   <span
                     className={`rounded-full px-2 py-1 ${
                       entry.severity === 'critical'
-                        ? 'bg-rose-500/20 text-rose-300'
+                        ? 'bg-error/20 text-error'
                         : entry.severity === 'warning'
-                          ? 'bg-amber-500/20 text-amber-300'
-                          : 'bg-signal-500/20 text-signal-500'
+                          ? 'bg-warning/20 text-warning'
+                          : 'bg-primary/20 text-primary'
                     }`}
                   >
                     {severityText(entry.severity)}
                   </span>
-                  <span className="text-slate-400">{historyStatusText(entry.status)}</span>
+                  <span className="text-muted">{historyStatusText(entry.status)}</span>
                 </div>
               </div>
-              <p className="mt-1 text-sm text-slate-200">{entry.message}</p>
-              <p className="mt-1 text-xs text-slate-400">
+              <p className="mt-1 text-sm text-on-surface">{entry.message}</p>
+              <p className="mt-1 text-xs text-muted">
                 来源：{entry.source} · 时间：{new Date(entry.triggered_at).toLocaleString()}
                 {entry.rule_id ? ` · RuleID: ${entry.rule_id}` : ''}
               </p>
-              <p className="mt-1 text-xs text-slate-500">
+              <p className="mt-1 text-xs text-muted">
                 认领：{entry.assignee ?? '未认领'}
                 {entry.claimed_at ? `（${new Date(entry.claimed_at).toLocaleString()}）` : ''}
                 {' · '}
@@ -1522,7 +1524,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
               </p>
               <div className="mt-2 flex flex-wrap gap-2">
                 <button
-                  className="h-9 rounded-md border border-white/15 px-3 text-xs text-slate-100 hover:bg-white/5 disabled:opacity-60"
+                  className="h-9 rounded-md border border-outline/60 px-3 text-xs text-on-surface hover:bg-on-surface/5 disabled:opacity-60"
                   disabled={savingKey === `${entry.id}:claim`}
                   onClick={async () => {
                     setSavingKey(`${entry.id}:claim`);
@@ -1542,7 +1544,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
                   认领
                 </button>
                 <button
-                  className="h-9 rounded-md border border-signal-500/40 px-3 text-xs text-signal-500 hover:bg-signal-500/10 disabled:opacity-60"
+                  className="h-9 rounded-md border border-primary/40 px-3 text-xs text-primary hover:bg-primary/10 disabled:opacity-60"
                   disabled={savingKey === `${entry.id}:ack` || entry.status === 'resolved'}
                   onClick={async () => {
                     setSavingKey(`${entry.id}:ack`);
@@ -1562,7 +1564,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
                   确认
                 </button>
                 <button
-                  className="h-9 rounded-md border border-amber-500/40 px-3 text-xs text-amber-300 hover:bg-amber-500/10 disabled:opacity-60"
+                  className="h-9 rounded-md border border-warning/40 px-3 text-xs text-warning hover:bg-warning/10 disabled:opacity-60"
                   disabled={savingKey === `${entry.id}:resolve` || entry.status === 'resolved'}
                   onClick={async () => {
                     setSavingKey(`${entry.id}:resolve`);
@@ -1585,7 +1587,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
             </li>
           ))}
           {history.length === 0 ? (
-            <li className="rounded-lg border border-white/10 bg-black/10 p-3 text-xs text-slate-400">
+            <li className="rounded-lg border border-outline/60 bg-surface-container-high p-3 text-xs text-muted">
               当前筛选条件下没有触发历史。
             </li>
           ) : null}

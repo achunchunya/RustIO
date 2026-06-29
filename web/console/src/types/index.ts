@@ -77,6 +77,8 @@ export type SystemStorageMetricsSummary = {
 export type SystemStorageGovernanceMetricsSummary = {
   last_scan_at?: string | null;
   last_heal_at?: string | null;
+  last_rebalance_at?: string | null;
+  last_decommission_at?: string | null;
   pending_objects: number;
   running_objects: number;
   failed_objects: number;
@@ -87,6 +89,12 @@ export type SystemStorageGovernanceMetricsSummary = {
   scan_failures_total: number;
   heal_objects_total: number;
   heal_failures_total: number;
+  rebalance_objects_total: number;
+  rebalance_failures_total: number;
+  decommission_objects_total: number;
+  decommission_failures_total: number;
+  draining_disks: number;
+  decommissioned_disks: number;
   object_lock_buckets: number;
   retention_buckets: number;
   legal_hold_buckets: number;
@@ -94,11 +102,31 @@ export type SystemStorageGovernanceMetricsSummary = {
   legal_hold_objects: number;
 };
 
+/** 每桶用量统计(对象数 + 总大小) */
+export type BucketUsageStats = {
+  name: string;
+  object_count: number;
+  total_size: number;
+};
+
+/** 集群能力 / 优势标识 */
+export type SystemCapabilities = {
+  version: string;
+  ec_data_shards: number;
+  ec_parity_shards: number;
+  simd_accel: boolean;
+  io_uring: boolean;
+  list_index_mode: string;
+  minio_compat: boolean;
+  s3_features: string[];
+};
+
 export type SystemStorageDiskMetricsSummary = {
   disk_id: string;
   path: string;
   online: boolean;
   status: string;
+  placement_state?: string;
   manifests_total: number;
   shard_files: number;
   shard_bytes: number;
@@ -189,10 +217,13 @@ export type SystemAuditMetricsSummary = {
 
 export type SystemKmsMetricsSummary = {
   endpoint_configured: boolean;
+  provider: string;
+  auth_mode: string;
   healthy: boolean;
   last_error?: string | null;
   last_checked_at?: string | null;
   last_success_at?: string | null;
+  last_recovered_at?: string | null;
   rotation_status: string;
   rotation_last_started_at?: string | null;
   rotation_last_completed_at?: string | null;
@@ -203,6 +234,7 @@ export type SystemKmsMetricsSummary = {
   rotation_skipped: number;
   rotation_failed: number;
   retry_recommended: boolean;
+  rotation_failed_objects_preview: KmsRotationFailedObject[];
 };
 
 export type SystemSecurityMetricsSummary = {
@@ -279,6 +311,10 @@ export type TenantSpec = {
   id: string;
   display_name: string;
   owner_group: string;
+  project_id?: string | null;
+  project_name?: string | null;
+  domain_id?: string | null;
+  domain_name?: string | null;
   enabled: boolean;
   status: string;
   hard_limit_bytes: number;
@@ -352,6 +388,11 @@ export type DiagnosticReport = {
   created_at: string;
   generated_by: string;
   summary: string;
+  kind?: string;
+  format?: string;
+  redacted?: boolean;
+  sections?: string[];
+  download_name?: string | null;
 };
 
 export type ClusterConfigSnapshot = {
@@ -374,7 +415,27 @@ export type BucketSpec = {
   name: string;
   tenant_id: string;
   versioning: boolean;
+  versioning_configured?: boolean;
   object_lock: boolean;
+  ilm_policy?: string;
+  replication_policy?: string;
+};
+
+/** 创建桶请求体(后端 CreateBucketSpecRequest:tenant_id 或 project_id 二选一) */
+export type CreateBucketPayload = {
+  name: string;
+  tenant_id?: string;
+  project_id?: string;
+  versioning: boolean;
+  object_lock: boolean;
+  ilm_policy?: string;
+  replication_policy?: string;
+};
+
+/** 桶治理部分更新(后端 BucketGovernanceUpdate,全可选) */
+export type BucketGovernanceUpdate = {
+  versioning?: boolean;
+  object_lock?: boolean;
   ilm_policy?: string;
   replication_policy?: string;
 };
@@ -452,6 +513,7 @@ export type BucketObjectEntry = {
   size: number;
   etag: string;
   last_modified: string;
+  storage_class: string;
   version_id?: string;
   retention_until?: string;
   legal_hold?: boolean;
@@ -463,6 +525,7 @@ export type BucketObjectVersionEntry = {
   size: number;
   etag: string;
   last_modified: string;
+  storage_class: string;
   delete_marker: boolean;
   legal_hold: boolean;
   retention_until?: string;
@@ -476,6 +539,8 @@ export type ReplicationStatus = {
   rule_name?: string | null;
   endpoint?: string | null;
   prefix?: string | null;
+  suffix?: string | null;
+  tags?: BucketTag[];
   priority: number;
   replicate_existing: boolean;
   sync_deletes: boolean;
@@ -492,6 +557,13 @@ export type SiteReplicationStatus = {
   lag_seconds: number;
   managed_buckets: number;
   last_sync_at: string;
+  bootstrap_state: string;
+  joined_at?: string | null;
+  last_resync_at?: string | null;
+  last_reconcile_at?: string | null;
+  pending_resync_items: number;
+  drifted_buckets: number;
+  topology_version: number;
   last_error?: string | null;
 };
 
@@ -552,7 +624,8 @@ export type SecurityConfig = {
   kms_rotation_rotated: number;
   kms_rotation_skipped: number;
   kms_rotation_failed: number;
-  kms_rotation_failed_objects: string[];
+  kms_rotation_failed_objects: KmsRotationFailedObject[];
+  kms_last_recovered_at?: string | null;
   sse_mode: string;
 };
 
@@ -562,11 +635,22 @@ export type KmsRotationResult = {
   rotated: number;
   skipped: number;
   failed: number;
-  failed_objects: string[];
+  failed_objects: KmsRotationFailedObject[];
   failure_reason?: string | null;
   retry_recommended: boolean;
   started_at: string;
   completed_at: string;
+};
+
+export type KmsRotationFailedObject = {
+  bucket: string;
+  object_key: string;
+  version_id?: string | null;
+  is_current: boolean;
+  kms_key_id?: string | null;
+  retry_id: string;
+  stage: string;
+  message: string;
 };
 
 export type AlertRule = {
@@ -587,6 +671,9 @@ export type AlertChannel = {
   name: string;
   kind: string;
   endpoint: string;
+  headers: Record<string, string>;
+  payload_template?: string | null;
+  header_template: Record<string, string>;
   enabled: boolean;
   status: string;
   last_checked_at: string;
@@ -739,4 +826,486 @@ export type RuntimeEvent = {
   source: string;
   timestamp: string;
   payload: Record<string, unknown>;
+};
+
+// ============================================================
+// 集群拓扑 / 分组 / 成员变更
+// ============================================================
+
+export type ClusterDiskInfo = {
+  global_id: string;
+  local_index: number;
+  local_path: string;
+};
+
+export type ClusterPeerInfo = {
+  node_id: number;
+  node_name: string;
+  api_addr: string;
+  zone: string;
+  disks: ClusterDiskInfo[];
+  draining: boolean;
+  group_id: string;
+};
+
+export type ClusterGroup = {
+  group_id: string;
+  node_count: number;
+  node_ids: number[];
+};
+
+export type AddClusterMemberRequest = {
+  node_id: number;
+  node_name?: string;
+  api_addr: string;
+  zone?: string;
+  disks?: ClusterDiskInfo[];
+  group_id?: string;
+  reason: string;
+};
+
+export type RemoveClusterMemberRequest = {
+  node_id: number;
+  reason?: string;
+  force?: boolean;
+};
+
+export type DecommissionRequest = {
+  node_id: number;
+  reason?: string;
+};
+
+// ============================================================
+// 集群备份 / 恢复(导出为裸文件流)
+// ============================================================
+
+export type ClusterBackupRestoreResult = {
+  format_version: string;
+  restored_at: string;
+  cluster_id: string;
+  peer_id: string;
+  commit_index: number;
+  reason: string;
+};
+
+// ============================================================
+// 系统信息 / 架构拓扑 / 对齐报告
+// ============================================================
+
+export type SystemInfo = {
+  name: string;
+  version: string;
+  status: string;
+  architecture_version: string;
+  plane_count: number;
+};
+
+export type PlaneComponent = {
+  id: string;
+  responsibility: string;
+  owner: string;
+};
+
+export type PlaneTopology = {
+  id: string;
+  name: string;
+  responsibilities: string[];
+  components: PlaneComponent[];
+};
+
+export type ArchitectureTopology = {
+  version: string;
+  aligned_at: string;
+  planes: PlaneTopology[];
+};
+
+export type PlaneAlignmentStatus = {
+  plane_id: string;
+  plane_name: string;
+  status: string;
+  component_total: number;
+  component_ready: number;
+  checks: string[];
+};
+
+export type ArchitectureAlignmentReport = {
+  version: string;
+  generated_at: string;
+  overall_status: string;
+  missing_planes: string[];
+  planes: PlaneAlignmentStatus[];
+};
+
+// ============================================================
+// 元数据 Raft 管理
+// ============================================================
+
+export type MetadataRaftStatus = {
+  cluster_id: string;
+  leader_id: string;
+  term: number;
+  commit_index: number;
+  quorum: number;
+  online_peers: number;
+  last_error?: string | null;
+  last_commit_at?: string | null;
+  membership_phase: string;
+  joint_old_members: string[];
+  joint_new_members: string[];
+  joint_elapsed_seconds?: number | null;
+  joint_timeout_seconds: number;
+  peers: string[];
+};
+
+export type MetadataRaftAddPeerRequest = {
+  id: string;
+  endpoint?: string;
+  online?: boolean;
+  auto_finalize?: boolean;
+  reason: string;
+};
+
+export type MetadataRaftRemovePeerRequest = {
+  reason: string;
+  auto_finalize?: boolean;
+};
+
+// ============================================================
+// 存储治理 / 分层 / 库存 / 归档
+// ============================================================
+
+export type RemoteTierConfig = {
+  name: string;
+  endpoint: string;
+  backend: string;
+  prefix?: string | null;
+  storage_class: string;
+  enabled: boolean;
+  credential_key?: string | null;
+  credential_secret?: string | null;
+  credential_token?: string | null;
+  extra_headers: Record<string, string>;
+  secret_version: number;
+  health_status: string;
+  last_checked_at?: string | null;
+  last_success_at?: string | null;
+  last_error?: string | null;
+};
+
+export type RotateRemoteTierSecretRequest = {
+  credential_key?: string | null;
+  credential_secret?: string | null;
+  credential_token?: string | null;
+  extra_headers?: Record<string, string>;
+  secret_version?: number;
+};
+
+export type StorageInventoryQuery = {
+  bucket?: string;
+  prefix?: string;
+  current_only?: boolean;
+  noncurrent_only?: boolean;
+  remote_only?: boolean;
+  tier?: string;
+  restore_state?: 'none' | 'restoring' | 'restored' | 'expired';
+  restored_only?: boolean;
+  restore_expiring_within_minutes?: number;
+  limit?: number;
+};
+
+export type StorageInventoryEntry = {
+  bucket: string;
+  object_key: string;
+  version_id: string;
+  is_current: boolean;
+  size: number;
+  storage_class: string;
+  remote_tier?: string | null;
+  remote_storage_class?: string | null;
+  created_at: string;
+  archive_state: string;
+  restored: boolean;
+  restore_ongoing: boolean;
+  restore_requested_at?: string | null;
+  restore_expiry?: string | null;
+  restore_remaining_seconds?: number | null;
+  restore_expiring_soon: boolean;
+  tiering_age_seconds?: number | null;
+};
+
+export type StorageArchiveTierSummary = {
+  tier: string;
+  objects: number;
+  bytes: number;
+  current_versions: number;
+  noncurrent_versions: number;
+  restoring_objects: number;
+  restored_objects: number;
+  expiring_soon_objects: number;
+};
+
+export type StorageArchiveSummary = {
+  total_objects: number;
+  remote_objects: number;
+  remote_bytes: number;
+  current_versions: number;
+  noncurrent_versions: number;
+  cold_objects: number;
+  restoring_objects: number;
+  restored_objects: number;
+  expired_restore_objects: number;
+  expiring_soon_objects: number;
+  tiers: StorageArchiveTierSummary[];
+};
+
+export type StorageArchiveReport = {
+  generated_at: string;
+  filters: Record<string, unknown>;
+  summary: StorageArchiveSummary;
+  items: StorageInventoryEntry[];
+};
+
+export type StorageArchivePrewarmRequest = {
+  reason: string;
+  bucket?: string;
+  prefix?: string;
+  current_only?: boolean;
+  noncurrent_only?: boolean;
+  tier?: string;
+  limit?: number;
+  restore_days?: number;
+};
+
+export type StorageArchivePrewarmFailure = {
+  bucket: string;
+  object_key: string;
+  version_id: string;
+  is_current: boolean;
+  message: string;
+};
+
+export type StorageArchivePrewarmResult = {
+  requested_at: string;
+  restore_days: number;
+  matched: number;
+  restored: number;
+  skipped: number;
+  failed: number;
+  failures_preview: StorageArchivePrewarmFailure[];
+};
+
+export type PeerHealthStatus = {
+  node_id: number;
+  online: boolean;
+  last_check_at: string;
+  last_ok_at?: string | null;
+  consecutive_failures: number;
+};
+
+export type StorageGovernanceStatusResponse = {
+  summary: SystemStorageGovernanceMetricsSummary;
+  scan_running: boolean;
+  worker_concurrency: number;
+  draining_disks: string[];
+  decommissioned_disks: string[];
+  disks: SystemStorageDiskMetricsSummary[];
+  peer_health: PeerHealthStatus[];
+};
+
+export type StorageMaintenanceRequest = {
+  disk_ids?: string[];
+  reason: string;
+};
+
+export type ClusterRebalanceRequest = {
+  reason: string;
+};
+
+// ============================================================
+// 批处理任务 / 复制积压
+// ============================================================
+
+export type BatchRunScope = {
+  source_bucket?: string | null;
+  target_site?: string | null;
+  rule_id?: string | null;
+  object_prefix?: string | null;
+  object_key?: string | null;
+  version_id?: string | null;
+  kms_key_id?: string | null;
+  statuses: string[];
+  retry_only_failed: boolean;
+  current_only: boolean;
+  noncurrent_only: boolean;
+  limit?: number | null;
+};
+
+export type BatchRunRequest = {
+  kind: string;
+  source_bucket?: string;
+  target_site?: string;
+  rule_id?: string;
+  object_prefix?: string;
+  object_key?: string;
+  version_id?: string;
+  kms_key_id?: string;
+  statuses?: string[];
+  retry_only_failed?: boolean;
+  current_only?: boolean;
+  noncurrent_only?: boolean;
+  limit?: number;
+};
+
+export type BatchRunStatus = {
+  id: string;
+  kind: string;
+  status: string;
+  scope: BatchRunScope;
+  matched: number;
+  enqueued: number;
+  skipped: number;
+  failed: number;
+  last_error?: string | null;
+  failed_objects_preview: KmsRotationFailedObject[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type ReplicationBacklogPage = {
+  items: ReplicationBacklogItem[];
+  next_cursor?: string | null;
+  has_more: boolean;
+  total: number;
+};
+
+export type ReplicationBacklogSiteMetrics = {
+  site_id: string;
+  total: number;
+  pending: number;
+  in_progress: number;
+  failed: number;
+  dead_letter: number;
+  done: number;
+  retryable: number;
+  non_terminal: number;
+  stale_pending: number;
+  max_pending_age_seconds: number;
+  sla_status: string;
+  sla_thresholds: { failed: number; dead_letter: number; pending_age_seconds: number };
+  sla_breach_reasons: string[];
+  firing_alerts: number;
+  alert_history_count: number;
+  last_alert_triggered_at?: string | null;
+  last_alert_resolved_at?: string | null;
+};
+
+export type ReplicationBacklogMetrics = {
+  total: number;
+  pending: number;
+  in_progress: number;
+  failed: number;
+  dead_letter: number;
+  done: number;
+  retryable: number;
+  non_terminal: number;
+  sites: ReplicationBacklogSiteMetrics[];
+};
+
+export type ReplicationBacklogBatchResult = {
+  matched: number;
+  updated: number;
+  removed: number;
+  skipped: number;
+  remaining: number;
+};
+
+export type ReplicationBacklogQuery = {
+  status?: string;
+  source_bucket?: string;
+  target_site?: string;
+  object_prefix?: string;
+  limit?: number;
+  include_terminal?: boolean;
+  cursor?: string;
+};
+
+// ============================================================
+// 站点容灾:漂移检测 / 收敛预检
+// ============================================================
+
+export type SiteReplicationTopologyDrift = {
+  current_endpoint: string;
+  expected_endpoints: string[];
+  endpoint_alignment: string;
+  managed_buckets_expected: number;
+  managed_buckets_present: number;
+  managed_buckets_missing: number;
+  unexpected_bucket_roots: string[];
+};
+
+export type SiteReplicationBucketDriftEntry = {
+  bucket: string;
+  state: string;
+  reason: string;
+  path: string;
+  rule_ids: string[];
+  pending_backlog: number;
+  failed_backlog: number;
+};
+
+export type SiteReplicationRuleDriftEntry = {
+  rule_id: string;
+  rule_name?: string | null;
+  source_bucket: string;
+  endpoint?: string | null;
+  status: string;
+  priority: number;
+  lag_seconds: number;
+  replicate_existing: boolean;
+  sync_deletes: boolean;
+  drift_reasons: string[];
+};
+
+export type SiteReplicationGuardrails = {
+  safe_to_reconcile: boolean;
+  confirmation_required: boolean;
+  blocking_reasons: string[];
+  blocking_reason_messages: string[];
+  preview_actions: string[];
+  expected_missing_bucket_roots_after_reconcile: number;
+};
+
+export type SiteReplicationDriftReport = {
+  site_id: string;
+  generated_at: string;
+  mode: string;
+  site: SiteReplicationStatus;
+  topology: SiteReplicationTopologyDrift;
+  buckets: SiteReplicationBucketDriftEntry[];
+  rules: SiteReplicationRuleDriftEntry[];
+  guardrails: SiteReplicationGuardrails;
+  suggested_actions: string[];
+};
+
+export type SiteReplicationBootstrapRequest = {
+  site_id: string;
+  endpoint: string;
+  reason: string;
+  preferred_primary?: boolean;
+};
+
+export type SiteReplicationJoinRequest = {
+  reason: string;
+  endpoint?: string | null;
+};
+
+// ============================================================
+// 身份域(派生视图)
+// ============================================================
+
+export type IdentityDomainView = {
+  id: string;
+  name: string;
+  projects_total: number;
+  enabled_projects: number;
 };

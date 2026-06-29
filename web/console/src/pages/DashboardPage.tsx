@@ -3,7 +3,9 @@ import { toBilingualPrompt } from '../utils/bilingual';
 import { ApiClient } from '../api/client';
 import { clusterService, systemService } from '../api/services';
 import { useEventStream } from '../hooks/useEventStream';
+import { useMetricsHistory } from '../hooks/useMetricsHistory';
 import { StatCard } from '../components/StatCard';
+import { PageHeader, Card, Panel, SectionTitle, Badge, ProgressBar, Gauge, Donut, Sparkline } from '../components/ui';
 import type { ClusterHealth, ClusterNode, ClusterQuota, SystemMetricsSummary } from '../types';
 
 type DashboardPageProps = {
@@ -34,6 +36,7 @@ export function DashboardPage({ client, token }: DashboardPageProps) {
   const [quotas, setQuotas] = useState<ClusterQuota[]>([]);
   const [error, setError] = useState('');
   const events = useEventStream(token);
+  const { history } = useMetricsHistory(client);
 
   useEffect(() => {
     Promise.all([
@@ -55,6 +58,8 @@ export function DashboardPage({ client, token }: DashboardPageProps) {
 
   return (
     <section className="space-y-6">
+      <PageHeader title="集群总览" subtitle="集群健康、控制面风险与实时事件" />
+
       <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-6">
         <StatCard
           label="集群状态"
@@ -114,121 +119,200 @@ export function DashboardPage({ client, token }: DashboardPageProps) {
         />
       </div>
 
-      {error ? <p className="rounded-md bg-rose-500/15 p-3 text-sm text-rose-300">{toBilingualPrompt(error)}</p> : null}
+      {error ? (
+        <p className="rounded-md border border-error/30 bg-error/10 p-3 text-sm text-error">
+          {toBilingualPrompt(error)}
+        </p>
+      ) : null}
 
       {summary ? (
-        <article className="rounded-2xl border border-white/10 bg-ink-800/70 p-4">
-          <h2 className="font-heading text-xl text-white">控制面风险摘要</h2>
-          <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <div className="rounded-lg border border-white/5 bg-black/10 p-3 text-sm text-slate-300">
-              <p className="text-xs uppercase tracking-[0.2em] text-slate-500">告警链路</p>
-              <p className="mt-2 text-white">活跃告警 {summary.alerts.firing_alerts}</p>
-              <p className="mt-1">投递失败 {summary.alerts.delivery_failed} / 执行中 {summary.alerts.delivery_in_progress}</p>
+        <Card>
+          <SectionTitle>集群能力概览</SectionTitle>
+          <div className="mt-4 grid items-center gap-6 md:grid-cols-2 xl:grid-cols-4">
+            <div className="flex flex-col items-center">
+              <Gauge
+                ratio={summary.storage.utilization_ratio}
+                tone={
+                  summary.storage.utilization_ratio >= 0.9
+                    ? 'error'
+                    : summary.storage.utilization_ratio >= 0.75
+                      ? 'warning'
+                      : 'success'
+                }
+                label={`${(summary.storage.utilization_ratio * 100).toFixed(0)}%`}
+                sublabel="容量利用率"
+              />
+              <p className="mt-1 text-xs text-muted">
+                {formatBytes(summary.storage.capacity_used_bytes)} / {formatBytes(summary.storage.capacity_total_bytes)}
+              </p>
             </div>
-            <div className="rounded-lg border border-white/5 bg-black/10 p-3 text-sm text-slate-300">
-              <p className="text-xs uppercase tracking-[0.2em] text-slate-500">KMS</p>
-              <p className="mt-2 text-white">{summary.kms.healthy ? '健康' : '异常'} / {summary.kms.rotation_status}</p>
-              <p className="mt-1">最近失败 {summary.kms.rotation_failed} 个</p>
+
+            <div className="flex flex-col items-center">
+              <Donut
+                ratio={
+                  summary.storage.ec_data_shards + summary.storage.ec_parity_shards > 0
+                    ? summary.storage.ec_parity_shards /
+                      (summary.storage.ec_data_shards + summary.storage.ec_parity_shards)
+                    : 0
+                }
+                tone="info"
+                label={`${summary.storage.ec_data_shards}+${summary.storage.ec_parity_shards}`}
+                sublabel="EC data+parity"
+              />
+              <p className="mt-1 text-xs text-muted">可容忍 {summary.storage.ec_parity_shards} 盘/节点故障</p>
             </div>
-            <div className="rounded-lg border border-white/5 bg-black/10 p-3 text-sm text-slate-300">
-              <p className="text-xs uppercase tracking-[0.2em] text-slate-500">IAM / 会话</p>
-              <p className="mt-2 text-white">用户 {summary.iam.users_enabled}/{summary.iam.users_total}</p>
-              <p className="mt-1">活跃会话 {summary.sessions.admin_sessions_active + summary.sessions.sts_sessions_active}</p>
+
+            <div className="flex flex-col items-center">
+              <Gauge
+                ratio={summary.raft.quorum > 0 ? Math.min(1, summary.raft.online_peers / summary.raft.quorum) : 0}
+                tone={summary.raft.online_peers >= summary.raft.quorum ? 'success' : 'error'}
+                label={`${summary.raft.online_peers}/${summary.raft.quorum}`}
+                sublabel="Raft 法定票"
+              />
+              <p className="mt-1 text-xs text-muted">Leader {summary.raft.leader_id || '—'}</p>
             </div>
-            <div className="rounded-lg border border-white/5 bg-black/10 p-3 text-sm text-slate-300">
-              <p className="text-xs uppercase tracking-[0.2em] text-slate-500">复制 / 审计</p>
-              <p className="mt-2 text-white">失败 backlog {summary.replication.backlog_failed}</p>
-              <p className="mt-1">审计失败 {summary.audit.failed_outcomes_total}</p>
+
+            <div className="space-y-3">
+              <Panel>
+                <p className="text-xs uppercase tracking-wide text-muted">容量趋势(实时)</p>
+                <Sparkline
+                  className="mt-2"
+                  values={history.length > 1 ? history.map((h) => h.capacityRatio) : [0, 0]}
+                  tone="primary"
+                />
+              </Panel>
+              <div className="grid grid-cols-2 gap-2">
+                <Panel>
+                  <p className="text-xs text-muted">再平衡对象</p>
+                  <p className="mt-1 font-heading text-lg font-semibold text-on-surface">
+                    {summary.storage.governance.rebalance_objects_total}
+                  </p>
+                </Panel>
+                <Panel>
+                  <p className="text-xs text-muted">分片健康</p>
+                  <p className="mt-1 font-heading text-lg font-semibold text-success">
+                    {summary.storage.shard_healthy_total}
+                  </p>
+                </Panel>
+              </div>
             </div>
           </div>
-        </article>
+        </Card>
+      ) : null}
+
+      {summary ? (
+        <Card>
+          <SectionTitle>控制面风险摘要</SectionTitle>
+          <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <Panel className="text-sm text-muted">
+              <p className="text-xs uppercase tracking-[0.2em] text-muted">告警链路</p>
+              <p className="mt-2 text-on-surface">活跃告警 {summary.alerts.firing_alerts}</p>
+              <p className="mt-1">投递失败 {summary.alerts.delivery_failed} / 执行中 {summary.alerts.delivery_in_progress}</p>
+            </Panel>
+            <Panel className="text-sm text-muted">
+              <p className="text-xs uppercase tracking-[0.2em] text-muted">KMS</p>
+              <p className="mt-2 text-on-surface">{summary.kms.healthy ? '健康' : '异常'} / {summary.kms.rotation_status}</p>
+              <p className="mt-1">最近失败 {summary.kms.rotation_failed} 个</p>
+            </Panel>
+            <Panel className="text-sm text-muted">
+              <p className="text-xs uppercase tracking-[0.2em] text-muted">IAM / 会话</p>
+              <p className="mt-2 text-on-surface">用户 {summary.iam.users_enabled}/{summary.iam.users_total}</p>
+              <p className="mt-1">活跃会话 {summary.sessions.admin_sessions_active + summary.sessions.sts_sessions_active}</p>
+            </Panel>
+            <Panel className="text-sm text-muted">
+              <p className="text-xs uppercase tracking-[0.2em] text-muted">复制 / 审计</p>
+              <p className="mt-2 text-on-surface">失败 backlog {summary.replication.backlog_failed}</p>
+              <p className="mt-1">审计失败 {summary.audit.failed_outcomes_total}</p>
+            </Panel>
+          </div>
+        </Card>
       ) : null}
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <article className="rounded-2xl border border-white/10 bg-ink-800/70 p-4">
+        <Card>
           <div className="flex items-center justify-between gap-3">
-            <h2 className="font-heading text-xl text-white">统一任务摘要</h2>
-            <span className="text-xs text-slate-400">
+            <SectionTitle>统一任务摘要</SectionTitle>
+            <span className="text-xs text-muted">
               {summary ? new Date(summary.generated_at).toLocaleString() : '加载中...'}
             </span>
           </div>
           <div className="mt-3 grid gap-3 md:grid-cols-2">
-            <div className="rounded-lg border border-white/5 bg-black/10 p-3 text-sm text-slate-300">
+            <Panel className="text-sm text-muted">
               <p>Pending：{summary?.jobs.async_pending ?? '--'}</p>
               <p className="mt-1">In-progress：{summary?.jobs.async_in_progress ?? '--'}</p>
               <p className="mt-1">Completed：{summary?.jobs.async_completed ?? '--'}</p>
               <p className="mt-1">Failed：{summary?.jobs.async_failed ?? '--'}</p>
-            </div>
-            <div className="rounded-lg border border-white/5 bg-black/10 p-3 text-sm text-slate-300">
+            </Panel>
+            <Panel className="text-sm text-muted">
               <p>复制站点：{summary?.replication.sites_total ?? '--'}</p>
               <p className="mt-1">健康站点：{summary?.replication.sites_healthy ?? '--'}</p>
               <p className="mt-1">最大延迟：{summary?.replication.max_lag_seconds ?? '--'} 秒</p>
               <p className="mt-1">告警站点：{summary?.replication.backlog_sla_firing_sites ?? '--'}</p>
-            </div>
+            </Panel>
           </div>
-        </article>
+        </Card>
 
-        <article className="rounded-2xl border border-white/10 bg-ink-800/70 p-4">
-          <h2 className="font-heading text-xl text-white">实时控制事件</h2>
+        <Card>
+          <SectionTitle>实时控制事件</SectionTitle>
           <ul className="mt-3 max-h-72 space-y-2 overflow-auto pr-1">
             {events.map((event, index) => (
-              <li key={`${event.topic}-${event.timestamp}-${index}`} className="rounded-lg border border-white/5 bg-black/10 p-3 text-sm">
-                <p className="font-mono text-xs text-signal-500">{event.topic}</p>
-                <p className="mt-1 text-slate-200">{event.source}</p>
-                <p className="mt-1 text-xs text-slate-400">{new Date(event.timestamp).toLocaleString()}</p>
+              <li
+                key={`${event.topic}-${event.timestamp}-${index}`}
+                className="rounded-md border border-outline/40 bg-surface-container-high p-4 text-sm"
+              >
+                <p className="font-mono text-xs text-primary">{event.topic}</p>
+                <p className="mt-1 text-on-surface">{event.source}</p>
+                <p className="mt-1 text-xs text-muted">{new Date(event.timestamp).toLocaleString()}</p>
               </li>
             ))}
           </ul>
-        </article>
+        </Card>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <article className="rounded-2xl border border-white/10 bg-ink-800/70 p-4">
-          <h2 className="font-heading text-xl text-white">节点健康</h2>
+        <Card>
+          <SectionTitle>节点健康</SectionTitle>
           <div className="mt-3 space-y-2">
             {nodes.map((node) => (
-              <div key={node.id} className="flex items-center justify-between rounded-lg border border-white/5 bg-black/10 p-3">
+              <Panel key={node.id} className="flex items-center justify-between">
                 <div>
-                  <p className="font-medium text-white">{node.hostname}</p>
-                  <p className="text-xs text-slate-400">{node.zone}</p>
+                  <p className="font-medium text-on-surface">{node.hostname}</p>
+                  <p className="text-xs text-muted">{node.zone}</p>
                 </div>
-                <span className={`text-sm ${node.online ? 'text-signal-500' : 'text-rose-400'}`}>
+                <Badge tone={node.online ? 'success' : 'error'}>
                   {node.online ? '在线' : '离线'}
-                </span>
-              </div>
+                </Badge>
+              </Panel>
             ))}
           </div>
-        </article>
+        </Card>
 
-        <article className="rounded-2xl border border-white/10 bg-ink-800/70 p-4">
-          <h2 className="font-heading text-xl text-white">租户配额</h2>
+        <Card>
+          <SectionTitle>租户配额</SectionTitle>
           <div className="mt-3 space-y-3">
             {quotas.map((quota) => {
               const ratio = quota.hard_limit_bytes > 0 ? quota.used_bytes / quota.hard_limit_bytes : 0;
               const percent = Math.max(0, Math.min(100, ratio * 100));
               return (
-                <div key={quota.tenant} className="rounded-lg border border-white/5 bg-black/10 p-3">
+                <Panel key={quota.tenant}>
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <p className="font-medium text-white">{quota.tenant}</p>
-                    <p className="text-xs text-slate-300">{percent.toFixed(1)}%</p>
+                    <p className="font-medium text-on-surface">{quota.tenant}</p>
+                    <p className="text-xs text-muted">{percent.toFixed(1)}%</p>
                   </div>
-                  <p className="mt-1 text-xs text-slate-400">
+                  <p className="mt-1 text-xs text-muted">
                     已用 {formatBytes(quota.used_bytes)} / 配额 {formatBytes(quota.hard_limit_bytes)}
                   </p>
-                  <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/10">
-                    <div
-                      className={`h-full ${
-                        percent >= 90 ? 'bg-rose-500' : percent >= 75 ? 'bg-amber-400' : 'bg-signal-500'
-                      }`}
-                      style={{ width: `${percent}%` }}
-                    />
-                  </div>
-                </div>
+                  <ProgressBar
+                    className="mt-2"
+                    ratio={ratio}
+                    tone={percent >= 90 ? 'error' : percent >= 75 ? 'warning' : 'primary'}
+                  />
+                </Panel>
               );
             })}
-            {quotas.length === 0 ? <p className="text-sm text-slate-400">暂无租户配额数据</p> : null}
+            {quotas.length === 0 ? <p className="text-sm text-muted">暂无租户配额数据</p> : null}
           </div>
-        </article>
+        </Card>
       </div>
     </section>
   );

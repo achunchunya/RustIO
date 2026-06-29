@@ -24,6 +24,27 @@ pub struct ClusterHealth {
     pub nodes_total: u32,
 }
 
+/// 每桶用量统计(对象数 + 总大小,redb 索引聚合)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BucketUsageStats {
+    pub name: String,
+    pub object_count: u64,
+    pub total_size: u64,
+}
+
+/// 集群能力 / 优势标识(编译期 + 运行期真实标志)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemCapabilities {
+    pub version: String,
+    pub ec_data_shards: usize,
+    pub ec_parity_shards: usize,
+    pub simd_accel: bool,
+    pub io_uring: bool,
+    pub list_index_mode: String,
+    pub minio_compat: bool,
+    pub s3_features: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemMetricsSummary {
     pub generated_at: DateTime<Utc>,

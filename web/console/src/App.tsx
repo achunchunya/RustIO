@@ -18,6 +18,10 @@ import { JobsPage } from './pages/JobsPage';
 import { OperationsPage } from './pages/OperationsPage';
 import { ConfigPage } from './pages/ConfigPage';
 import { TenantsPage } from './pages/TenantsPage';
+import { ArchitecturePage } from './pages/ArchitecturePage';
+import { CapabilitiesPage } from './pages/CapabilitiesPage';
+import { RaftPage } from './pages/RaftPage';
+import { StoragePage } from './pages/StoragePage';
 import { OidcCallbackPage } from './pages/OidcCallbackPage';
 
 type SessionState = {
@@ -36,7 +40,7 @@ function hasPermission(session: SessionState | null, required: string) {
 
 function AccessDenied() {
   return (
-    <section className="rounded-xl border border-rose-400/40 bg-rose-500/10 p-4 text-rose-300">
+    <section className="rounded-lg border border-error/30 bg-error/10 p-4 text-error">
       当前账号无权限执行该操作。
     </section>
   );
@@ -273,8 +277,40 @@ export default function App() {
       >
         <Route path="dashboard" element={<DashboardPage client={client} token={session.token} />} />
         <Route
+          path="capabilities"
+          element={
+            hasPermission(session, 'cluster:read') ? <CapabilitiesPage client={client} /> : <AccessDenied />
+          }
+        />
+        <Route
           path="metrics"
           element={hasPermission(session, 'cluster:read') ? <MetricsPage client={client} /> : <AccessDenied />}
+        />
+        <Route
+          path="architecture"
+          element={
+            hasPermission(session, 'cluster:read') ? <ArchitecturePage client={client} /> : <AccessDenied />
+          }
+        />
+        <Route
+          path="raft"
+          element={
+            hasPermission(session, 'cluster:read') ? (
+              <RaftPage client={client} canWrite={hasPermission(session, 'cluster:write')} />
+            ) : (
+              <AccessDenied />
+            )
+          }
+        />
+        <Route
+          path="storage"
+          element={
+            hasPermission(session, 'cluster:read') ? (
+              <StoragePage client={client} canWrite={hasPermission(session, 'cluster:write')} />
+            ) : (
+              <AccessDenied />
+            )
+          }
         />
         <Route
           path="iam"
@@ -290,7 +326,7 @@ export default function App() {
         />
         <Route
           path="objects"
-          element={hasPermission(session, 'bucket:read') ? <ObjectsPage client={client} /> : <AccessDenied />}
+          element={hasPermission(session, 'bucket:read') ? <ObjectsPage client={client} canWrite={hasPermission(session, 'bucket:write')} /> : <AccessDenied />}
         />
         <Route
           path="replication"

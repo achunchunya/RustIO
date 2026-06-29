@@ -129,21 +129,21 @@ export function JobsPage({ client }: JobsPageProps) {
 
   return (
     <section className="space-y-4">
-      <article className="rounded-2xl border border-white/10 bg-ink-800/70 p-4">
+      <article className="rounded-2xl border border-outline/60 bg-surface-container/70 p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h1 className="font-heading text-2xl text-white">后台任务</h1>
-            <p className="mt-1 text-sm text-slate-300">统一查看 replication / lifecycle / notification / failover / failback。</p>
+            <h1 className="font-heading text-2xl text-on-surface">后台任务</h1>
+            <p className="mt-1 text-sm text-muted">统一查看 replication / lifecycle / notification / failover / failback。</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <input
               value={target}
               onChange={(event) => setTarget(event.target.value)}
-              className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+              className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
               placeholder="修复目标"
             />
             <button
-              className="h-10 rounded-md bg-signal-600 px-3 text-sm text-white disabled:opacity-60"
+              className="h-10 rounded-md bg-primary px-3 text-sm text-on-surface disabled:opacity-60"
               disabled={starting}
               onClick={async () => {
                 setStarting(true);
@@ -163,7 +163,7 @@ export function JobsPage({ client }: JobsPageProps) {
               {starting ? '启动中...' : '启动修复'}
             </button>
             <button
-              className="h-10 rounded-md border border-white/15 px-3 text-sm text-slate-100 hover:bg-white/5"
+              className="h-10 rounded-md border border-outline/60 px-3 text-sm text-on-surface hover:bg-on-surface/5"
               onClick={() => {
                 reload().catch((requestError) => {
                   setError(requestError instanceof Error ? requestError.message : '刷新任务失败');
@@ -175,8 +175,8 @@ export function JobsPage({ client }: JobsPageProps) {
           </div>
         </div>
 
-        {error ? <p className="mt-3 text-sm text-rose-400">{toBilingualPrompt(error)}</p> : null}
-        {message ? <p className="mt-3 text-sm text-signal-500">{toBilingualNotice(message)}</p> : null}
+        {error ? <p className="mt-3 text-sm text-error">{toBilingualPrompt(error)}</p> : null}
+        {message ? <p className="mt-3 text-sm text-primary">{toBilingualNotice(message)}</p> : null}
 
         <div className="mt-4 grid gap-4 md:grid-cols-4">
           <StatCard label="任务总数" value={summary ? String(summary.total) : '...'} helper="统一异步任务口径" />
@@ -197,11 +197,11 @@ export function JobsPage({ client }: JobsPageProps) {
           />
         </div>
 
-        <div className="mt-4 grid gap-2 rounded-xl border border-white/10 bg-black/10 p-4 md:grid-cols-6">
+        <div className="mt-4 grid gap-2 rounded-xl border border-outline/60 bg-surface-container-high p-4 md:grid-cols-6">
           <select
             value={filters.kind}
             onChange={(event) => setFilters((current) => ({ ...current, kind: event.target.value }))}
-            className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+            className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
           >
             <option value="">全部类别</option>
             <option value="replication">replication</option>
@@ -214,7 +214,7 @@ export function JobsPage({ client }: JobsPageProps) {
           <select
             value={filters.status}
             onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))}
-            className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+            className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
           >
             <option value="">全部状态</option>
             <option value="pending">pending</option>
@@ -228,22 +228,22 @@ export function JobsPage({ client }: JobsPageProps) {
           <input
             value={filters.bucket}
             onChange={(event) => setFilters((current) => ({ ...current, bucket: event.target.value }))}
-            className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+            className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
             placeholder="桶名"
           />
           <input
             value={filters.site_id}
             onChange={(event) => setFilters((current) => ({ ...current, site_id: event.target.value }))}
-            className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+            className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
             placeholder="站点 ID"
           />
           <input
             value={filters.keyword}
             onChange={(event) => setFilters((current) => ({ ...current, keyword: event.target.value }))}
-            className="h-10 rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
+            className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
             placeholder="关键字"
           />
-          <label className="flex items-center gap-2 rounded-md border border-white/10 px-3 text-sm text-slate-300">
+          <label className="flex items-center gap-2 rounded-md border border-outline/60 px-3 text-sm text-muted">
             <input
               type="checkbox"
               checked={filters.include_terminal}
@@ -257,21 +257,21 @@ export function JobsPage({ client }: JobsPageProps) {
 
         <div className="mt-3 flex flex-wrap gap-2">
           <button
-            className="h-10 rounded-md border border-amber-300/30 px-3 text-sm text-amber-200 hover:bg-amber-300/10 disabled:opacity-60"
+            className="h-10 rounded-md border border-warning/30 px-3 text-sm text-warning hover:bg-warning/10 disabled:opacity-60"
             disabled={actioning === 'retry'}
             onClick={() => runBulkAction('retry', [], '当前筛选任务已批量重试')}
           >
             {actioning === 'retry' ? '处理中...' : '批量重试'}
           </button>
           <button
-            className="h-10 rounded-md border border-sky-300/30 px-3 text-sm text-sky-200 hover:bg-sky-300/10 disabled:opacity-60"
+            className="h-10 rounded-md border border-info/30 px-3 text-sm text-sky-200 hover:bg-info/10 disabled:opacity-60"
             disabled={actioning === 'skip'}
             onClick={() => runBulkAction('skip', [], '当前筛选任务已批量跳过')}
           >
             {actioning === 'skip' ? '处理中...' : '批量跳过'}
           </button>
           <button
-            className="h-10 rounded-md border border-white/15 px-3 text-sm text-slate-100 hover:bg-white/5 disabled:opacity-60"
+            className="h-10 rounded-md border border-outline/60 px-3 text-sm text-on-surface hover:bg-on-surface/5 disabled:opacity-60"
             disabled={actioning === 'cleanup'}
             onClick={() => runBulkAction('cleanup', [], '当前筛选终态任务已清理')}
           >
@@ -280,12 +280,12 @@ export function JobsPage({ client }: JobsPageProps) {
         </div>
       </article>
 
-      <article className="rounded-2xl border border-white/10 bg-ink-800/70 p-4">
+      <article className="rounded-2xl border border-outline/60 bg-surface-container/70 p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <h2 className="font-heading text-xl text-white">统一任务列表</h2>
+          <h2 className="font-heading text-xl text-on-surface">统一任务列表</h2>
           <div className="flex gap-2">
             <button
-              className="h-10 rounded-md border border-white/15 px-3 text-sm text-slate-100 hover:bg-white/5 disabled:opacity-60"
+              className="h-10 rounded-md border border-outline/60 px-3 text-sm text-on-surface hover:bg-on-surface/5 disabled:opacity-60"
               disabled={cursorStack.length === 0}
               onClick={() => {
                 const previous = cursorStack[cursorStack.length - 1];
@@ -298,7 +298,7 @@ export function JobsPage({ client }: JobsPageProps) {
               上一页
             </button>
             <button
-              className="h-10 rounded-md border border-white/15 px-3 text-sm text-slate-100 hover:bg-white/5 disabled:opacity-60"
+              className="h-10 rounded-md border border-outline/60 px-3 text-sm text-on-surface hover:bg-on-surface/5 disabled:opacity-60"
               disabled={!jobsPage.next_cursor}
               onClick={() => {
                 setCursorStack((current) => [...current, currentCursor]);
@@ -314,29 +314,29 @@ export function JobsPage({ client }: JobsPageProps) {
 
         <div className="mt-4 space-y-2">
           {jobsPage.items.map((job: AsyncJobStatus) => (
-            <article key={job.job_id} className="rounded-lg border border-white/10 bg-black/10 p-3">
+            <article key={job.job_id} className="rounded-lg border border-outline/60 bg-surface-container-high p-3">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <p className="font-medium text-white">
+                  <p className="font-medium text-on-surface">
                     {jobKindText(job.kind)}
-                    <span className="ml-2 text-xs text-slate-400">{job.job_id}</span>
+                    <span className="ml-2 text-xs text-muted">{job.job_id}</span>
                   </p>
-                  <p className="mt-1 text-sm text-slate-300">
+                  <p className="mt-1 text-sm text-muted">
                     状态：{jobStatusText(job.status)} · 优先级：P{job.priority} · 尝试次数：{job.attempt}
                   </p>
-                  <p className="mt-1 text-xs text-slate-400">
+                  <p className="mt-1 text-xs text-muted">
                     桶：{job.bucket || '--'} · 对象：{job.object_key || '--'} · 站点：{job.site_id || '--'}
                   </p>
-                  <p className="mt-1 text-xs text-slate-400">
+                  <p className="mt-1 text-xs text-muted">
                     Checkpoint：{job.checkpoint ?? '--'} · Lease：{job.lease_owner || '--'}
                     {job.lease_until ? ` (${new Date(job.lease_until).toLocaleString()})` : ''}
                   </p>
-                  {job.last_error ? <p className="mt-1 text-xs text-rose-300">错误：{toBilingualPrompt(job.last_error)}</p> : null}
+                  {job.last_error ? <p className="mt-1 text-xs text-error">错误：{toBilingualPrompt(job.last_error)}</p> : null}
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {job.retryable ? (
                     <button
-                      className="h-9 rounded-md border border-amber-300/30 px-3 text-xs text-amber-200 hover:bg-amber-300/10"
+                      className="h-9 rounded-md border border-warning/30 px-3 text-xs text-warning hover:bg-warning/10"
                       onClick={() => runBulkAction('retry', [job.job_id], `任务 ${job.job_id} 已重试`)}
                     >
                       重试
@@ -344,7 +344,7 @@ export function JobsPage({ client }: JobsPageProps) {
                   ) : null}
                   {!job.terminal ? (
                     <button
-                      className="h-9 rounded-md border border-sky-300/30 px-3 text-xs text-sky-200 hover:bg-sky-300/10"
+                      className="h-9 rounded-md border border-info/30 px-3 text-xs text-sky-200 hover:bg-info/10"
                       onClick={() => runBulkAction('skip', [job.job_id], `任务 ${job.job_id} 已跳过`)}
                     >
                       跳过
@@ -352,7 +352,7 @@ export function JobsPage({ client }: JobsPageProps) {
                   ) : null}
                   {job.terminal ? (
                     <button
-                      className="h-9 rounded-md border border-white/15 px-3 text-xs text-slate-100 hover:bg-white/5"
+                      className="h-9 rounded-md border border-outline/60 px-3 text-xs text-on-surface hover:bg-on-surface/5"
                       onClick={() => runBulkAction('cleanup', [job.job_id], `任务 ${job.job_id} 已清理`)}
                     >
                       清理
@@ -379,15 +379,15 @@ export function JobsPage({ client }: JobsPageProps) {
                   ) : null}
                 </div>
               </div>
-              <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/10">
-                <div className="h-full bg-signal-500" style={{ width: `${Math.max(4, job.progress * 100)}%` }} />
+              <div className="mt-3 h-2 overflow-hidden rounded-full bg-on-surface/5">
+                <div className="h-full bg-primary" style={{ width: `${Math.max(4, job.progress * 100)}%` }} />
               </div>
-              <p className="mt-2 text-xs text-slate-500">
+              <p className="mt-2 text-xs text-muted">
                 创建：{new Date(job.created_at).toLocaleString()} · 更新：{new Date(job.updated_at).toLocaleString()}
               </p>
             </article>
           ))}
-          {jobsPage.items.length === 0 ? <p className="text-sm text-slate-400">当前筛选条件下没有任务。</p> : null}
+          {jobsPage.items.length === 0 ? <p className="text-sm text-muted">当前筛选条件下没有任务。</p> : null}
         </div>
       </article>
     </section>

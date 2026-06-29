@@ -5,6 +5,7 @@ import { authService } from '../api/services';
 import type { LoginResponse } from '../types';
 import { resolveSessionUsername } from '../utils/auth';
 import { toBilingualPrompt } from '../utils/bilingual';
+import { Logo } from '../components/ui/Logo';
 
 type OidcCallbackPageProps = {
   onLogin: (username: string, auth: LoginResponse) => void;
@@ -49,12 +50,15 @@ export function OidcCallbackPage({ onLogin }: OidcCallbackPageProps) {
   }, [callbackError, navigate, onLogin, requestId]);
 
   return (
-    <div className="grid min-h-screen place-items-center px-4">
-      <div className="w-full max-w-md rounded-2xl border border-white/10 bg-ink-800/75 p-8 shadow-panel">
-        <h1 className="font-heading text-3xl text-white">OIDC 登录处理中</h1>
-        <p className="mt-2 text-sm text-slate-300">正在完成浏览器授权码登录并换取控制台会话。</p>
-        {error ? <p className="mt-4 text-sm text-rose-400">{toBilingualPrompt(error)}</p> : null}
-        {!error ? <p className="mt-4 text-sm text-slate-400">请稍候，系统会自动跳转到控制台。</p> : null}
+    <div className="bg-dot-grid grid min-h-screen place-items-center bg-surface px-4">
+      <div className="w-full max-w-md rounded-lg border border-outline/60 bg-surface-container p-8 text-center shadow-soft">
+        <div className="mb-6 flex justify-center">
+          <Logo size={32} />
+        </div>
+        <h1 className="font-heading text-xl font-semibold text-on-surface">OIDC 登录处理中</h1>
+        <p className="mt-2 text-sm text-muted">正在完成浏览器授权码登录并换取控制台会话。</p>
+        {error ? <p className="mt-4 text-sm text-error">{toBilingualPrompt(error)}</p> : null}
+        {!error ? <p className="mt-4 text-sm text-muted">请稍候,系统会自动跳转到控制台。</p> : null}
       </div>
     </div>
   );

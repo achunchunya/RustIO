@@ -114,7 +114,7 @@ use rustio_core::{
     AsyncJobSummary, AuthProviderInfo, BatchRunRequest, BatchRunScope, BatchRunStatus,
     BucketAclConfig, BucketCorsRule, BucketEncryptionConfig, BucketGovernanceUpdate,
     BucketLegalHoldConfig, BucketLifecycleRule, BucketNotificationRule, BucketObjectLockConfig,
-    BucketPublicAccessBlockConfig, BucketRetentionConfig, BucketSpec, BucketTag,
+    BucketPublicAccessBlockConfig, BucketRetentionConfig, BucketSpec, BucketTag, BucketUsageStats,
     BucketWebsiteConfig,
     BucketAccelerateConfig, BucketLoggingConfig, BucketRequestPaymentConfig,
     BucketAnalyticsConfig, BucketMetricsConfig, BucketInventoryConfig,
@@ -126,7 +126,7 @@ use rustio_core::{
     S3ObjectEncryptionMeta, S3ObjectMeta, SecurityUpdate, SiteReplicationStatus,
     SystemAlertMetricsSummary, SystemAuditMetricsSummary, SystemIamMetricsSummary,
     SystemJobKindMetricsSummary, SystemJobMetricsSummary, SystemKmsMetricsSummary,
-    SystemMetricsSummary, SystemNodeMetricsSummary, SystemRaftMetricsSummary,
+    SystemCapabilities, SystemMetricsSummary, SystemNodeMetricsSummary, SystemRaftMetricsSummary,
     SystemReplicationMetricsSummary, SystemReplicationSiteMetricsSummary,
     SystemSecurityMetricsSummary, SystemSessionMetricsSummary, SystemStorageDiskMetricsSummary,
     SystemStorageGovernanceMetricsSummary, SystemStorageMetricsSummary, TenantSpec,
@@ -183,6 +183,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/auth/refresh", post(refresh_token))
         .route("/api/v1/auth/logout", post(logout))
         .route("/api/v1/system/info", get(index))
+        .route("/api/v1/system/capabilities", get(system_capabilities))
         .route("/api/v1/system/topology", get(system_topology))
         .route("/api/v1/system/alignment", get(system_alignment))
         .route(
@@ -334,6 +335,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/api/v1/buckets",
             get(list_buckets).post(create_bucket_spec),
         )
+        .route("/api/v1/buckets/usage", get(list_bucket_usage))
         .route(
             "/api/v1/buckets/{name}",
             axum::routing::delete(delete_bucket_spec),
@@ -752,6 +754,58 @@ async fn index(State(state): State<Arc<AppState>>) -> Json<ApiEnvelope<serde_jso
         "architecture_version": state.architecture.version,
         "plane_count": state.architecture.planes.len()
     }))
+}
+
+/// 集群能力 / 优势标识:EC 布局、SIMD、io_uring、LIST 索引模式、MinIO 兼容、S3 能力面。
+/// 编译期标志用 cfg!,运行期配置读环境变量(与 s3_versions::ec_layout 默认一致)。
+async fn system_capabilities(
+    State(_state): State<Arc<AppState>>,
+    auth: AuthContext,
+) -> Result<Json<ApiEnvelope<SystemCapabilities>>, AppError> {
+    auth.require(Permission::ClusterRead)?;
+    let ec_data_shards = std::env::var("RUSTIO_EC_DATA_SHARDS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(4);
+    let ec_parity_shards = std::env::var("RUSTIO_EC_PARITY_SHARDS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(1);
+    let list_index_mode = if std::env::var("RUSTIO_LIST_WALK_FS").ok().as_deref() == Some("1") {
+        "walk-fs".to_string()
+    } else {
+        "redb-index".to_string()
+    };
+    let capabilities = SystemCapabilities {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        ec_data_shards,
+        ec_parity_shards,
+        // reed-solomon-erasure 在 workspace 恒启用 simd-accel(NEON/AVX)。
+        simd_accel: true,
+        io_uring: cfg!(all(target_os = "linux", feature = "io-uring")),
+        list_index_mode,
+        minio_compat: true,
+        s3_features: vec![
+            "versioning".into(),
+            "multipart".into(),
+            "object-lock".into(),
+            "lifecycle".into(),
+            "replication".into(),
+            "encryption-sse-c".into(),
+            "encryption-sse-kms".into(),
+            "cors".into(),
+            "tagging".into(),
+            "policy".into(),
+            "acl".into(),
+            "presigned-url".into(),
+            "checksum".into(),
+            "website".into(),
+            "notifications".into(),
+        ],
+    };
+    Ok(wrap(capabilities))
 }
 
 async fn system_topology(

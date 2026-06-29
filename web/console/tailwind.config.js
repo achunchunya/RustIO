@@ -1,30 +1,64 @@
 /** @type {import('tailwindcss').Config} */
+const withAlpha = (variable) => `rgb(var(${variable}) / <alpha-value>)`;
+
 export default {
+  darkMode: 'class',
   content: ['./index.html', './src/**/*.{ts,tsx}'],
   theme: {
     extend: {
       fontFamily: {
-        heading: ['"Space Grotesk"', 'sans-serif'],
-        body: ['"IBM Plex Sans"', 'sans-serif'],
+        heading: ['Montserrat', 'sans-serif'],
+        body: ['Montserrat', 'sans-serif'],
         mono: ['"IBM Plex Mono"', 'monospace']
       },
       colors: {
-        ink: {
-          900: '#0a1015',
-          800: '#101c25',
-          700: '#1a2b36'
+        surface: {
+          DEFAULT: withAlpha('--surface'),
+          container: withAlpha('--surface-container'),
+          'container-high': withAlpha('--surface-container-high'),
+          lowest: withAlpha('--surface-lowest')
         },
-        pulse: {
-          500: '#ff7a18',
-          600: '#e66700'
+        'on-surface': withAlpha('--on-surface'),
+        muted: withAlpha('--on-surface-variant'),
+        outline: {
+          DEFAULT: withAlpha('--outline'),
+          variant: withAlpha('--outline-variant')
         },
-        signal: {
-          500: '#2dd4bf',
-          600: '#0ea5a0'
+        primary: {
+          DEFAULT: withAlpha('--primary'),
+          container: withAlpha('--primary-container')
+        },
+        'on-primary': {
+          DEFAULT: withAlpha('--on-primary'),
+          container: withAlpha('--on-primary-container')
+        },
+        secondary: withAlpha('--secondary'),
+        accent: withAlpha('--accent'),
+        error: {
+          DEFAULT: withAlpha('--error'),
+          container: withAlpha('--error-container')
+        },
+        'on-error': withAlpha('--on-error'),
+        success: withAlpha('--success'),
+        warning: withAlpha('--warning'),
+        info: withAlpha('--info'),
+        sidebar: {
+          DEFAULT: withAlpha('--sidebar-bg'),
+          fg: withAlpha('--sidebar-fg'),
+          muted: withAlpha('--sidebar-muted'),
+          active: withAlpha('--sidebar-active')
         }
       },
+      borderRadius: {
+        sm: '0.25rem',
+        DEFAULT: '0.5rem',
+        md: '0.75rem',
+        lg: '1rem',
+        xl: '1.5rem',
+        full: '9999px'
+      },
       boxShadow: {
-        panel: '0 18px 40px -24px rgba(6, 24, 36, 0.85)'
+        soft: '0 1px 2px rgb(0 0 0 / 0.04), 0 8px 24px -16px rgb(0 0 0 / 0.12)'
       },
       keyframes: {
         rise: {

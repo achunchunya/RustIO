@@ -2,6 +2,16 @@ import { useEffect, useMemo, useState } from 'react';
 import { ApiClient } from '../api/client';
 import { clusterService } from '../api/services';
 import { ConfirmActionDialog } from '../components/ConfirmActionDialog';
+import {
+  Badge,
+  Button,
+  Card,
+  Field,
+  Input,
+  PageHeader,
+  Panel,
+  ProgressBar
+} from '../components/ui';
 import type { TenantSpec } from '../types';
 import { toBilingualNotice, toBilingualPrompt } from '../utils/bilingual';
 
@@ -75,15 +85,15 @@ export function TenantsPage({ client }: TenantsPageProps) {
   }, [tenants]);
 
   return (
-    <section className="space-y-4">
-      <article className="rounded-2xl border border-white/10 bg-ink-800/70 p-4">
-        <h1 className="font-heading text-2xl text-white">租户管理</h1>
-        <p className="mt-1 text-sm text-slate-300">租户配额、状态、归属组与生命周期操作。</p>
-        {error ? <p className="mt-3 text-sm text-rose-400">{toBilingualPrompt(error)}</p> : null}
-        {message ? <p className="mt-3 text-sm text-signal-500">{toBilingualNotice(message)}</p> : null}
+    <section className="space-y-6">
+      <PageHeader title="租户管理" subtitle="租户配额、状态、归属组与生命周期操作。" />
+
+      <Card className="space-y-4">
+        {error ? <p className="text-sm text-error">{toBilingualPrompt(error)}</p> : null}
+        {message ? <p className="text-sm text-primary">{toBilingualNotice(message)}</p> : null}
 
         <form
-          className="mt-4 grid gap-3 rounded-lg border border-white/10 bg-black/10 p-4 md:grid-cols-4"
+          className="grid gap-3 md:grid-cols-4"
           onSubmit={async (event) => {
             event.preventDefault();
             setCreating(true);
@@ -115,44 +125,41 @@ export function TenantsPage({ client }: TenantsPageProps) {
             }
           }}
         >
-          <label className="text-sm text-slate-300">
-            租户 ID
-            <input
+          <Field label="租户 ID" htmlFor="new-tenant-id">
+            <Input
+              id="new-tenant-id"
               required
               value={newTenant.id}
               onChange={(event) =>
                 setNewTenant((current) => ({ ...current, id: event.target.value.toLowerCase() }))
               }
-              className="mt-1 h-11 w-full rounded-md border border-white/15 bg-ink-900 px-3 text-slate-100"
               placeholder="tenant-id"
             />
-          </label>
-          <label className="text-sm text-slate-300">
-            显示名称
-            <input
+          </Field>
+          <Field label="显示名称" htmlFor="new-tenant-name">
+            <Input
+              id="new-tenant-name"
               required
               value={newTenant.display_name}
               onChange={(event) =>
                 setNewTenant((current) => ({ ...current, display_name: event.target.value }))
               }
-              className="mt-1 h-11 w-full rounded-md border border-white/15 bg-ink-900 px-3 text-slate-100"
               placeholder="租户名称"
             />
-          </label>
-          <label className="text-sm text-slate-300">
-            归属组
-            <input
+          </Field>
+          <Field label="归属组" htmlFor="new-tenant-group">
+            <Input
+              id="new-tenant-group"
               required
               value={newTenant.owner_group}
               onChange={(event) =>
                 setNewTenant((current) => ({ ...current, owner_group: event.target.value }))
               }
-              className="mt-1 h-11 w-full rounded-md border border-white/15 bg-ink-900 px-3 text-slate-100"
             />
-          </label>
-          <label className="text-sm text-slate-300">
-            硬配额（TiB）
-            <input
+          </Field>
+          <Field label="硬配额（TiB）" htmlFor="new-tenant-quota">
+            <Input
+              id="new-tenant-quota"
               required
               type="number"
               min="0.01"
@@ -161,61 +168,51 @@ export function TenantsPage({ client }: TenantsPageProps) {
               onChange={(event) =>
                 setNewTenant((current) => ({ ...current, hard_limit_tib: event.target.value }))
               }
-              className="mt-1 h-11 w-full rounded-md border border-white/15 bg-ink-900 px-3 text-slate-100"
             />
-          </label>
+          </Field>
           <div className="md:col-span-4">
-            <button
-              type="submit"
-              disabled={creating}
-              className="h-11 rounded-md bg-signal-600 px-4 text-sm font-medium text-white disabled:opacity-60"
-            >
+            <Button type="submit" variant="primary" loading={creating}>
               {creating ? '创建中...' : '创建租户'}
-            </button>
+            </Button>
           </div>
         </form>
-      </article>
+      </Card>
 
       <div className="space-y-3">
         {sortedTenants.map((tenant) => {
           const draft = drafts[tenant.id] ?? toDraft(tenant);
           const usageRatio =
             tenant.hard_limit_bytes > 0 ? Math.min(100, (tenant.used_bytes / tenant.hard_limit_bytes) * 100) : 0;
+          const usageTone = usageRatio >= 90 ? 'error' : usageRatio >= 75 ? 'warning' : 'primary';
           return (
-            <article key={tenant.id} className="rounded-lg border border-white/10 bg-ink-800/70 p-4">
+            <Card key={tenant.id} className="space-y-2">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <p className="text-lg font-medium text-white">
+                  <p className="text-lg font-medium text-on-surface">
                     {tenant.display_name}
-                    <span className="ml-2 font-mono text-xs text-slate-400">{tenant.id}</span>
+                    <span className="ml-2 font-mono text-xs text-muted">{tenant.id}</span>
                   </p>
-                  <p className="mt-1 text-xs text-slate-400">
-                    owner_group: {tenant.owner_group} · 创建于 {new Date(tenant.created_at).toLocaleString()}
+                  <p className="mt-1 text-xs text-muted">
+                    owner_group: {tenant.owner_group}
+                    {tenant.domain_name ? ` · 域: ${tenant.domain_name}` : ''} · 创建于{' '}
+                    {new Date(tenant.created_at).toLocaleString()}
                   </p>
                 </div>
-                <span
-                  className={`rounded px-2 py-1 text-xs ${
-                    tenant.enabled ? 'bg-signal-500/15 text-signal-500' : 'bg-amber-500/15 text-amber-300'
-                  }`}
-                >
+                <Badge tone={tenant.enabled ? 'success' : 'warning'}>
                   {tenant.enabled ? 'active' : 'suspended'}
-                </span>
+                </Badge>
               </div>
 
-              <p className="mt-2 text-xs text-slate-300">
+              <p className="text-xs text-muted">
                 已用 {formatBytes(tenant.used_bytes)} / 配额 {formatBytes(tenant.hard_limit_bytes)} ({usageRatio.toFixed(1)}%)
               </p>
-              <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/10">
-                <div
-                  className={`h-full ${usageRatio >= 90 ? 'bg-rose-500' : usageRatio >= 75 ? 'bg-amber-400' : 'bg-signal-500'}`}
-                  style={{ width: `${usageRatio}%` }}
-                />
-              </div>
+              <ProgressBar ratio={usageRatio / 100} tone={usageTone} />
 
-              <div className="mt-4 grid gap-2 md:grid-cols-3">
-                <label className="text-xs text-slate-300">
-                  显示名称
-                  <input
+              <div className="grid gap-3 pt-2 md:grid-cols-3">
+                <Field label="显示名称" htmlFor={`edit-name-${tenant.id}`}>
+                  <Input
+                    id={`edit-name-${tenant.id}`}
+                    size="sm"
                     value={draft.display_name}
                     onChange={(event) =>
                       setDrafts((current) => ({
@@ -223,12 +220,12 @@ export function TenantsPage({ client }: TenantsPageProps) {
                         [tenant.id]: { ...draft, display_name: event.target.value }
                       }))
                     }
-                    className="mt-1 h-10 w-full rounded-md border border-white/15 bg-ink-900 px-3 text-slate-100"
                   />
-                </label>
-                <label className="text-xs text-slate-300">
-                  归属组
-                  <input
+                </Field>
+                <Field label="归属组" htmlFor={`edit-group-${tenant.id}`}>
+                  <Input
+                    id={`edit-group-${tenant.id}`}
+                    size="sm"
                     value={draft.owner_group}
                     onChange={(event) =>
                       setDrafts((current) => ({
@@ -236,12 +233,12 @@ export function TenantsPage({ client }: TenantsPageProps) {
                         [tenant.id]: { ...draft, owner_group: event.target.value }
                       }))
                     }
-                    className="mt-1 h-10 w-full rounded-md border border-white/15 bg-ink-900 px-3 text-slate-100"
                   />
-                </label>
-                <label className="text-xs text-slate-300">
-                  硬配额（TiB）
-                  <input
+                </Field>
+                <Field label="硬配额（TiB）" htmlFor={`edit-quota-${tenant.id}`}>
+                  <Input
+                    id={`edit-quota-${tenant.id}`}
+                    size="sm"
                     type="number"
                     min="0.01"
                     step="0.01"
@@ -252,15 +249,15 @@ export function TenantsPage({ client }: TenantsPageProps) {
                         [tenant.id]: { ...draft, hard_limit_tib: event.target.value }
                       }))
                     }
-                    className="mt-1 h-10 w-full rounded-md border border-white/15 bg-ink-900 px-3 text-slate-100"
                   />
-                </label>
+                </Field>
               </div>
 
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button
-                  className="h-10 rounded-md border border-white/15 px-3 text-sm text-slate-100 hover:bg-white/5 disabled:opacity-60"
-                  disabled={savingTenantId === tenant.id}
+              <div className="flex flex-wrap gap-2 pt-1">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  loading={savingTenantId === tenant.id}
                   onClick={async () => {
                     setSavingTenantId(tenant.id);
                     setError('');
@@ -285,7 +282,7 @@ export function TenantsPage({ client }: TenantsPageProps) {
                   }}
                 >
                   {savingTenantId === tenant.id ? '更新中...' : '保存修改'}
-                </button>
+                </Button>
                 {tenant.enabled ? (
                   <ConfirmActionDialog
                     title={`暂停租户 ${tenant.id}`}
@@ -343,11 +340,11 @@ export function TenantsPage({ client }: TenantsPageProps) {
                   />
                 ) : null}
               </div>
-            </article>
+            </Card>
           );
         })}
         {sortedTenants.length === 0 ? (
-          <p className="rounded-lg border border-white/10 bg-ink-800/70 p-4 text-sm text-slate-400">暂无租户</p>
+          <Panel className="text-sm text-muted">暂无租户</Panel>
         ) : null}
       </div>
     </section>

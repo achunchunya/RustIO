@@ -17,6 +17,43 @@ pub(crate) async fn list_buckets(
     Ok(wrap(buckets))
 }
 
+/// 每桶用量聚合:对各桶用 redb 有序索引扫描(scan_bucket),统计当前对象数与总大小。
+/// 这正是我们相对 MinIO walk-fs 的结构性优势——索引扫描,非遍历文件系统。
+pub(crate) async fn list_bucket_usage(
+    State(state): State<Arc<AppState>>,
+    auth: AuthContext,
+) -> Result<Json<ApiEnvelope<Vec<BucketUsageStats>>>, AppError> {
+    auth.require(Permission::BucketRead)?;
+    let names = state
+        .buckets
+        .read()
+        .await
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let mut out = Vec::with_capacity(names.len());
+    for name in names {
+        let metas = state.meta_store.scan_bucket(&name).unwrap_or_default();
+        let mut object_count = 0u64;
+        let mut total_size = 0u64;
+        for meta in metas {
+            // 删除标记不计入对象数与大小。
+            if meta.delete_marker {
+                continue;
+            }
+            object_count += 1;
+            total_size = total_size.saturating_add(meta.size);
+        }
+        out.push(BucketUsageStats {
+            name,
+            object_count,
+            total_size,
+        });
+    }
+    Ok(wrap(out))
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct CreateBucketSpecRequest {
     pub(crate) name: String,

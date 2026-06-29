@@ -1511,10 +1511,11 @@ pub(crate) async fn events_stream(
         loop {
             match rx.recv().await {
                 Ok(runtime_event) => {
-                    let event_name = runtime_event.topic.clone();
+                    // 不设具名事件:标准 EventSource.onmessage 只接收默认(message)事件;
+                    // topic 已包含在 payload(RuntimeEvent.topic)中,前端据此分发。
                     let payload = serde_json::to_string(&runtime_event)
                         .unwrap_or_else(|_| "{}".to_string());
-                    yield Ok(Event::default().event(event_name).data(payload));
+                    yield Ok(Event::default().data(payload));
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                     continue;

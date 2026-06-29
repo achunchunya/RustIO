@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { ApiClient } from '../api/client';
 import { clusterService } from '../api/services';
 import { ConfirmActionDialog } from '../components/ConfirmActionDialog';
+import { Badge, Button, Card, PageHeader, SectionTitle, Textarea } from '../components/ui';
 import type { ClusterConfigSnapshot, ClusterConfigValidationResult } from '../types';
 import { toBilingualNotice, toBilingualPrompt } from '../utils/bilingual';
 
@@ -53,76 +54,76 @@ export function ConfigPage({ client, canWrite }: ConfigPageProps) {
   }, [client]);
 
   return (
-    <section className="space-y-4">
-      <article className="rounded-2xl border border-white/10 bg-ink-800/70 p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h1 className="font-heading text-2xl text-white">配置中心</h1>
-            <p className="mt-1 text-sm text-slate-300">
-              集群配置导出、校验、应用与版本回滚，所有动作均写入审计日志。
-            </p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <button
-              className="rounded-md border border-white/15 px-3 py-2 text-sm text-slate-200 hover:bg-white/5"
-              disabled={loading}
-              onClick={async () => {
-                setError('');
-                setMessage('');
-                setLoading(true);
-                try {
-                  await reload();
-                  setValidation(null);
-                  setMessage('配置已刷新 / Configuration refreshed');
-                } catch (requestError) {
-                  setError(requestError instanceof Error ? requestError.message : '刷新配置失败');
-                } finally {
-                  setLoading(false);
-                }
-              }}
-            >
-              {loading ? '刷新中...' : '刷新配置'}
-            </button>
-            <button
-              className="rounded-md border border-white/15 px-3 py-2 text-sm text-slate-200 hover:bg-white/5 disabled:opacity-60"
-              disabled={exporting}
-              onClick={async () => {
-                setExporting(true);
-                setError('');
-                setMessage('');
-                try {
-                  const text = await clusterService.exportConfig(client);
-                  const blob = new Blob([text], { type: 'application/json' });
-                  const link = document.createElement('a');
-                  link.href = URL.createObjectURL(blob);
-                  link.download = `rustio-cluster-config-${new Date()
-                    .toISOString()
-                    .replace(/[:.]/g, '-')}.json`;
-                  link.click();
-                  URL.revokeObjectURL(link.href);
-                  setMessage('配置文件已导出 / Cluster config exported');
-                } catch (requestError) {
-                  setError(requestError instanceof Error ? requestError.message : '导出配置失败');
-                } finally {
-                  setExporting(false);
-                }
-              }}
-            >
-              {exporting ? '导出中...' : '导出配置'}
-            </button>
-          </div>
-        </div>
+    <section className="space-y-6">
+      <div>
+        <PageHeader
+          title="配置中心"
+          subtitle="集群配置导出、校验、应用与版本回滚，所有动作均写入审计日志。"
+          actions={
+            <>
+              <Button
+                variant="secondary"
+                loading={loading}
+                disabled={loading}
+                onClick={async () => {
+                  setError('');
+                  setMessage('');
+                  setLoading(true);
+                  try {
+                    await reload();
+                    setValidation(null);
+                    setMessage('配置已刷新 / Configuration refreshed');
+                  } catch (requestError) {
+                    setError(requestError instanceof Error ? requestError.message : '刷新配置失败');
+                  } finally {
+                    setLoading(false);
+                  }
+                }}
+              >
+                {loading ? '刷新中...' : '刷新配置'}
+              </Button>
+              <Button
+                variant="secondary"
+                loading={exporting}
+                disabled={exporting}
+                onClick={async () => {
+                  setExporting(true);
+                  setError('');
+                  setMessage('');
+                  try {
+                    const text = await clusterService.exportConfig(client);
+                    const blob = new Blob([text], { type: 'application/json' });
+                    const link = document.createElement('a');
+                    link.href = URL.createObjectURL(blob);
+                    link.download = `rustio-cluster-config-${new Date()
+                      .toISOString()
+                      .replace(/[:.]/g, '-')}.json`;
+                    link.click();
+                    URL.revokeObjectURL(link.href);
+                    setMessage('配置文件已导出 / Cluster config exported');
+                  } catch (requestError) {
+                    setError(requestError instanceof Error ? requestError.message : '导出配置失败');
+                  } finally {
+                    setExporting(false);
+                  }
+                }}
+              >
+                {exporting ? '导出中...' : '导出配置'}
+              </Button>
+            </>
+          }
+        />
+        {error ? <p className="text-sm text-error">{toBilingualPrompt(error)}</p> : null}
+        {message ? <p className="text-sm text-primary">{toBilingualNotice(message)}</p> : null}
+      </div>
 
-        {error ? <p className="mt-3 text-sm text-rose-400">{toBilingualPrompt(error)}</p> : null}
-        {message ? <p className="mt-3 text-sm text-signal-500">{toBilingualNotice(message)}</p> : null}
-      </article>
-
-      <div className="grid gap-4 xl:grid-cols-3">
-        <article className="rounded-2xl border border-white/10 bg-ink-800/70 p-4 xl:col-span-2">
+      <div className="grid gap-6 xl:grid-cols-3">
+        <Card className="xl:col-span-2">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="font-heading text-xl text-white">配置编辑器</h2>
-            <button
-              className="rounded-md border border-white/15 px-3 py-2 text-xs text-slate-200 hover:bg-white/5"
+            <SectionTitle>配置编辑器</SectionTitle>
+            <Button
+              variant="tertiary"
+              size="sm"
               onClick={() => {
                 if (current) {
                   setEditor(formatConfig(current.payload));
@@ -131,18 +132,19 @@ export function ConfigPage({ client, canWrite }: ConfigPageProps) {
               }}
             >
               同步当前配置
-            </button>
+            </Button>
           </div>
-          <textarea
-            className="mt-3 h-[520px] w-full rounded-lg border border-white/10 bg-ink-900 p-3 font-mono text-xs text-slate-100"
+          <Textarea
+            className="mt-3 h-[520px] font-mono text-xs"
             value={editor}
             onChange={(event) => setEditor(event.target.value)}
             spellCheck={false}
           />
 
           <div className="mt-3 flex flex-wrap gap-2">
-            <button
-              className="rounded-md border border-signal-500/40 px-3 py-2 text-sm text-signal-500 hover:bg-signal-500/10 disabled:opacity-60"
+            <Button
+              variant="secondary"
+              loading={validating}
               disabled={validating}
               onClick={async () => {
                 setValidating(true);
@@ -167,7 +169,7 @@ export function ConfigPage({ client, canWrite }: ConfigPageProps) {
               }}
             >
               {validating ? '校验中...' : '校验配置'}
-            </button>
+            </Button>
             {canWrite ? (
               <ConfirmActionDialog
                 title="应用集群配置"
@@ -192,14 +194,14 @@ export function ConfigPage({ client, canWrite }: ConfigPageProps) {
               />
             ) : null}
           </div>
-        </article>
+        </Card>
 
-        <article className="rounded-2xl border border-white/10 bg-ink-800/70 p-4">
-          <h2 className="font-heading text-xl text-white">版本历史</h2>
+        <Card>
+          <SectionTitle>版本历史</SectionTitle>
           {current ? (
-            <div className="mt-3 rounded-lg border border-white/10 bg-black/10 p-3 text-xs text-slate-300">
+            <div className="mt-3 rounded-md border border-outline/40 bg-surface-container-high p-3 text-xs text-muted">
               <p>
-                当前版本：<span className="font-mono text-slate-100">{current.version}</span>
+                当前版本：<span className="font-mono text-on-surface">{current.version}</span>
               </p>
               <p className="mt-1">
                 更新时间：{new Date(current.updated_at).toLocaleString()} · 更新人：{current.updated_by}
@@ -213,13 +215,16 @@ export function ConfigPage({ client, canWrite }: ConfigPageProps) {
 
           <div className="mt-3 max-h-[520px] space-y-3 overflow-auto pr-1">
             {history.map((item, index) => (
-              <article key={item.version} className="rounded-lg border border-white/10 bg-black/10 p-3">
-                <p className="font-mono text-xs text-slate-100">{item.version}</p>
-                <p className="mt-1 text-xs text-slate-400">
+              <div
+                key={item.version}
+                className="rounded-md border border-outline/40 bg-surface-container-high p-3"
+              >
+                <p className="font-mono text-xs text-on-surface">{item.version}</p>
+                <p className="mt-1 text-xs text-muted">
                   {new Date(item.updated_at).toLocaleString()} · {item.updated_by}
                 </p>
-                <p className="mt-1 text-xs text-slate-400">来源：{item.source}</p>
-                {item.reason ? <p className="mt-1 text-xs text-slate-400">原因：{item.reason}</p> : null}
+                <p className="mt-1 text-xs text-muted">来源：{item.source}</p>
+                {item.reason ? <p className="mt-1 text-xs text-muted">原因：{item.reason}</p> : null}
                 {canWrite && index > 0 ? (
                   <div className="mt-2">
                     <ConfirmActionDialog
@@ -244,33 +249,38 @@ export function ConfigPage({ client, canWrite }: ConfigPageProps) {
                     />
                   </div>
                 ) : null}
-              </article>
+              </div>
             ))}
           </div>
-        </article>
+        </Card>
       </div>
 
       {validation ? (
-        <article className="rounded-2xl border border-white/10 bg-ink-800/70 p-4">
-          <h2 className="font-heading text-xl text-white">校验结果</h2>
-          <p className={`mt-2 text-sm ${validation.valid ? 'text-signal-500' : 'text-rose-400'}`}>
-            {validation.valid ? '通过' : '未通过'} · 错误 {validation.errors.length} · 警告 {validation.warnings.length}
-          </p>
+        <Card>
+          <div className="flex flex-wrap items-center gap-3">
+            <SectionTitle>校验结果</SectionTitle>
+            <Badge tone={validation.valid ? 'success' : 'error'}>
+              {validation.valid ? '通过' : '未通过'}
+            </Badge>
+            <span className="text-sm text-muted">
+              错误 {validation.errors.length} · 警告 {validation.warnings.length}
+            </span>
+          </div>
           {validation.errors.length > 0 ? (
-            <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-rose-300">
+            <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-error">
               {validation.errors.map((item) => (
                 <li key={item}>{toBilingualPrompt(item)}</li>
               ))}
             </ul>
           ) : null}
           {validation.warnings.length > 0 ? (
-            <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-amber-300">
+            <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-warning">
               {validation.warnings.map((item) => (
                 <li key={item}>{toBilingualPrompt(item)}</li>
               ))}
             </ul>
           ) : null}
-        </article>
+        </Card>
       ) : null}
     </section>
   );

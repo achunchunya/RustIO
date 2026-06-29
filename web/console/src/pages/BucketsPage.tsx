@@ -2,6 +2,24 @@ import { useEffect, useMemo, useState } from 'react';
 import { toBilingualNotice, toBilingualPrompt } from '../utils/bilingual';
 import { ApiClient } from '../api/client';
 import { bucketService } from '../api/services';
+import {
+  Badge,
+  Button,
+  Card,
+  Chip,
+  Dialog,
+  EmptyState,
+  Field,
+  IconPlus,
+  IconStorage,
+  Input,
+  PageHeader,
+  Panel,
+  SectionTitle,
+  Select,
+  Textarea,
+  useConfirm
+} from '../components/ui';
 import type {
   BucketAclConfig,
   BucketCorsRule,
@@ -11,6 +29,7 @@ import type {
   BucketNotificationRule,
   BucketObjectLockConfig,
   BucketPublicAccessBlockConfig,
+  BucketUsageStats,
   BucketRetentionConfig,
   BucketSpec,
   BucketTag
@@ -18,6 +37,13 @@ import type {
 
 type BucketsPageProps = {
   client: ApiClient;
+};
+
+const formatBucketBytes = (bytes: number) => {
+  if (!bytes) return '0 B';
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
 };
 
 type GovernanceDraft = {
@@ -274,10 +300,14 @@ function normalizeLifecycleRuleDraft(draft: LifecycleRuleDraft): BucketLifecycle
 }
 
 export function BucketsPage({ client }: BucketsPageProps) {
+  const confirm = useConfirm();
   const [buckets, setBuckets] = useState<BucketSpec[]>([]);
+  const [usage, setUsage] = useState<Record<string, BucketUsageStats>>({});
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [creating, setCreating] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [selectedBucket, setSelectedBucket] = useState('');
   const [savingKey, setSavingKey] = useState('');
   const [drafts, setDrafts] = useState<Record<string, GovernanceDraft>>({});
   const [objectLockDrafts, setObjectLockDrafts] = useState<Record<string, BucketObjectLockConfig>>({});
@@ -311,6 +341,10 @@ export function BucketsPage({ client }: BucketsPageProps) {
   async function reload() {
     const rows = await bucketService.buckets(client);
     setBuckets(rows);
+    bucketService
+      .usage(client)
+      .then((stats) => setUsage(Object.fromEntries(stats.map((s) => [s.name, s]))))
+      .catch(() => setUsage({}));
 
     const nextGovernance: Record<string, GovernanceDraft> = {};
     for (const bucket of rows) {
@@ -432,18 +466,1684 @@ export function BucketsPage({ client }: BucketsPageProps) {
     [buckets]
   );
 
-  return (
-    <section className="space-y-4">
-      <article className="rounded-2xl border border-white/10 bg-ink-800/70 p-4">
-        <h1 className="font-heading text-2xl text-white">桶治理</h1>
-        <p className="mt-1 text-sm text-slate-300">
-          版本控制、对象锁、保留策略、法律保留、Policy/CORS/Tagging/SSE 与事件通知全可视化操作。
-        </p>
-        {error ? <p className="mt-3 text-sm text-rose-400">{toBilingualPrompt(error)}</p> : null}
-        {message ? <p className="mt-3 text-sm text-signal-500">{toBilingualNotice(message)}</p> : null}
+  const activeBucket = useMemo(
+    () => sortedBuckets.find((bucket) => bucket.name === selectedBucket) ?? null,
+    [sortedBuckets, selectedBucket]
+  );
 
+  function renderBucketDetail(bucket: BucketSpec) {
+    const governanceDraft = drafts[bucket.name] ?? {
+      versioning: bucket.versioning,
+      object_lock: bucket.object_lock,
+      ilm_policy: bucket.ilm_policy ?? '',
+      replication_policy: bucket.replication_policy ?? ''
+    };
+    const objectLock =
+      objectLockDrafts[bucket.name] ?? defaultObjectLockConfig(governanceDraft.object_lock);
+    const retention = retentionDrafts[bucket.name] ?? defaultRetentionConfig();
+    const legalHold = legalHoldDrafts[bucket.name] ?? defaultLegalHoldConfig();
+    const acl = aclDrafts[bucket.name] ?? defaultAclConfig();
+    const publicAccessBlock =
+      publicAccessBlockDrafts[bucket.name] ?? defaultPublicAccessBlockConfig();
+    const notificationRules = notificationDrafts[bucket.name] ?? [];
+    const newRule = newRuleDrafts[bucket.name] ?? defaultNotificationRule();
+    const lifecycleRules = lifecycleDrafts[bucket.name] ?? [];
+    const newLifecycleRule =
+      newLifecycleRuleDrafts[bucket.name] ?? defaultLifecycleRuleDraft();
+    const policyText = policyDrafts[bucket.name] ?? '';
+    const corsRules = corsDrafts[bucket.name] ?? [];
+    const newCorsRule = newCorsRuleDrafts[bucket.name] ?? defaultCorsRuleDraft();
+    const tags = tagDrafts[bucket.name] ?? [];
+    const newTag = newTagDrafts[bucket.name] ?? defaultTagDraft();
+    const encryption = encryptionDrafts[bucket.name] ?? defaultEncryptionDraft();
+
+    return (
+      <Card key={bucket.name} className="space-y-6">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="font-heading text-lg font-semibold text-on-surface">{bucket.name}</p>
+            <p className="mt-1 text-xs text-muted">租户：{bucket.tenant_id}</p>
+          </div>
+          <Button
+            variant="danger"
+            size="sm"
+            loading={savingKey === `${bucket.name}:delete`}
+            onClick={async () => {
+              if (!await confirm(`确认删除桶 ${bucket.name}？仅允许删除空桶。`)) return;
+              setSavingKey(`${bucket.name}:delete`);
+              setError('');
+              setMessage('');
+              try {
+                await bucketService.deleteBucket(client, bucket.name);
+                setMessage(`桶 ${bucket.name} 已删除`);
+                setSelectedBucket('');
+                await reload();
+              } catch (requestError) {
+                setError(requestError instanceof Error ? requestError.message : '删除桶失败');
+              } finally {
+                setSavingKey('');
+              }
+            }}
+          >
+            {savingKey === `${bucket.name}:delete` ? '删除中...' : '删除桶'}
+          </Button>
+        </div>
+
+        <Panel>
+          <SectionTitle>生命周期规则（Lifecycle）</SectionTitle>
+          <p className="mt-1 text-xs text-muted">
+            对齐企业级对象存储生命周期治理，支持当前版本和非当前版本过期策略。
+          </p>
+          <div className="mt-3 space-y-2">
+            {lifecycleRules.length === 0 ? (
+              <p className="text-xs text-muted">未配置生命周期规则</p>
+            ) : (
+              lifecycleRules.map((rule, index) => (
+                <div
+                  key={`${bucket.name}:lifecycle:${rule.id || index}`}
+                  className="grid gap-2 rounded-md border border-outline/40 p-2 md:grid-cols-6"
+                >
+                  <Input
+                    size="sm"
+                    value={rule.id}
+                    onChange={(event) =>
+                      setLifecycleDrafts((current) => ({
+                        ...current,
+                        [bucket.name]: lifecycleRules.map((item, itemIndex) =>
+                          itemIndex === index ? { ...item, id: event.target.value } : item
+                        )
+                      }))
+                    }
+                    placeholder="规则 ID"
+                  />
+                  <Input
+                    size="sm"
+                    value={rule.prefix}
+                    onChange={(event) =>
+                      setLifecycleDrafts((current) => ({
+                        ...current,
+                        [bucket.name]: lifecycleRules.map((item, itemIndex) =>
+                          itemIndex === index ? { ...item, prefix: event.target.value } : item
+                        )
+                      }))
+                    }
+                    placeholder="Prefix（可选）"
+                  />
+                  <Select
+                    size="sm"
+                    value={rule.status}
+                    onChange={(event) =>
+                      setLifecycleDrafts((current) => ({
+                        ...current,
+                        [bucket.name]: lifecycleRules.map((item, itemIndex) =>
+                          itemIndex === index ? { ...item, status: event.target.value } : item
+                        )
+                      }))
+                    }
+                  >
+                    <option value="Enabled">Enabled</option>
+                    <option value="Disabled">Disabled</option>
+                  </Select>
+                  <Input
+                    size="sm"
+                    value={rule.expiration_days}
+                    onChange={(event) =>
+                      setLifecycleDrafts((current) => ({
+                        ...current,
+                        [bucket.name]: lifecycleRules.map((item, itemIndex) =>
+                          itemIndex === index
+                            ? { ...item, expiration_days: event.target.value }
+                            : item
+                        )
+                      }))
+                    }
+                    placeholder="Expiration Days"
+                  />
+                  <Input
+                    size="sm"
+                    value={rule.noncurrent_expiration_days}
+                    onChange={(event) =>
+                      setLifecycleDrafts((current) => ({
+                        ...current,
+                        [bucket.name]: lifecycleRules.map((item, itemIndex) =>
+                          itemIndex === index
+                            ? { ...item, noncurrent_expiration_days: event.target.value }
+                            : item
+                        )
+                      }))
+                    }
+                    placeholder="Noncurrent Days"
+                  />
+                  <div className="flex items-center justify-end">
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      onClick={() =>
+                        setLifecycleDrafts((current) => ({
+                          ...current,
+                          [bucket.name]: lifecycleRules.filter((_, itemIndex) => itemIndex !== index)
+                        }))
+                      }
+                    >
+                      删除
+                    </Button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          <div className="mt-3 grid gap-2 rounded-md border border-outline/40 p-2 md:grid-cols-6">
+            <Input
+              size="sm"
+              value={newLifecycleRule.id}
+              onChange={(event) =>
+                setNewLifecycleRuleDrafts((current) => ({
+                  ...current,
+                  [bucket.name]: { ...newLifecycleRule, id: event.target.value }
+                }))
+              }
+              placeholder="规则 ID"
+            />
+            <Input
+              size="sm"
+              value={newLifecycleRule.prefix}
+              onChange={(event) =>
+                setNewLifecycleRuleDrafts((current) => ({
+                  ...current,
+                  [bucket.name]: { ...newLifecycleRule, prefix: event.target.value }
+                }))
+              }
+              placeholder="Prefix（可选）"
+            />
+            <Select
+              size="sm"
+              value={newLifecycleRule.status}
+              onChange={(event) =>
+                setNewLifecycleRuleDrafts((current) => ({
+                  ...current,
+                  [bucket.name]: { ...newLifecycleRule, status: event.target.value }
+                }))
+              }
+            >
+              <option value="Enabled">Enabled</option>
+              <option value="Disabled">Disabled</option>
+            </Select>
+            <Input
+              size="sm"
+              value={newLifecycleRule.expiration_days}
+              onChange={(event) =>
+                setNewLifecycleRuleDrafts((current) => ({
+                  ...current,
+                  [bucket.name]: { ...newLifecycleRule, expiration_days: event.target.value }
+                }))
+              }
+              placeholder="Expiration Days"
+            />
+            <Input
+              size="sm"
+              value={newLifecycleRule.noncurrent_expiration_days}
+              onChange={(event) =>
+                setNewLifecycleRuleDrafts((current) => ({
+                  ...current,
+                  [bucket.name]: {
+                    ...newLifecycleRule,
+                    noncurrent_expiration_days: event.target.value
+                  }
+                }))
+              }
+              placeholder="Noncurrent Days"
+            />
+            <div className="flex items-center justify-end">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  try {
+                    const normalized = normalizeLifecycleRuleDraft(newLifecycleRule);
+                    if (lifecycleRules.some((rule) => rule.id.trim() === normalized.id)) {
+                      throw new Error(`生命周期规则 ID ${normalized.id} 已存在`);
+                    }
+                    setLifecycleDrafts((current) => ({
+                      ...current,
+                      [bucket.name]: [...lifecycleRules, toLifecycleRuleDraft(normalized)]
+                    }));
+                    setNewLifecycleRuleDrafts((current) => ({
+                      ...current,
+                      [bucket.name]: defaultLifecycleRuleDraft()
+                    }));
+                    setError('');
+                  } catch (requestError) {
+                    setError(
+                      requestError instanceof Error ? requestError.message : '新增生命周期规则失败'
+                    );
+                  }
+                }}
+              >
+                新增规则
+              </Button>
+            </div>
+          </div>
+
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button
+              variant="secondary"
+              loading={savingKey === `${bucket.name}:lifecycle`}
+              onClick={async () => {
+                setSavingKey(`${bucket.name}:lifecycle`);
+                setError('');
+                setMessage('');
+                try {
+                  const payload = lifecycleRules.map(normalizeLifecycleRuleDraft);
+                  const ids = new Set(payload.map((rule) => rule.id));
+                  if (ids.size !== payload.length) {
+                    throw new Error('生命周期规则 ID 不能重复');
+                  }
+                  await bucketService.updateLifecycle(client, bucket.name, payload);
+                  setMessage(`桶 ${bucket.name} 的生命周期规则已更新`);
+                  await reload();
+                } catch (requestError) {
+                  setError(requestError instanceof Error ? requestError.message : '更新生命周期规则失败');
+                } finally {
+                  setSavingKey('');
+                }
+              }}
+            >
+              {savingKey === `${bucket.name}:lifecycle` ? '保存中...' : '保存生命周期规则'}
+            </Button>
+            <Button
+              variant="danger"
+              loading={savingKey === `${bucket.name}:lifecycle-clear`}
+              onClick={async () => {
+                if (!await confirm(`确认清除桶 ${bucket.name} 的生命周期配置？`)) return;
+                setSavingKey(`${bucket.name}:lifecycle-clear`);
+                setError('');
+                setMessage('');
+                try {
+                  await bucketService.deleteLifecycle(client, bucket.name);
+                  setMessage(`桶 ${bucket.name} 的生命周期配置已清除`);
+                  await reload();
+                } catch (requestError) {
+                  setError(requestError instanceof Error ? requestError.message : '清除生命周期配置失败');
+                } finally {
+                  setSavingKey('');
+                }
+              }}
+            >
+              {savingKey === `${bucket.name}:lifecycle-clear` ? '处理中...' : '清除生命周期'}
+            </Button>
+          </div>
+        </Panel>
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Panel>
+            <SectionTitle>基础治理</SectionTitle>
+            <div className="mt-3 grid gap-2">
+              <label className="flex items-center gap-2 text-sm text-muted">
+                <input
+                  type="checkbox"
+                  checked={governanceDraft.versioning}
+                  onChange={(event) =>
+                    setDrafts((current) => ({
+                      ...current,
+                      [bucket.name]: {
+                        ...governanceDraft,
+                        versioning: event.target.checked
+                      }
+                    }))
+                  }
+                />
+                版本控制
+              </label>
+              <label className="flex items-center gap-2 text-sm text-muted">
+                <input
+                  type="checkbox"
+                  checked={governanceDraft.object_lock}
+                  onChange={(event) =>
+                    setDrafts((current) => ({
+                      ...current,
+                      [bucket.name]: {
+                        ...governanceDraft,
+                        object_lock: event.target.checked
+                      }
+                    }))
+                  }
+                />
+                对象锁
+              </label>
+              <Field label="ILM 策略">
+                <Input
+                  value={governanceDraft.ilm_policy}
+                  onChange={(event) =>
+                    setDrafts((current) => ({
+                      ...current,
+                      [bucket.name]: {
+                        ...governanceDraft,
+                        ilm_policy: event.target.value
+                      }
+                    }))
+                  }
+                />
+              </Field>
+              <Field label="复制策略">
+                <Input
+                  value={governanceDraft.replication_policy}
+                  onChange={(event) =>
+                    setDrafts((current) => ({
+                      ...current,
+                      [bucket.name]: {
+                        ...governanceDraft,
+                        replication_policy: event.target.value
+                      }
+                    }))
+                  }
+                />
+              </Field>
+              <Button
+                variant="secondary"
+                loading={savingKey === `${bucket.name}:governance`}
+                onClick={async () => {
+                  setSavingKey(`${bucket.name}:governance`);
+                  setError('');
+                  setMessage('');
+                  try {
+                    await bucketService.updateGovernance(client, bucket.name, {
+                      versioning: governanceDraft.versioning,
+                      object_lock: governanceDraft.object_lock,
+                      ilm_policy: governanceDraft.ilm_policy || undefined,
+                      replication_policy: governanceDraft.replication_policy || undefined
+                    });
+                    setMessage(`桶 ${bucket.name} 基础治理已更新`);
+                    await reload();
+                  } catch (requestError) {
+                    setError(requestError instanceof Error ? requestError.message : '更新基础治理失败');
+                  } finally {
+                    setSavingKey('');
+                  }
+                }}
+              >
+                {savingKey === `${bucket.name}:governance` ? '保存中...' : '保存基础治理'}
+              </Button>
+            </div>
+          </Panel>
+
+          <Panel>
+            <SectionTitle>对象锁默认保留</SectionTitle>
+            <div className="mt-3 grid gap-2">
+              <label className="flex items-center gap-2 text-sm text-muted">
+                <input
+                  type="checkbox"
+                  checked={objectLock.enabled}
+                  onChange={(event) =>
+                    setObjectLockDrafts((current) => ({
+                      ...current,
+                      [bucket.name]: {
+                        ...objectLock,
+                        enabled: event.target.checked
+                      }
+                    }))
+                  }
+                />
+                启用 Object Lock 默认规则
+              </label>
+              <Field label="模式">
+                <Select
+                  value={objectLock.mode}
+                  onChange={(event) =>
+                    setObjectLockDrafts((current) => ({
+                      ...current,
+                      [bucket.name]: {
+                        ...objectLock,
+                        mode: event.target.value
+                      }
+                    }))
+                  }
+                >
+                  <option value="GOVERNANCE">GOVERNANCE</option>
+                  <option value="COMPLIANCE">COMPLIANCE</option>
+                </Select>
+              </Field>
+              <Field label="默认保留天数">
+                <Input
+                  type="number"
+                  min={1}
+                  value={objectLock.default_retention_days}
+                  onChange={(event) =>
+                    setObjectLockDrafts((current) => ({
+                      ...current,
+                      [bucket.name]: {
+                        ...objectLock,
+                        default_retention_days: Number(event.target.value)
+                      }
+                    }))
+                  }
+                />
+              </Field>
+              <Button
+                variant="secondary"
+                loading={savingKey === `${bucket.name}:object-lock`}
+                onClick={async () => {
+                  setSavingKey(`${bucket.name}:object-lock`);
+                  setError('');
+                  setMessage('');
+                  try {
+                    await bucketService.updateObjectLock(client, bucket.name, objectLock);
+                    setMessage(`桶 ${bucket.name} 的 Object Lock 配置已更新`);
+                    await reload();
+                  } catch (requestError) {
+                    setError(requestError instanceof Error ? requestError.message : '更新 Object Lock 失败');
+                  } finally {
+                    setSavingKey('');
+                  }
+                }}
+              >
+                {savingKey === `${bucket.name}:object-lock` ? '保存中...' : '保存 Object Lock'}
+              </Button>
+            </div>
+          </Panel>
+
+          <Panel>
+            <SectionTitle>默认保留策略</SectionTitle>
+            <div className="mt-3 grid gap-2">
+              <label className="flex items-center gap-2 text-sm text-muted">
+                <input
+                  type="checkbox"
+                  checked={retention.enabled}
+                  onChange={(event) =>
+                    setRetentionDrafts((current) => ({
+                      ...current,
+                      [bucket.name]: {
+                        ...retention,
+                        enabled: event.target.checked
+                      }
+                    }))
+                  }
+                />
+                启用默认保留
+              </label>
+              <Field label="模式">
+                <Select
+                  value={retention.mode}
+                  onChange={(event) =>
+                    setRetentionDrafts((current) => ({
+                      ...current,
+                      [bucket.name]: {
+                        ...retention,
+                        mode: event.target.value
+                      }
+                    }))
+                  }
+                >
+                  <option value="GOVERNANCE">GOVERNANCE</option>
+                  <option value="COMPLIANCE">COMPLIANCE</option>
+                </Select>
+              </Field>
+              <Field label="保留天数">
+                <Input
+                  type="number"
+                  min={1}
+                  value={retention.duration_days}
+                  onChange={(event) =>
+                    setRetentionDrafts((current) => ({
+                      ...current,
+                      [bucket.name]: {
+                        ...retention,
+                        duration_days: Number(event.target.value)
+                      }
+                    }))
+                  }
+                />
+              </Field>
+              <Button
+                variant="secondary"
+                loading={savingKey === `${bucket.name}:retention`}
+                onClick={async () => {
+                  setSavingKey(`${bucket.name}:retention`);
+                  setError('');
+                  setMessage('');
+                  try {
+                    await bucketService.updateRetention(client, bucket.name, retention);
+                    setMessage(`桶 ${bucket.name} 的默认保留策略已更新`);
+                    await reload();
+                  } catch (requestError) {
+                    setError(requestError instanceof Error ? requestError.message : '更新默认保留失败');
+                  } finally {
+                    setSavingKey('');
+                  }
+                }}
+              >
+                {savingKey === `${bucket.name}:retention` ? '保存中...' : '保存默认保留'}
+              </Button>
+            </div>
+          </Panel>
+
+          <Panel>
+            <SectionTitle>法律保留</SectionTitle>
+            <div className="mt-3 grid gap-2">
+              <label className="flex items-center gap-2 text-sm text-muted">
+                <input
+                  type="checkbox"
+                  checked={legalHold.enabled}
+                  onChange={(event) =>
+                    setLegalHoldDrafts((current) => ({
+                      ...current,
+                      [bucket.name]: {
+                        enabled: event.target.checked
+                      }
+                    }))
+                  }
+                />
+                启用法律保留
+              </label>
+              <Button
+                variant="secondary"
+                loading={savingKey === `${bucket.name}:legal-hold`}
+                onClick={async () => {
+                  setSavingKey(`${bucket.name}:legal-hold`);
+                  setError('');
+                  setMessage('');
+                  try {
+                    await bucketService.updateLegalHold(client, bucket.name, legalHold);
+                    setMessage(`桶 ${bucket.name} 的法律保留已更新`);
+                    await reload();
+                  } catch (requestError) {
+                    setError(requestError instanceof Error ? requestError.message : '更新法律保留失败');
+                  } finally {
+                    setSavingKey('');
+                  }
+                }}
+              >
+                {savingKey === `${bucket.name}:legal-hold` ? '保存中...' : '保存法律保留'}
+              </Button>
+            </div>
+          </Panel>
+
+          <Panel>
+            <SectionTitle>访问控制（ACL / Public Access）</SectionTitle>
+            <div className="mt-3 grid gap-2">
+              <Field label="桶 ACL">
+                <Select
+                  value={acl.acl}
+                  onChange={(event) =>
+                    setAclDrafts((current) => ({
+                      ...current,
+                      [bucket.name]: { acl: event.target.value }
+                    }))
+                  }
+                >
+                  <option value="private">private</option>
+                  <option value="public-read">public-read</option>
+                  <option value="public-read-write">public-read-write</option>
+                  <option value="authenticated-read">authenticated-read</option>
+                </Select>
+              </Field>
+              <Button
+                variant="secondary"
+                loading={savingKey === `${bucket.name}:acl`}
+                onClick={async () => {
+                  setSavingKey(`${bucket.name}:acl`);
+                  setError('');
+                  setMessage('');
+                  try {
+                    await bucketService.updateAcl(client, bucket.name, acl);
+                    setMessage(`桶 ${bucket.name} ACL 已更新`);
+                    await reload();
+                  } catch (requestError) {
+                    setError(requestError instanceof Error ? requestError.message : '更新桶 ACL 失败');
+                  } finally {
+                    setSavingKey('');
+                  }
+                }}
+              >
+                {savingKey === `${bucket.name}:acl` ? '保存中...' : '保存 ACL'}
+              </Button>
+
+              <label className="flex items-center gap-2 text-sm text-muted">
+                <input
+                  type="checkbox"
+                  checked={publicAccessBlock.block_public_acls}
+                  onChange={(event) =>
+                    setPublicAccessBlockDrafts((current) => ({
+                      ...current,
+                      [bucket.name]: {
+                        ...publicAccessBlock,
+                        block_public_acls: event.target.checked
+                      }
+                    }))
+                  }
+                />
+                Block Public ACLs
+              </label>
+              <label className="flex items-center gap-2 text-sm text-muted">
+                <input
+                  type="checkbox"
+                  checked={publicAccessBlock.ignore_public_acls}
+                  onChange={(event) =>
+                    setPublicAccessBlockDrafts((current) => ({
+                      ...current,
+                      [bucket.name]: {
+                        ...publicAccessBlock,
+                        ignore_public_acls: event.target.checked
+                      }
+                    }))
+                  }
+                />
+                Ignore Public ACLs
+              </label>
+              <label className="flex items-center gap-2 text-sm text-muted">
+                <input
+                  type="checkbox"
+                  checked={publicAccessBlock.block_public_policy}
+                  onChange={(event) =>
+                    setPublicAccessBlockDrafts((current) => ({
+                      ...current,
+                      [bucket.name]: {
+                        ...publicAccessBlock,
+                        block_public_policy: event.target.checked
+                      }
+                    }))
+                  }
+                />
+                Block Public Policy
+              </label>
+              <label className="flex items-center gap-2 text-sm text-muted">
+                <input
+                  type="checkbox"
+                  checked={publicAccessBlock.restrict_public_buckets}
+                  onChange={(event) =>
+                    setPublicAccessBlockDrafts((current) => ({
+                      ...current,
+                      [bucket.name]: {
+                        ...publicAccessBlock,
+                        restrict_public_buckets: event.target.checked
+                      }
+                    }))
+                  }
+                />
+                Restrict Public Buckets
+              </label>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="secondary"
+                  loading={savingKey === `${bucket.name}:pab`}
+                  onClick={async () => {
+                    setSavingKey(`${bucket.name}:pab`);
+                    setError('');
+                    setMessage('');
+                    try {
+                      await bucketService.updatePublicAccessBlock(
+                        client,
+                        bucket.name,
+                        publicAccessBlock
+                      );
+                      setMessage(`桶 ${bucket.name} Public Access Block 已更新`);
+                      await reload();
+                    } catch (requestError) {
+                      setError(
+                        requestError instanceof Error
+                          ? requestError.message
+                          : '更新 Public Access Block 失败'
+                      );
+                    } finally {
+                      setSavingKey('');
+                    }
+                  }}
+                >
+                  {savingKey === `${bucket.name}:pab` ? '保存中...' : '保存 Public Access'}
+                </Button>
+                <Button
+                  variant="danger"
+                  loading={savingKey === `${bucket.name}:pab-clear`}
+                  onClick={async () => {
+                    if (!await confirm(`确认清除桶 ${bucket.name} 的 Public Access Block 配置？`)) {
+                      return;
+                    }
+                    setSavingKey(`${bucket.name}:pab-clear`);
+                    setError('');
+                    setMessage('');
+                    try {
+                      await bucketService.deletePublicAccessBlock(client, bucket.name);
+                      setMessage(`桶 ${bucket.name} Public Access Block 已清除`);
+                      await reload();
+                    } catch (requestError) {
+                      setError(
+                        requestError instanceof Error
+                          ? requestError.message
+                          : '清除 Public Access Block 失败'
+                      );
+                    } finally {
+                      setSavingKey('');
+                    }
+                  }}
+                >
+                  {savingKey === `${bucket.name}:pab-clear` ? '处理中...' : '清除 Public Access'}
+                </Button>
+              </div>
+            </div>
+          </Panel>
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Panel>
+            <SectionTitle>Bucket Policy</SectionTitle>
+            <p className="mt-1 text-xs text-muted">
+              使用 JSON 直接编辑策略文档，留空并保存可清除策略。
+            </p>
+            <Textarea
+              value={policyText}
+              onChange={(event) =>
+                setPolicyDrafts((current) => ({
+                  ...current,
+                  [bucket.name]: event.target.value
+                }))
+              }
+              className="mt-3 h-56 text-xs"
+              placeholder='{"Version":"2012-10-17","Statement":[...]}'
+            />
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button
+                variant="secondary"
+                loading={savingKey === `${bucket.name}:policy`}
+                onClick={async () => {
+                  setSavingKey(`${bucket.name}:policy`);
+                  setError('');
+                  setMessage('');
+                  try {
+                    const raw = policyText.trim();
+                    if (!raw) {
+                      await bucketService.deletePolicy(client, bucket.name);
+                      setMessage(`桶 ${bucket.name} 的策略已清除`);
+                    } else {
+                      const parsed = JSON.parse(raw) as Record<string, unknown>;
+                      await bucketService.updatePolicy(client, bucket.name, parsed);
+                      setMessage(`桶 ${bucket.name} 的策略已更新`);
+                    }
+                    await reload();
+                  } catch (requestError) {
+                    setError(requestError instanceof Error ? requestError.message : '更新策略失败');
+                  } finally {
+                    setSavingKey('');
+                  }
+                }}
+              >
+                {savingKey === `${bucket.name}:policy` ? '保存中...' : '保存策略'}
+              </Button>
+              <Button
+                variant="danger"
+                loading={savingKey === `${bucket.name}:policy-clear`}
+                onClick={async () => {
+                  if (!await confirm(`确认清除桶 ${bucket.name} 的策略配置？`)) return;
+                  setSavingKey(`${bucket.name}:policy-clear`);
+                  setError('');
+                  setMessage('');
+                  try {
+                    await bucketService.deletePolicy(client, bucket.name);
+                    setMessage(`桶 ${bucket.name} 的策略已清除`);
+                    await reload();
+                  } catch (requestError) {
+                    setError(requestError instanceof Error ? requestError.message : '清除策略失败');
+                  } finally {
+                    setSavingKey('');
+                  }
+                }}
+              >
+                {savingKey === `${bucket.name}:policy-clear` ? '处理中...' : '清除策略'}
+              </Button>
+            </div>
+          </Panel>
+
+          <Panel>
+            <SectionTitle>默认加密（SSE）</SectionTitle>
+            <div className="mt-3 grid gap-2">
+              <label className="flex items-center gap-2 text-sm text-muted">
+                <input
+                  type="checkbox"
+                  checked={encryption.enabled}
+                  onChange={(event) =>
+                    setEncryptionDrafts((current) => ({
+                      ...current,
+                      [bucket.name]: {
+                        ...encryption,
+                        enabled: event.target.checked
+                      }
+                    }))
+                  }
+                />
+                启用桶默认加密
+              </label>
+              <Field label="算法">
+                <Select
+                  value={encryption.algorithm}
+                  onChange={(event) =>
+                    setEncryptionDrafts((current) => ({
+                      ...current,
+                      [bucket.name]: {
+                        ...encryption,
+                        algorithm: event.target.value
+                      }
+                    }))
+                  }
+                >
+                  <option value="AES256">AES256</option>
+                  <option value="aws:kms">aws:kms</option>
+                </Select>
+              </Field>
+              <Field label="KMS Key ID（可选）">
+                <Input
+                  value={encryption.kms_key_id}
+                  onChange={(event) =>
+                    setEncryptionDrafts((current) => ({
+                      ...current,
+                      [bucket.name]: {
+                        ...encryption,
+                        kms_key_id: event.target.value
+                      }
+                    }))
+                  }
+                  placeholder="alias/rustio-default"
+                />
+              </Field>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="secondary"
+                  loading={savingKey === `${bucket.name}:encryption`}
+                  onClick={async () => {
+                    setSavingKey(`${bucket.name}:encryption`);
+                    setError('');
+                    setMessage('');
+                    try {
+                      if (!encryption.enabled) {
+                        await bucketService.deleteEncryption(client, bucket.name);
+                        setMessage(`桶 ${bucket.name} 的默认加密已关闭`);
+                      } else {
+                        const payload = normalizeEncryptionDraft(encryption);
+                        await bucketService.updateEncryption(client, bucket.name, payload);
+                        setMessage(`桶 ${bucket.name} 的默认加密已更新`);
+                      }
+                      await reload();
+                    } catch (requestError) {
+                      setError(requestError instanceof Error ? requestError.message : '更新默认加密失败');
+                    } finally {
+                      setSavingKey('');
+                    }
+                  }}
+                >
+                  {savingKey === `${bucket.name}:encryption` ? '保存中...' : '保存加密配置'}
+                </Button>
+                <Button
+                  variant="danger"
+                  loading={savingKey === `${bucket.name}:encryption-clear`}
+                  onClick={async () => {
+                    if (!await confirm(`确认删除桶 ${bucket.name} 的默认加密配置？`)) return;
+                    setSavingKey(`${bucket.name}:encryption-clear`);
+                    setError('');
+                    setMessage('');
+                    try {
+                      await bucketService.deleteEncryption(client, bucket.name);
+                      setMessage(`桶 ${bucket.name} 的默认加密已清除`);
+                      await reload();
+                    } catch (requestError) {
+                      setError(requestError instanceof Error ? requestError.message : '清除默认加密失败');
+                    } finally {
+                      setSavingKey('');
+                    }
+                  }}
+                >
+                  {savingKey === `${bucket.name}:encryption-clear` ? '处理中...' : '清除加密配置'}
+                </Button>
+              </div>
+            </div>
+          </Panel>
+        </div>
+
+        <Panel>
+          <SectionTitle>CORS 规则</SectionTitle>
+          <div className="mt-3 space-y-2">
+            {corsRules.length === 0 ? (
+              <p className="text-xs text-muted">未配置 CORS 规则</p>
+            ) : (
+              corsRules.map((rule, index) => (
+                <div
+                  key={`${bucket.name}:cors:${rule.id || index}`}
+                  className="grid gap-2 rounded-md border border-outline/40 p-2 md:grid-cols-6"
+                >
+                  <Input
+                    size="sm"
+                    value={rule.id}
+                    onChange={(event) =>
+                      setCorsDrafts((current) => ({
+                        ...current,
+                        [bucket.name]: corsRules.map((item, itemIndex) =>
+                          itemIndex === index ? { ...item, id: event.target.value } : item
+                        )
+                      }))
+                    }
+                    placeholder="规则 ID"
+                  />
+                  <Input
+                    size="sm"
+                    value={rule.allowed_origins}
+                    onChange={(event) =>
+                      setCorsDrafts((current) => ({
+                        ...current,
+                        [bucket.name]: corsRules.map((item, itemIndex) =>
+                          itemIndex === index
+                            ? { ...item, allowed_origins: event.target.value }
+                            : item
+                        )
+                      }))
+                    }
+                    placeholder="AllowedOrigin（逗号分隔）"
+                  />
+                  <Input
+                    size="sm"
+                    value={rule.allowed_methods}
+                    onChange={(event) =>
+                      setCorsDrafts((current) => ({
+                        ...current,
+                        [bucket.name]: corsRules.map((item, itemIndex) =>
+                          itemIndex === index
+                            ? { ...item, allowed_methods: event.target.value }
+                            : item
+                        )
+                      }))
+                    }
+                    placeholder="AllowedMethod（逗号分隔）"
+                  />
+                  <Input
+                    size="sm"
+                    value={rule.allowed_headers}
+                    onChange={(event) =>
+                      setCorsDrafts((current) => ({
+                        ...current,
+                        [bucket.name]: corsRules.map((item, itemIndex) =>
+                          itemIndex === index
+                            ? { ...item, allowed_headers: event.target.value }
+                            : item
+                        )
+                      }))
+                    }
+                    placeholder="AllowedHeader"
+                  />
+                  <Input
+                    size="sm"
+                    value={rule.expose_headers}
+                    onChange={(event) =>
+                      setCorsDrafts((current) => ({
+                        ...current,
+                        [bucket.name]: corsRules.map((item, itemIndex) =>
+                          itemIndex === index
+                            ? { ...item, expose_headers: event.target.value }
+                            : item
+                        )
+                      }))
+                    }
+                    placeholder="ExposeHeader"
+                  />
+                  <div className="flex items-center justify-between gap-2">
+                    <Input
+                      size="sm"
+                      value={rule.max_age_seconds}
+                      onChange={(event) =>
+                        setCorsDrafts((current) => ({
+                          ...current,
+                          [bucket.name]: corsRules.map((item, itemIndex) =>
+                            itemIndex === index
+                              ? { ...item, max_age_seconds: event.target.value }
+                              : item
+                          )
+                        }))
+                      }
+                      placeholder="MaxAgeSeconds"
+                    />
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      onClick={() =>
+                        setCorsDrafts((current) => ({
+                          ...current,
+                          [bucket.name]: corsRules.filter((_, itemIndex) => itemIndex !== index)
+                        }))
+                      }
+                    >
+                      删除
+                    </Button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          <div className="mt-3 grid gap-2 rounded-md border border-outline/40 p-2 md:grid-cols-6">
+            <Input
+              size="sm"
+              value={newCorsRule.id}
+              onChange={(event) =>
+                setNewCorsRuleDrafts((current) => ({
+                  ...current,
+                  [bucket.name]: { ...newCorsRule, id: event.target.value }
+                }))
+              }
+              placeholder="规则 ID"
+            />
+            <Input
+              size="sm"
+              value={newCorsRule.allowed_origins}
+              onChange={(event) =>
+                setNewCorsRuleDrafts((current) => ({
+                  ...current,
+                  [bucket.name]: { ...newCorsRule, allowed_origins: event.target.value }
+                }))
+              }
+              placeholder="AllowedOrigin"
+            />
+            <Input
+              size="sm"
+              value={newCorsRule.allowed_methods}
+              onChange={(event) =>
+                setNewCorsRuleDrafts((current) => ({
+                  ...current,
+                  [bucket.name]: { ...newCorsRule, allowed_methods: event.target.value }
+                }))
+              }
+              placeholder="AllowedMethod"
+            />
+            <Input
+              size="sm"
+              value={newCorsRule.allowed_headers}
+              onChange={(event) =>
+                setNewCorsRuleDrafts((current) => ({
+                  ...current,
+                  [bucket.name]: { ...newCorsRule, allowed_headers: event.target.value }
+                }))
+              }
+              placeholder="AllowedHeader"
+            />
+            <Input
+              size="sm"
+              value={newCorsRule.expose_headers}
+              onChange={(event) =>
+                setNewCorsRuleDrafts((current) => ({
+                  ...current,
+                  [bucket.name]: { ...newCorsRule, expose_headers: event.target.value }
+                }))
+              }
+              placeholder="ExposeHeader"
+            />
+            <div className="flex items-center gap-2">
+              <Input
+                size="sm"
+                value={newCorsRule.max_age_seconds}
+                onChange={(event) =>
+                  setNewCorsRuleDrafts((current) => ({
+                    ...current,
+                    [bucket.name]: { ...newCorsRule, max_age_seconds: event.target.value }
+                  }))
+                }
+                placeholder="MaxAgeSeconds"
+              />
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  try {
+                    const normalized = normalizeCorsRuleDraft(newCorsRule);
+                    if (corsRules.some((rule) => rule.id.trim() === normalized.id)) {
+                      throw new Error(`CORS 规则 ID ${normalized.id} 已存在`);
+                    }
+                    setCorsDrafts((current) => ({
+                      ...current,
+                      [bucket.name]: [...corsRules, toCorsRuleDraft(normalized)]
+                    }));
+                    setNewCorsRuleDrafts((current) => ({
+                      ...current,
+                      [bucket.name]: defaultCorsRuleDraft()
+                    }));
+                    setError('');
+                  } catch (requestError) {
+                    setError(requestError instanceof Error ? requestError.message : '新增 CORS 规则失败');
+                  }
+                }}
+              >
+                新增
+              </Button>
+            </div>
+          </div>
+
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button
+              variant="secondary"
+              loading={savingKey === `${bucket.name}:cors`}
+              onClick={async () => {
+                setSavingKey(`${bucket.name}:cors`);
+                setError('');
+                setMessage('');
+                try {
+                  const payload = corsRules.map(normalizeCorsRuleDraft);
+                  await bucketService.updateCors(client, bucket.name, payload);
+                  setMessage(`桶 ${bucket.name} 的 CORS 规则已更新`);
+                  await reload();
+                } catch (requestError) {
+                  setError(requestError instanceof Error ? requestError.message : '更新 CORS 失败');
+                } finally {
+                  setSavingKey('');
+                }
+              }}
+            >
+              {savingKey === `${bucket.name}:cors` ? '保存中...' : '保存 CORS'}
+            </Button>
+            <Button
+              variant="danger"
+              loading={savingKey === `${bucket.name}:cors-clear`}
+              onClick={async () => {
+                if (!await confirm(`确认删除桶 ${bucket.name} 的 CORS 配置？`)) return;
+                setSavingKey(`${bucket.name}:cors-clear`);
+                setError('');
+                setMessage('');
+                try {
+                  await bucketService.deleteCors(client, bucket.name);
+                  setMessage(`桶 ${bucket.name} 的 CORS 配置已清除`);
+                  await reload();
+                } catch (requestError) {
+                  setError(requestError instanceof Error ? requestError.message : '清除 CORS 失败');
+                } finally {
+                  setSavingKey('');
+                }
+              }}
+            >
+              {savingKey === `${bucket.name}:cors-clear` ? '处理中...' : '清除 CORS'}
+            </Button>
+          </div>
+        </Panel>
+
+        <Panel>
+          <SectionTitle>桶标签（Tagging）</SectionTitle>
+          <div className="mt-3 space-y-2">
+            {tags.length === 0 ? (
+              <p className="text-xs text-muted">未配置标签</p>
+            ) : (
+              tags.map((tag, index) => (
+                <div
+                  key={`${bucket.name}:tag:${tag.key || index}`}
+                  className="grid gap-2 rounded-md border border-outline/40 p-2 md:grid-cols-3"
+                >
+                  <Input
+                    size="sm"
+                    value={tag.key}
+                    onChange={(event) =>
+                      setTagDrafts((current) => ({
+                        ...current,
+                        [bucket.name]: tags.map((item, itemIndex) =>
+                          itemIndex === index ? { ...item, key: event.target.value } : item
+                        )
+                      }))
+                    }
+                    placeholder="Key"
+                  />
+                  <Input
+                    size="sm"
+                    value={tag.value}
+                    onChange={(event) =>
+                      setTagDrafts((current) => ({
+                        ...current,
+                        [bucket.name]: tags.map((item, itemIndex) =>
+                          itemIndex === index ? { ...item, value: event.target.value } : item
+                        )
+                      }))
+                    }
+                    placeholder="Value"
+                  />
+                  <div className="flex items-center justify-end">
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      onClick={() =>
+                        setTagDrafts((current) => ({
+                          ...current,
+                          [bucket.name]: tags.filter((_, itemIndex) => itemIndex !== index)
+                        }))
+                      }
+                    >
+                      删除
+                    </Button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          <div className="mt-3 grid gap-2 rounded-md border border-outline/40 p-2 md:grid-cols-3">
+            <Input
+              size="sm"
+              value={newTag.key}
+              onChange={(event) =>
+                setNewTagDrafts((current) => ({
+                  ...current,
+                  [bucket.name]: { ...newTag, key: event.target.value }
+                }))
+              }
+              placeholder="Key"
+            />
+            <Input
+              size="sm"
+              value={newTag.value}
+              onChange={(event) =>
+                setNewTagDrafts((current) => ({
+                  ...current,
+                  [bucket.name]: { ...newTag, value: event.target.value }
+                }))
+              }
+              placeholder="Value"
+            />
+            <div className="flex items-center justify-end">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  try {
+                    const normalized = normalizeTagDraft(newTag);
+                    if (tags.some((item) => item.key.trim() === normalized.key)) {
+                      throw new Error(`标签 Key ${normalized.key} 已存在`);
+                    }
+                    setTagDrafts((current) => ({
+                      ...current,
+                      [bucket.name]: [...tags, { key: normalized.key, value: normalized.value }]
+                    }));
+                    setNewTagDrafts((current) => ({
+                      ...current,
+                      [bucket.name]: defaultTagDraft()
+                    }));
+                    setError('');
+                  } catch (requestError) {
+                    setError(requestError instanceof Error ? requestError.message : '新增标签失败');
+                  }
+                }}
+              >
+                新增标签
+              </Button>
+            </div>
+          </div>
+
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button
+              variant="secondary"
+              loading={savingKey === `${bucket.name}:tags`}
+              onClick={async () => {
+                setSavingKey(`${bucket.name}:tags`);
+                setError('');
+                setMessage('');
+                try {
+                  const payload = tags.map(normalizeTagDraft);
+                  await bucketService.updateTags(client, bucket.name, payload);
+                  setMessage(`桶 ${bucket.name} 的标签已更新`);
+                  await reload();
+                } catch (requestError) {
+                  setError(requestError instanceof Error ? requestError.message : '更新标签失败');
+                } finally {
+                  setSavingKey('');
+                }
+              }}
+            >
+              {savingKey === `${bucket.name}:tags` ? '保存中...' : '保存标签'}
+            </Button>
+            <Button
+              variant="danger"
+              loading={savingKey === `${bucket.name}:tags-clear`}
+              onClick={async () => {
+                if (!await confirm(`确认删除桶 ${bucket.name} 的所有标签？`)) return;
+                setSavingKey(`${bucket.name}:tags-clear`);
+                setError('');
+                setMessage('');
+                try {
+                  await bucketService.deleteTags(client, bucket.name);
+                  setMessage(`桶 ${bucket.name} 的标签已清除`);
+                  await reload();
+                } catch (requestError) {
+                  setError(requestError instanceof Error ? requestError.message : '清除标签失败');
+                } finally {
+                  setSavingKey('');
+                }
+              }}
+            >
+              {savingKey === `${bucket.name}:tags-clear` ? '处理中...' : '清除标签'}
+            </Button>
+          </div>
+        </Panel>
+
+        <Panel>
+          <SectionTitle>事件通知规则</SectionTitle>
+          <div className="mt-3 space-y-2">
+            {notificationRules.length === 0 ? (
+              <p className="text-xs text-muted">暂无通知规则</p>
+            ) : (
+              notificationRules.map((rule, index) => (
+                <div
+                  key={`${bucket.name}:${rule.id || index}`}
+                  className="grid gap-2 rounded-md border border-outline/40 p-2 md:grid-cols-6"
+                >
+                  <Input
+                    size="sm"
+                    value={rule.id}
+                    onChange={(event) =>
+                      setNotificationDrafts((current) => ({
+                        ...current,
+                        [bucket.name]: notificationRules.map((item, itemIndex) =>
+                          itemIndex === index ? { ...item, id: event.target.value } : item
+                        )
+                      }))
+                    }
+                    placeholder="规则 ID"
+                  />
+                  <Input
+                    size="sm"
+                    value={rule.event}
+                    onChange={(event) =>
+                      setNotificationDrafts((current) => ({
+                        ...current,
+                        [bucket.name]: notificationRules.map((item, itemIndex) =>
+                          itemIndex === index ? { ...item, event: event.target.value } : item
+                        )
+                      }))
+                    }
+                    placeholder="事件"
+                  />
+                  <Input
+                    size="sm"
+                    value={rule.target}
+                    onChange={(event) =>
+                      setNotificationDrafts((current) => ({
+                        ...current,
+                        [bucket.name]: notificationRules.map((item, itemIndex) =>
+                          itemIndex === index ? { ...item, target: event.target.value } : item
+                        )
+                      }))
+                    }
+                    placeholder="目标"
+                  />
+                  <Input
+                    size="sm"
+                    value={rule.prefix ?? ''}
+                    onChange={(event) =>
+                      setNotificationDrafts((current) => ({
+                        ...current,
+                        [bucket.name]: notificationRules.map((item, itemIndex) =>
+                          itemIndex === index ? { ...item, prefix: event.target.value } : item
+                        )
+                      }))
+                    }
+                    placeholder="prefix"
+                  />
+                  <Input
+                    size="sm"
+                    value={rule.suffix ?? ''}
+                    onChange={(event) =>
+                      setNotificationDrafts((current) => ({
+                        ...current,
+                        [bucket.name]: notificationRules.map((item, itemIndex) =>
+                          itemIndex === index ? { ...item, suffix: event.target.value } : item
+                        )
+                      }))
+                    }
+                    placeholder="suffix"
+                  />
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="flex items-center gap-1 text-xs text-muted">
+                      <input
+                        type="checkbox"
+                        checked={rule.enabled}
+                        onChange={(event) =>
+                          setNotificationDrafts((current) => ({
+                            ...current,
+                            [bucket.name]: notificationRules.map((item, itemIndex) =>
+                              itemIndex === index ? { ...item, enabled: event.target.checked } : item
+                            )
+                          }))
+                        }
+                      />
+                      启用
+                    </label>
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      onClick={() =>
+                        setNotificationDrafts((current) => ({
+                          ...current,
+                          [bucket.name]: notificationRules.filter((_, itemIndex) => itemIndex !== index)
+                        }))
+                      }
+                    >
+                      删除
+                    </Button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          <div className="mt-3 grid gap-2 rounded-md border border-outline/40 p-2 md:grid-cols-6">
+            <Input
+              size="sm"
+              value={newRule.id}
+              onChange={(event) =>
+                setNewRuleDrafts((current) => ({
+                  ...current,
+                  [bucket.name]: { ...newRule, id: event.target.value }
+                }))
+              }
+              placeholder="规则 ID"
+            />
+            <Input
+              size="sm"
+              value={newRule.event}
+              onChange={(event) =>
+                setNewRuleDrafts((current) => ({
+                  ...current,
+                  [bucket.name]: { ...newRule, event: event.target.value }
+                }))
+              }
+              placeholder="事件"
+            />
+            <Input
+              size="sm"
+              value={newRule.target}
+              onChange={(event) =>
+                setNewRuleDrafts((current) => ({
+                  ...current,
+                  [bucket.name]: { ...newRule, target: event.target.value }
+                }))
+              }
+              placeholder="目标"
+            />
+            <Input
+              size="sm"
+              value={newRule.prefix ?? ''}
+              onChange={(event) =>
+                setNewRuleDrafts((current) => ({
+                  ...current,
+                  [bucket.name]: { ...newRule, prefix: event.target.value }
+                }))
+              }
+              placeholder="prefix"
+            />
+            <Input
+              size="sm"
+              value={newRule.suffix ?? ''}
+              onChange={(event) =>
+                setNewRuleDrafts((current) => ({
+                  ...current,
+                  [bucket.name]: { ...newRule, suffix: event.target.value }
+                }))
+              }
+              placeholder="suffix"
+            />
+            <div className="flex items-center justify-between gap-2">
+              <label className="flex items-center gap-1 text-xs text-muted">
+                <input
+                  type="checkbox"
+                  checked={newRule.enabled}
+                  onChange={(event) =>
+                    setNewRuleDrafts((current) => ({
+                      ...current,
+                      [bucket.name]: { ...newRule, enabled: event.target.checked }
+                    }))
+                  }
+                />
+                启用
+              </label>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  const normalized = normalizeRule(newRule);
+                  if (!normalized.id || !normalized.event || !normalized.target) {
+                    setError('通知规则的 ID、事件、目标不能为空');
+                    return;
+                  }
+                  if (notificationRules.some((rule) => rule.id === normalized.id)) {
+                    setError(`通知规则 ID ${normalized.id} 已存在`);
+                    return;
+                  }
+                  setError('');
+                  setNotificationDrafts((current) => ({
+                    ...current,
+                    [bucket.name]: [...notificationRules, normalized]
+                  }));
+                  setNewRuleDrafts((current) => ({
+                    ...current,
+                    [bucket.name]: defaultNotificationRule()
+                  }));
+                }}
+              >
+                新增
+              </Button>
+            </div>
+          </div>
+
+          <div className="mt-3">
+            <Button
+              variant="secondary"
+              loading={savingKey === `${bucket.name}:notifications`}
+              onClick={async () => {
+                setSavingKey(`${bucket.name}:notifications`);
+                setError('');
+                setMessage('');
+                try {
+                  const payload = notificationRules.map(normalizeRule);
+                  await bucketService.updateNotifications(client, bucket.name, payload);
+                  setMessage(`桶 ${bucket.name} 的通知规则已更新`);
+                  await reload();
+                } catch (requestError) {
+                  setError(requestError instanceof Error ? requestError.message : '更新通知规则失败');
+                } finally {
+                  setSavingKey('');
+                }
+              }}
+            >
+              {savingKey === `${bucket.name}:notifications` ? '保存中...' : '保存通知规则'}
+            </Button>
+          </div>
+        </Panel>
+      </Card>
+    );
+  }
+
+  return (
+    <section className="space-y-6">
+      <PageHeader
+        title="桶治理"
+        subtitle="版本控制、对象锁、保留策略、法律保留、Policy/CORS/Tagging/SSE 与事件通知全可视化操作。"
+        actions={
+          <Button variant="primary" icon={<IconPlus size={16} />} onClick={() => setCreateOpen(true)}>
+            新建桶
+          </Button>
+        }
+      />
+
+      {error ? <p className="text-sm text-error">{toBilingualPrompt(error)}</p> : null}
+      {message ? <p className="text-sm text-primary">{toBilingualNotice(message)}</p> : null}
+
+      {activeBucket ? (
+        <div className="space-y-4">
+          <Button variant="tertiary" size="sm" onClick={() => setSelectedBucket('')}>
+            ← 返回桶列表
+          </Button>
+          {renderBucketDetail(activeBucket)}
+        </div>
+      ) : (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {sortedBuckets.map((bucket) => {
+            const versioningTone = bucket.versioning ? 'success' : 'neutral';
+            const versioningLabel = bucket.versioning
+              ? '版本控制开启'
+              : bucket.versioning_configured
+                ? '版本控制已暂停'
+                : '版本控制未配置';
+            return (
+              <Card key={bucket.name} className="flex flex-col gap-3">
+                <div className="flex items-start gap-3">
+                  <span className="text-primary">
+                    <IconStorage size={28} />
+                  </span>
+                  <div className="min-w-0">
+                    <p className="truncate font-heading text-base font-semibold text-on-surface">
+                      {bucket.name}
+                    </p>
+                    <p className="mt-0.5 truncate text-xs text-muted">租户：{bucket.tenant_id}</p>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  <Badge tone={versioningTone}>{versioningLabel}</Badge>
+                  <Badge tone={bucket.object_lock ? 'warning' : 'neutral'}>
+                    {bucket.object_lock ? '对象锁开启' : '对象锁关闭'}
+                  </Badge>
+                  {bucket.ilm_policy ? <Chip>ILM: {bucket.ilm_policy}</Chip> : null}
+                  {bucket.replication_policy ? <Chip>复制: {bucket.replication_policy}</Chip> : null}
+                </div>
+                <div className="flex items-center justify-between rounded-md border border-outline/40 bg-surface-container-high px-3 py-2 text-sm">
+                  <span className="text-muted">
+                    对象 <span className="font-medium text-on-surface">{usage[bucket.name]?.object_count ?? '—'}</span>
+                  </span>
+                  <span className="text-muted">
+                    用量{' '}
+                    <span className="font-medium text-on-surface">
+                      {usage[bucket.name] ? formatBucketBytes(usage[bucket.name].total_size) : '—'}
+                    </span>
+                  </span>
+                </div>
+                <div className="mt-auto flex justify-end pt-1">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => {
+                      setSelectedBucket(bucket.name);
+                      setError('');
+                      setMessage('');
+                    }}
+                  >
+                    管理 →
+                  </Button>
+                </div>
+              </Card>
+            );
+          })}
+          <EmptyState
+            dashed
+            icon={<IconPlus size={24} />}
+            title="新建桶"
+            description="创建一个新的存储桶并配置治理策略。"
+            onClick={() => setCreateOpen(true)}
+          />
+        </div>
+      )}
+
+      <Dialog
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        title="新建桶"
+        description="创建存储桶并设置基础治理选项。"
+      >
         <form
-          className="mt-4 grid gap-3 rounded-xl border border-white/10 bg-black/10 p-4 md:grid-cols-2"
+          className="grid gap-3 md:grid-cols-2"
           onSubmit={async (event) => {
             event.preventDefault();
             setCreating(true);
@@ -467,6 +2167,7 @@ export function BucketsPage({ client }: BucketsPageProps) {
                 ilm_policy: '',
                 replication_policy: ''
               });
+              setCreateOpen(false);
               await reload();
             } catch (requestError) {
               setError(requestError instanceof Error ? requestError.message : '创建桶失败');
@@ -475,45 +2176,41 @@ export function BucketsPage({ client }: BucketsPageProps) {
             }
           }}
         >
-          <label className="text-sm text-slate-300">
-            桶名称
-            <input
+          <Field label="桶名称" htmlFor="new-bucket-name">
+            <Input
+              id="new-bucket-name"
               required
               value={newBucket.name}
               onChange={(event) => setNewBucket((current) => ({ ...current, name: event.target.value }))}
-              className="mt-1 h-11 w-full rounded-md border border-white/15 bg-ink-900 px-3 text-slate-100"
             />
-          </label>
-          <label className="text-sm text-slate-300">
-            租户
-            <input
+          </Field>
+          <Field label="租户" htmlFor="new-bucket-tenant">
+            <Input
+              id="new-bucket-tenant"
               required
               value={newBucket.tenant_id}
               onChange={(event) => setNewBucket((current) => ({ ...current, tenant_id: event.target.value }))}
-              className="mt-1 h-11 w-full rounded-md border border-white/15 bg-ink-900 px-3 text-slate-100"
             />
-          </label>
-          <label className="text-sm text-slate-300">
-            ILM 策略
-            <input
+          </Field>
+          <Field label="ILM 策略" htmlFor="new-bucket-ilm">
+            <Input
+              id="new-bucket-ilm"
               value={newBucket.ilm_policy}
               onChange={(event) => setNewBucket((current) => ({ ...current, ilm_policy: event.target.value }))}
-              className="mt-1 h-11 w-full rounded-md border border-white/15 bg-ink-900 px-3 text-slate-100"
               placeholder="可选"
             />
-          </label>
-          <label className="text-sm text-slate-300">
-            复制策略
-            <input
+          </Field>
+          <Field label="复制策略" htmlFor="new-bucket-replication">
+            <Input
+              id="new-bucket-replication"
               value={newBucket.replication_policy}
               onChange={(event) =>
                 setNewBucket((current) => ({ ...current, replication_policy: event.target.value }))
               }
-              className="mt-1 h-11 w-full rounded-md border border-white/15 bg-ink-900 px-3 text-slate-100"
               placeholder="可选"
             />
-          </label>
-          <label className="flex items-center gap-2 text-sm text-slate-300">
+          </Field>
+          <label className="flex items-center gap-2 text-sm text-muted">
             <input
               type="checkbox"
               checked={newBucket.versioning}
@@ -521,7 +2218,7 @@ export function BucketsPage({ client }: BucketsPageProps) {
             />
             启用版本控制
           </label>
-          <label className="flex items-center gap-2 text-sm text-slate-300">
+          <label className="flex items-center gap-2 text-sm text-muted">
             <input
               type="checkbox"
               checked={newBucket.object_lock}
@@ -529,1600 +2226,16 @@ export function BucketsPage({ client }: BucketsPageProps) {
             />
             启用对象锁
           </label>
-          <div className="md:col-span-2">
-            <button
-              type="submit"
-              disabled={creating}
-              className="h-11 rounded-md bg-signal-600 px-4 text-sm font-medium text-white disabled:opacity-60"
-            >
+          <div className="md:col-span-2 flex justify-end gap-2">
+            <Button type="button" variant="tertiary" onClick={() => setCreateOpen(false)}>
+              取消
+            </Button>
+            <Button type="submit" variant="primary" loading={creating}>
               {creating ? '创建中...' : '创建桶'}
-            </button>
+            </Button>
           </div>
         </form>
-      </article>
-
-      <div className="space-y-4">
-        {sortedBuckets.map((bucket) => {
-          const governanceDraft = drafts[bucket.name] ?? {
-            versioning: bucket.versioning,
-            object_lock: bucket.object_lock,
-            ilm_policy: bucket.ilm_policy ?? '',
-            replication_policy: bucket.replication_policy ?? ''
-          };
-          const objectLock =
-            objectLockDrafts[bucket.name] ?? defaultObjectLockConfig(governanceDraft.object_lock);
-          const retention = retentionDrafts[bucket.name] ?? defaultRetentionConfig();
-          const legalHold = legalHoldDrafts[bucket.name] ?? defaultLegalHoldConfig();
-          const acl = aclDrafts[bucket.name] ?? defaultAclConfig();
-          const publicAccessBlock =
-            publicAccessBlockDrafts[bucket.name] ?? defaultPublicAccessBlockConfig();
-          const notificationRules = notificationDrafts[bucket.name] ?? [];
-          const newRule = newRuleDrafts[bucket.name] ?? defaultNotificationRule();
-          const lifecycleRules = lifecycleDrafts[bucket.name] ?? [];
-          const newLifecycleRule =
-            newLifecycleRuleDrafts[bucket.name] ?? defaultLifecycleRuleDraft();
-          const policyText = policyDrafts[bucket.name] ?? '';
-          const corsRules = corsDrafts[bucket.name] ?? [];
-          const newCorsRule = newCorsRuleDrafts[bucket.name] ?? defaultCorsRuleDraft();
-          const tags = tagDrafts[bucket.name] ?? [];
-          const newTag = newTagDrafts[bucket.name] ?? defaultTagDraft();
-          const encryption = encryptionDrafts[bucket.name] ?? defaultEncryptionDraft();
-
-          return (
-            <article key={bucket.name} className="rounded-xl border border-white/10 bg-ink-800/70 p-4">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="font-heading text-lg text-white">{bucket.name}</p>
-                  <p className="mt-1 text-xs text-slate-400">租户：{bucket.tenant_id}</p>
-                </div>
-                <button
-                  className="h-9 rounded-md border border-rose-500/40 px-3 text-xs text-rose-300 hover:bg-rose-500/10 disabled:opacity-60"
-                  disabled={savingKey === `${bucket.name}:delete`}
-                  onClick={async () => {
-                    if (!window.confirm(`确认删除桶 ${bucket.name}？仅允许删除空桶。`)) return;
-                    setSavingKey(`${bucket.name}:delete`);
-                    setError('');
-                    setMessage('');
-                    try {
-                      await bucketService.deleteBucket(client, bucket.name);
-                      setMessage(`桶 ${bucket.name} 已删除`);
-                      await reload();
-                    } catch (requestError) {
-                      setError(requestError instanceof Error ? requestError.message : '删除桶失败');
-                    } finally {
-                      setSavingKey('');
-                    }
-                  }}
-                >
-                  {savingKey === `${bucket.name}:delete` ? '删除中...' : '删除桶'}
-                </button>
-              </div>
-
-              <div className="mt-4 rounded-lg border border-white/10 bg-black/10 p-3">
-                <h3 className="text-sm font-medium text-white">生命周期规则（Lifecycle）</h3>
-                <p className="mt-1 text-xs text-slate-400">
-                  对齐企业级对象存储生命周期治理，支持当前版本和非当前版本过期策略。
-                </p>
-                <div className="mt-3 space-y-2">
-                  {lifecycleRules.length === 0 ? (
-                    <p className="text-xs text-slate-500">未配置生命周期规则</p>
-                  ) : (
-                    lifecycleRules.map((rule, index) => (
-                      <div
-                        key={`${bucket.name}:lifecycle:${rule.id || index}`}
-                        className="grid gap-2 rounded-md border border-white/10 p-2 md:grid-cols-6"
-                      >
-                        <input
-                          value={rule.id}
-                          onChange={(event) =>
-                            setLifecycleDrafts((current) => ({
-                              ...current,
-                              [bucket.name]: lifecycleRules.map((item, itemIndex) =>
-                                itemIndex === index ? { ...item, id: event.target.value } : item
-                              )
-                            }))
-                          }
-                          placeholder="规则 ID"
-                          className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                        />
-                        <input
-                          value={rule.prefix}
-                          onChange={(event) =>
-                            setLifecycleDrafts((current) => ({
-                              ...current,
-                              [bucket.name]: lifecycleRules.map((item, itemIndex) =>
-                                itemIndex === index ? { ...item, prefix: event.target.value } : item
-                              )
-                            }))
-                          }
-                          placeholder="Prefix（可选）"
-                          className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                        />
-                        <select
-                          value={rule.status}
-                          onChange={(event) =>
-                            setLifecycleDrafts((current) => ({
-                              ...current,
-                              [bucket.name]: lifecycleRules.map((item, itemIndex) =>
-                                itemIndex === index ? { ...item, status: event.target.value } : item
-                              )
-                            }))
-                          }
-                          className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                        >
-                          <option value="Enabled">Enabled</option>
-                          <option value="Disabled">Disabled</option>
-                        </select>
-                        <input
-                          value={rule.expiration_days}
-                          onChange={(event) =>
-                            setLifecycleDrafts((current) => ({
-                              ...current,
-                              [bucket.name]: lifecycleRules.map((item, itemIndex) =>
-                                itemIndex === index
-                                  ? { ...item, expiration_days: event.target.value }
-                                  : item
-                              )
-                            }))
-                          }
-                          placeholder="Expiration Days"
-                          className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                        />
-                        <input
-                          value={rule.noncurrent_expiration_days}
-                          onChange={(event) =>
-                            setLifecycleDrafts((current) => ({
-                              ...current,
-                              [bucket.name]: lifecycleRules.map((item, itemIndex) =>
-                                itemIndex === index
-                                  ? { ...item, noncurrent_expiration_days: event.target.value }
-                                  : item
-                              )
-                            }))
-                          }
-                          placeholder="Noncurrent Days"
-                          className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                        />
-                        <div className="flex items-center justify-end">
-                          <button
-                            className="rounded-md border border-rose-500/40 px-2 py-1 text-xs text-rose-300 hover:bg-rose-500/10"
-                            onClick={() =>
-                              setLifecycleDrafts((current) => ({
-                                ...current,
-                                [bucket.name]: lifecycleRules.filter((_, itemIndex) => itemIndex !== index)
-                              }))
-                            }
-                          >
-                            删除
-                          </button>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-
-                <div className="mt-3 grid gap-2 rounded-md border border-white/10 p-2 md:grid-cols-6">
-                  <input
-                    value={newLifecycleRule.id}
-                    onChange={(event) =>
-                      setNewLifecycleRuleDrafts((current) => ({
-                        ...current,
-                        [bucket.name]: { ...newLifecycleRule, id: event.target.value }
-                      }))
-                    }
-                    placeholder="规则 ID"
-                    className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                  />
-                  <input
-                    value={newLifecycleRule.prefix}
-                    onChange={(event) =>
-                      setNewLifecycleRuleDrafts((current) => ({
-                        ...current,
-                        [bucket.name]: { ...newLifecycleRule, prefix: event.target.value }
-                      }))
-                    }
-                    placeholder="Prefix（可选）"
-                    className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                  />
-                  <select
-                    value={newLifecycleRule.status}
-                    onChange={(event) =>
-                      setNewLifecycleRuleDrafts((current) => ({
-                        ...current,
-                        [bucket.name]: { ...newLifecycleRule, status: event.target.value }
-                      }))
-                    }
-                    className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                  >
-                    <option value="Enabled">Enabled</option>
-                    <option value="Disabled">Disabled</option>
-                  </select>
-                  <input
-                    value={newLifecycleRule.expiration_days}
-                    onChange={(event) =>
-                      setNewLifecycleRuleDrafts((current) => ({
-                        ...current,
-                        [bucket.name]: { ...newLifecycleRule, expiration_days: event.target.value }
-                      }))
-                    }
-                    placeholder="Expiration Days"
-                    className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                  />
-                  <input
-                    value={newLifecycleRule.noncurrent_expiration_days}
-                    onChange={(event) =>
-                      setNewLifecycleRuleDrafts((current) => ({
-                        ...current,
-                        [bucket.name]: {
-                          ...newLifecycleRule,
-                          noncurrent_expiration_days: event.target.value
-                        }
-                      }))
-                    }
-                    placeholder="Noncurrent Days"
-                    className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                  />
-                  <div className="flex items-center justify-end">
-                    <button
-                      className="rounded-md border border-white/15 px-2 py-1 text-xs text-slate-200 hover:bg-white/5"
-                      onClick={() => {
-                        try {
-                          const normalized = normalizeLifecycleRuleDraft(newLifecycleRule);
-                          if (lifecycleRules.some((rule) => rule.id.trim() === normalized.id)) {
-                            throw new Error(`生命周期规则 ID ${normalized.id} 已存在`);
-                          }
-                          setLifecycleDrafts((current) => ({
-                            ...current,
-                            [bucket.name]: [...lifecycleRules, toLifecycleRuleDraft(normalized)]
-                          }));
-                          setNewLifecycleRuleDrafts((current) => ({
-                            ...current,
-                            [bucket.name]: defaultLifecycleRuleDraft()
-                          }));
-                          setError('');
-                        } catch (requestError) {
-                          setError(
-                            requestError instanceof Error ? requestError.message : '新增生命周期规则失败'
-                          );
-                        }
-                      }}
-                    >
-                      新增规则
-                    </button>
-                  </div>
-                </div>
-
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <button
-                    className="h-10 rounded-md border border-white/15 px-3 text-sm text-slate-100 hover:bg-white/5 disabled:opacity-60"
-                    disabled={savingKey === `${bucket.name}:lifecycle`}
-                    onClick={async () => {
-                      setSavingKey(`${bucket.name}:lifecycle`);
-                      setError('');
-                      setMessage('');
-                      try {
-                        const payload = lifecycleRules.map(normalizeLifecycleRuleDraft);
-                        const ids = new Set(payload.map((rule) => rule.id));
-                        if (ids.size !== payload.length) {
-                          throw new Error('生命周期规则 ID 不能重复');
-                        }
-                        await bucketService.updateLifecycle(client, bucket.name, payload);
-                        setMessage(`桶 ${bucket.name} 的生命周期规则已更新`);
-                        await reload();
-                      } catch (requestError) {
-                        setError(requestError instanceof Error ? requestError.message : '更新生命周期规则失败');
-                      } finally {
-                        setSavingKey('');
-                      }
-                    }}
-                  >
-                    {savingKey === `${bucket.name}:lifecycle` ? '保存中...' : '保存生命周期规则'}
-                  </button>
-                  <button
-                    className="h-10 rounded-md border border-rose-500/40 px-3 text-sm text-rose-300 hover:bg-rose-500/10 disabled:opacity-60"
-                    disabled={savingKey === `${bucket.name}:lifecycle-clear`}
-                    onClick={async () => {
-                      if (!window.confirm(`确认清除桶 ${bucket.name} 的生命周期配置？`)) return;
-                      setSavingKey(`${bucket.name}:lifecycle-clear`);
-                      setError('');
-                      setMessage('');
-                      try {
-                        await bucketService.deleteLifecycle(client, bucket.name);
-                        setMessage(`桶 ${bucket.name} 的生命周期配置已清除`);
-                        await reload();
-                      } catch (requestError) {
-                        setError(requestError instanceof Error ? requestError.message : '清除生命周期配置失败');
-                      } finally {
-                        setSavingKey('');
-                      }
-                    }}
-                  >
-                    {savingKey === `${bucket.name}:lifecycle-clear` ? '处理中...' : '清除生命周期'}
-                  </button>
-                </div>
-              </div>
-
-              <div className="mt-4 grid gap-4 lg:grid-cols-2">
-                <div className="rounded-lg border border-white/10 bg-black/10 p-3">
-                  <h3 className="text-sm font-medium text-white">基础治理</h3>
-                  <div className="mt-3 grid gap-2">
-                    <label className="flex items-center gap-2 text-sm text-slate-300">
-                      <input
-                        type="checkbox"
-                        checked={governanceDraft.versioning}
-                        onChange={(event) =>
-                          setDrafts((current) => ({
-                            ...current,
-                            [bucket.name]: {
-                              ...governanceDraft,
-                              versioning: event.target.checked
-                            }
-                          }))
-                        }
-                      />
-                      版本控制
-                    </label>
-                    <label className="flex items-center gap-2 text-sm text-slate-300">
-                      <input
-                        type="checkbox"
-                        checked={governanceDraft.object_lock}
-                        onChange={(event) =>
-                          setDrafts((current) => ({
-                            ...current,
-                            [bucket.name]: {
-                              ...governanceDraft,
-                              object_lock: event.target.checked
-                            }
-                          }))
-                        }
-                      />
-                      对象锁
-                    </label>
-                    <label className="text-xs text-slate-400">
-                      ILM 策略
-                      <input
-                        value={governanceDraft.ilm_policy}
-                        onChange={(event) =>
-                          setDrafts((current) => ({
-                            ...current,
-                            [bucket.name]: {
-                              ...governanceDraft,
-                              ilm_policy: event.target.value
-                            }
-                          }))
-                        }
-                        className="mt-1 h-10 w-full rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
-                      />
-                    </label>
-                    <label className="text-xs text-slate-400">
-                      复制策略
-                      <input
-                        value={governanceDraft.replication_policy}
-                        onChange={(event) =>
-                          setDrafts((current) => ({
-                            ...current,
-                            [bucket.name]: {
-                              ...governanceDraft,
-                              replication_policy: event.target.value
-                            }
-                          }))
-                        }
-                        className="mt-1 h-10 w-full rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
-                      />
-                    </label>
-                    <button
-                      className="h-10 rounded-md border border-white/15 px-3 text-sm text-slate-100 hover:bg-white/5 disabled:opacity-60"
-                      disabled={savingKey === `${bucket.name}:governance`}
-                      onClick={async () => {
-                        setSavingKey(`${bucket.name}:governance`);
-                        setError('');
-                        setMessage('');
-                        try {
-                          await bucketService.updateGovernance(client, bucket.name, {
-                            versioning: governanceDraft.versioning,
-                            object_lock: governanceDraft.object_lock,
-                            ilm_policy: governanceDraft.ilm_policy || undefined,
-                            replication_policy: governanceDraft.replication_policy || undefined
-                          });
-                          setMessage(`桶 ${bucket.name} 基础治理已更新`);
-                          await reload();
-                        } catch (requestError) {
-                          setError(requestError instanceof Error ? requestError.message : '更新基础治理失败');
-                        } finally {
-                          setSavingKey('');
-                        }
-                      }}
-                    >
-                      {savingKey === `${bucket.name}:governance` ? '保存中...' : '保存基础治理'}
-                    </button>
-                  </div>
-                </div>
-
-                <div className="rounded-lg border border-white/10 bg-black/10 p-3">
-                  <h3 className="text-sm font-medium text-white">对象锁默认保留</h3>
-                  <div className="mt-3 grid gap-2">
-                    <label className="flex items-center gap-2 text-sm text-slate-300">
-                      <input
-                        type="checkbox"
-                        checked={objectLock.enabled}
-                        onChange={(event) =>
-                          setObjectLockDrafts((current) => ({
-                            ...current,
-                            [bucket.name]: {
-                              ...objectLock,
-                              enabled: event.target.checked
-                            }
-                          }))
-                        }
-                      />
-                      启用 Object Lock 默认规则
-                    </label>
-                    <label className="text-xs text-slate-400">
-                      模式
-                      <select
-                        value={objectLock.mode}
-                        onChange={(event) =>
-                          setObjectLockDrafts((current) => ({
-                            ...current,
-                            [bucket.name]: {
-                              ...objectLock,
-                              mode: event.target.value
-                            }
-                          }))
-                        }
-                        className="mt-1 h-10 w-full rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
-                      >
-                        <option value="GOVERNANCE">GOVERNANCE</option>
-                        <option value="COMPLIANCE">COMPLIANCE</option>
-                      </select>
-                    </label>
-                    <label className="text-xs text-slate-400">
-                      默认保留天数
-                      <input
-                        type="number"
-                        min={1}
-                        value={objectLock.default_retention_days}
-                        onChange={(event) =>
-                          setObjectLockDrafts((current) => ({
-                            ...current,
-                            [bucket.name]: {
-                              ...objectLock,
-                              default_retention_days: Number(event.target.value)
-                            }
-                          }))
-                        }
-                        className="mt-1 h-10 w-full rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
-                      />
-                    </label>
-                    <button
-                      className="h-10 rounded-md border border-white/15 px-3 text-sm text-slate-100 hover:bg-white/5 disabled:opacity-60"
-                      disabled={savingKey === `${bucket.name}:object-lock`}
-                      onClick={async () => {
-                        setSavingKey(`${bucket.name}:object-lock`);
-                        setError('');
-                        setMessage('');
-                        try {
-                          await bucketService.updateObjectLock(client, bucket.name, objectLock);
-                          setMessage(`桶 ${bucket.name} 的 Object Lock 配置已更新`);
-                          await reload();
-                        } catch (requestError) {
-                          setError(requestError instanceof Error ? requestError.message : '更新 Object Lock 失败');
-                        } finally {
-                          setSavingKey('');
-                        }
-                      }}
-                    >
-                      {savingKey === `${bucket.name}:object-lock` ? '保存中...' : '保存 Object Lock'}
-                    </button>
-                  </div>
-                </div>
-
-                <div className="rounded-lg border border-white/10 bg-black/10 p-3">
-                  <h3 className="text-sm font-medium text-white">默认保留策略</h3>
-                  <div className="mt-3 grid gap-2">
-                    <label className="flex items-center gap-2 text-sm text-slate-300">
-                      <input
-                        type="checkbox"
-                        checked={retention.enabled}
-                        onChange={(event) =>
-                          setRetentionDrafts((current) => ({
-                            ...current,
-                            [bucket.name]: {
-                              ...retention,
-                              enabled: event.target.checked
-                            }
-                          }))
-                        }
-                      />
-                      启用默认保留
-                    </label>
-                    <label className="text-xs text-slate-400">
-                      模式
-                      <select
-                        value={retention.mode}
-                        onChange={(event) =>
-                          setRetentionDrafts((current) => ({
-                            ...current,
-                            [bucket.name]: {
-                              ...retention,
-                              mode: event.target.value
-                            }
-                          }))
-                        }
-                        className="mt-1 h-10 w-full rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
-                      >
-                        <option value="GOVERNANCE">GOVERNANCE</option>
-                        <option value="COMPLIANCE">COMPLIANCE</option>
-                      </select>
-                    </label>
-                    <label className="text-xs text-slate-400">
-                      保留天数
-                      <input
-                        type="number"
-                        min={1}
-                        value={retention.duration_days}
-                        onChange={(event) =>
-                          setRetentionDrafts((current) => ({
-                            ...current,
-                            [bucket.name]: {
-                              ...retention,
-                              duration_days: Number(event.target.value)
-                            }
-                          }))
-                        }
-                        className="mt-1 h-10 w-full rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
-                      />
-                    </label>
-                    <button
-                      className="h-10 rounded-md border border-white/15 px-3 text-sm text-slate-100 hover:bg-white/5 disabled:opacity-60"
-                      disabled={savingKey === `${bucket.name}:retention`}
-                      onClick={async () => {
-                        setSavingKey(`${bucket.name}:retention`);
-                        setError('');
-                        setMessage('');
-                        try {
-                          await bucketService.updateRetention(client, bucket.name, retention);
-                          setMessage(`桶 ${bucket.name} 的默认保留策略已更新`);
-                          await reload();
-                        } catch (requestError) {
-                          setError(requestError instanceof Error ? requestError.message : '更新默认保留失败');
-                        } finally {
-                          setSavingKey('');
-                        }
-                      }}
-                    >
-                      {savingKey === `${bucket.name}:retention` ? '保存中...' : '保存默认保留'}
-                    </button>
-                  </div>
-                </div>
-
-                <div className="rounded-lg border border-white/10 bg-black/10 p-3">
-                  <h3 className="text-sm font-medium text-white">法律保留</h3>
-                  <div className="mt-3 grid gap-2">
-                    <label className="flex items-center gap-2 text-sm text-slate-300">
-                      <input
-                        type="checkbox"
-                        checked={legalHold.enabled}
-                        onChange={(event) =>
-                          setLegalHoldDrafts((current) => ({
-                            ...current,
-                            [bucket.name]: {
-                              enabled: event.target.checked
-                            }
-                          }))
-                        }
-                      />
-                      启用法律保留
-                    </label>
-                    <button
-                      className="h-10 rounded-md border border-white/15 px-3 text-sm text-slate-100 hover:bg-white/5 disabled:opacity-60"
-                      disabled={savingKey === `${bucket.name}:legal-hold`}
-                      onClick={async () => {
-                        setSavingKey(`${bucket.name}:legal-hold`);
-                        setError('');
-                        setMessage('');
-                        try {
-                          await bucketService.updateLegalHold(client, bucket.name, legalHold);
-                          setMessage(`桶 ${bucket.name} 的法律保留已更新`);
-                          await reload();
-                        } catch (requestError) {
-                          setError(requestError instanceof Error ? requestError.message : '更新法律保留失败');
-                        } finally {
-                          setSavingKey('');
-                        }
-                      }}
-                    >
-                      {savingKey === `${bucket.name}:legal-hold` ? '保存中...' : '保存法律保留'}
-                    </button>
-                  </div>
-                </div>
-
-                <div className="rounded-lg border border-white/10 bg-black/10 p-3">
-                  <h3 className="text-sm font-medium text-white">访问控制（ACL / Public Access）</h3>
-                  <div className="mt-3 grid gap-2">
-                    <label className="text-xs text-slate-400">
-                      桶 ACL
-                      <select
-                        value={acl.acl}
-                        onChange={(event) =>
-                          setAclDrafts((current) => ({
-                            ...current,
-                            [bucket.name]: { acl: event.target.value }
-                          }))
-                        }
-                        className="mt-1 h-10 w-full rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
-                      >
-                        <option value="private">private</option>
-                        <option value="public-read">public-read</option>
-                        <option value="public-read-write">public-read-write</option>
-                        <option value="authenticated-read">authenticated-read</option>
-                      </select>
-                    </label>
-                    <button
-                      className="h-10 rounded-md border border-white/15 px-3 text-sm text-slate-100 hover:bg-white/5 disabled:opacity-60"
-                      disabled={savingKey === `${bucket.name}:acl`}
-                      onClick={async () => {
-                        setSavingKey(`${bucket.name}:acl`);
-                        setError('');
-                        setMessage('');
-                        try {
-                          await bucketService.updateAcl(client, bucket.name, acl);
-                          setMessage(`桶 ${bucket.name} ACL 已更新`);
-                          await reload();
-                        } catch (requestError) {
-                          setError(requestError instanceof Error ? requestError.message : '更新桶 ACL 失败');
-                        } finally {
-                          setSavingKey('');
-                        }
-                      }}
-                    >
-                      {savingKey === `${bucket.name}:acl` ? '保存中...' : '保存 ACL'}
-                    </button>
-
-                    <label className="flex items-center gap-2 text-sm text-slate-300">
-                      <input
-                        type="checkbox"
-                        checked={publicAccessBlock.block_public_acls}
-                        onChange={(event) =>
-                          setPublicAccessBlockDrafts((current) => ({
-                            ...current,
-                            [bucket.name]: {
-                              ...publicAccessBlock,
-                              block_public_acls: event.target.checked
-                            }
-                          }))
-                        }
-                      />
-                      Block Public ACLs
-                    </label>
-                    <label className="flex items-center gap-2 text-sm text-slate-300">
-                      <input
-                        type="checkbox"
-                        checked={publicAccessBlock.ignore_public_acls}
-                        onChange={(event) =>
-                          setPublicAccessBlockDrafts((current) => ({
-                            ...current,
-                            [bucket.name]: {
-                              ...publicAccessBlock,
-                              ignore_public_acls: event.target.checked
-                            }
-                          }))
-                        }
-                      />
-                      Ignore Public ACLs
-                    </label>
-                    <label className="flex items-center gap-2 text-sm text-slate-300">
-                      <input
-                        type="checkbox"
-                        checked={publicAccessBlock.block_public_policy}
-                        onChange={(event) =>
-                          setPublicAccessBlockDrafts((current) => ({
-                            ...current,
-                            [bucket.name]: {
-                              ...publicAccessBlock,
-                              block_public_policy: event.target.checked
-                            }
-                          }))
-                        }
-                      />
-                      Block Public Policy
-                    </label>
-                    <label className="flex items-center gap-2 text-sm text-slate-300">
-                      <input
-                        type="checkbox"
-                        checked={publicAccessBlock.restrict_public_buckets}
-                        onChange={(event) =>
-                          setPublicAccessBlockDrafts((current) => ({
-                            ...current,
-                            [bucket.name]: {
-                              ...publicAccessBlock,
-                              restrict_public_buckets: event.target.checked
-                            }
-                          }))
-                        }
-                      />
-                      Restrict Public Buckets
-                    </label>
-                    <div className="flex flex-wrap gap-2">
-                      <button
-                        className="h-10 rounded-md border border-white/15 px-3 text-sm text-slate-100 hover:bg-white/5 disabled:opacity-60"
-                        disabled={savingKey === `${bucket.name}:pab`}
-                        onClick={async () => {
-                          setSavingKey(`${bucket.name}:pab`);
-                          setError('');
-                          setMessage('');
-                          try {
-                            await bucketService.updatePublicAccessBlock(
-                              client,
-                              bucket.name,
-                              publicAccessBlock
-                            );
-                            setMessage(`桶 ${bucket.name} Public Access Block 已更新`);
-                            await reload();
-                          } catch (requestError) {
-                            setError(
-                              requestError instanceof Error
-                                ? requestError.message
-                                : '更新 Public Access Block 失败'
-                            );
-                          } finally {
-                            setSavingKey('');
-                          }
-                        }}
-                      >
-                        {savingKey === `${bucket.name}:pab` ? '保存中...' : '保存 Public Access'}
-                      </button>
-                      <button
-                        className="h-10 rounded-md border border-rose-500/40 px-3 text-sm text-rose-300 hover:bg-rose-500/10 disabled:opacity-60"
-                        disabled={savingKey === `${bucket.name}:pab-clear`}
-                        onClick={async () => {
-                          if (!window.confirm(`确认清除桶 ${bucket.name} 的 Public Access Block 配置？`)) {
-                            return;
-                          }
-                          setSavingKey(`${bucket.name}:pab-clear`);
-                          setError('');
-                          setMessage('');
-                          try {
-                            await bucketService.deletePublicAccessBlock(client, bucket.name);
-                            setMessage(`桶 ${bucket.name} Public Access Block 已清除`);
-                            await reload();
-                          } catch (requestError) {
-                            setError(
-                              requestError instanceof Error
-                                ? requestError.message
-                                : '清除 Public Access Block 失败'
-                            );
-                          } finally {
-                            setSavingKey('');
-                          }
-                        }}
-                      >
-                        {savingKey === `${bucket.name}:pab-clear` ? '处理中...' : '清除 Public Access'}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-4 grid gap-4 lg:grid-cols-2">
-                <div className="rounded-lg border border-white/10 bg-black/10 p-3">
-                  <h3 className="text-sm font-medium text-white">Bucket Policy</h3>
-                  <p className="mt-1 text-xs text-slate-400">
-                    使用 JSON 直接编辑策略文档，留空并保存可清除策略。
-                  </p>
-                  <textarea
-                    value={policyText}
-                    onChange={(event) =>
-                      setPolicyDrafts((current) => ({
-                        ...current,
-                        [bucket.name]: event.target.value
-                      }))
-                    }
-                    className="mt-3 h-56 w-full rounded-md border border-white/15 bg-ink-900 px-3 py-2 text-xs text-slate-100"
-                    placeholder='{"Version":"2012-10-17","Statement":[...]}'
-                  />
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <button
-                      className="h-10 rounded-md border border-white/15 px-3 text-sm text-slate-100 hover:bg-white/5 disabled:opacity-60"
-                      disabled={savingKey === `${bucket.name}:policy`}
-                      onClick={async () => {
-                        setSavingKey(`${bucket.name}:policy`);
-                        setError('');
-                        setMessage('');
-                        try {
-                          const raw = policyText.trim();
-                          if (!raw) {
-                            await bucketService.deletePolicy(client, bucket.name);
-                            setMessage(`桶 ${bucket.name} 的策略已清除`);
-                          } else {
-                            const parsed = JSON.parse(raw) as Record<string, unknown>;
-                            await bucketService.updatePolicy(client, bucket.name, parsed);
-                            setMessage(`桶 ${bucket.name} 的策略已更新`);
-                          }
-                          await reload();
-                        } catch (requestError) {
-                          setError(requestError instanceof Error ? requestError.message : '更新策略失败');
-                        } finally {
-                          setSavingKey('');
-                        }
-                      }}
-                    >
-                      {savingKey === `${bucket.name}:policy` ? '保存中...' : '保存策略'}
-                    </button>
-                    <button
-                      className="h-10 rounded-md border border-rose-500/40 px-3 text-sm text-rose-300 hover:bg-rose-500/10 disabled:opacity-60"
-                      disabled={savingKey === `${bucket.name}:policy-clear`}
-                      onClick={async () => {
-                        if (!window.confirm(`确认清除桶 ${bucket.name} 的策略配置？`)) return;
-                        setSavingKey(`${bucket.name}:policy-clear`);
-                        setError('');
-                        setMessage('');
-                        try {
-                          await bucketService.deletePolicy(client, bucket.name);
-                          setMessage(`桶 ${bucket.name} 的策略已清除`);
-                          await reload();
-                        } catch (requestError) {
-                          setError(requestError instanceof Error ? requestError.message : '清除策略失败');
-                        } finally {
-                          setSavingKey('');
-                        }
-                      }}
-                    >
-                      {savingKey === `${bucket.name}:policy-clear` ? '处理中...' : '清除策略'}
-                    </button>
-                  </div>
-                </div>
-
-                <div className="rounded-lg border border-white/10 bg-black/10 p-3">
-                  <h3 className="text-sm font-medium text-white">默认加密（SSE）</h3>
-                  <div className="mt-3 grid gap-2">
-                    <label className="flex items-center gap-2 text-sm text-slate-300">
-                      <input
-                        type="checkbox"
-                        checked={encryption.enabled}
-                        onChange={(event) =>
-                          setEncryptionDrafts((current) => ({
-                            ...current,
-                            [bucket.name]: {
-                              ...encryption,
-                              enabled: event.target.checked
-                            }
-                          }))
-                        }
-                      />
-                      启用桶默认加密
-                    </label>
-                    <label className="text-xs text-slate-400">
-                      算法
-                      <select
-                        value={encryption.algorithm}
-                        onChange={(event) =>
-                          setEncryptionDrafts((current) => ({
-                            ...current,
-                            [bucket.name]: {
-                              ...encryption,
-                              algorithm: event.target.value
-                            }
-                          }))
-                        }
-                        className="mt-1 h-10 w-full rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
-                      >
-                        <option value="AES256">AES256</option>
-                        <option value="aws:kms">aws:kms</option>
-                      </select>
-                    </label>
-                    <label className="text-xs text-slate-400">
-                      KMS Key ID（可选）
-                      <input
-                        value={encryption.kms_key_id}
-                        onChange={(event) =>
-                          setEncryptionDrafts((current) => ({
-                            ...current,
-                            [bucket.name]: {
-                              ...encryption,
-                              kms_key_id: event.target.value
-                            }
-                          }))
-                        }
-                        placeholder="alias/rustio-default"
-                        className="mt-1 h-10 w-full rounded-md border border-white/15 bg-ink-900 px-3 text-sm text-slate-100"
-                      />
-                    </label>
-                    <div className="flex flex-wrap gap-2">
-                      <button
-                        className="h-10 rounded-md border border-white/15 px-3 text-sm text-slate-100 hover:bg-white/5 disabled:opacity-60"
-                        disabled={savingKey === `${bucket.name}:encryption`}
-                        onClick={async () => {
-                          setSavingKey(`${bucket.name}:encryption`);
-                          setError('');
-                          setMessage('');
-                          try {
-                            if (!encryption.enabled) {
-                              await bucketService.deleteEncryption(client, bucket.name);
-                              setMessage(`桶 ${bucket.name} 的默认加密已关闭`);
-                            } else {
-                              const payload = normalizeEncryptionDraft(encryption);
-                              await bucketService.updateEncryption(client, bucket.name, payload);
-                              setMessage(`桶 ${bucket.name} 的默认加密已更新`);
-                            }
-                            await reload();
-                          } catch (requestError) {
-                            setError(requestError instanceof Error ? requestError.message : '更新默认加密失败');
-                          } finally {
-                            setSavingKey('');
-                          }
-                        }}
-                      >
-                        {savingKey === `${bucket.name}:encryption` ? '保存中...' : '保存加密配置'}
-                      </button>
-                      <button
-                        className="h-10 rounded-md border border-rose-500/40 px-3 text-sm text-rose-300 hover:bg-rose-500/10 disabled:opacity-60"
-                        disabled={savingKey === `${bucket.name}:encryption-clear`}
-                        onClick={async () => {
-                          if (!window.confirm(`确认删除桶 ${bucket.name} 的默认加密配置？`)) return;
-                          setSavingKey(`${bucket.name}:encryption-clear`);
-                          setError('');
-                          setMessage('');
-                          try {
-                            await bucketService.deleteEncryption(client, bucket.name);
-                            setMessage(`桶 ${bucket.name} 的默认加密已清除`);
-                            await reload();
-                          } catch (requestError) {
-                            setError(requestError instanceof Error ? requestError.message : '清除默认加密失败');
-                          } finally {
-                            setSavingKey('');
-                          }
-                        }}
-                      >
-                        {savingKey === `${bucket.name}:encryption-clear` ? '处理中...' : '清除加密配置'}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-4 rounded-lg border border-white/10 bg-black/10 p-3">
-                <h3 className="text-sm font-medium text-white">CORS 规则</h3>
-                <div className="mt-3 space-y-2">
-                  {corsRules.length === 0 ? (
-                    <p className="text-xs text-slate-500">未配置 CORS 规则</p>
-                  ) : (
-                    corsRules.map((rule, index) => (
-                      <div
-                        key={`${bucket.name}:cors:${rule.id || index}`}
-                        className="grid gap-2 rounded-md border border-white/10 p-2 md:grid-cols-6"
-                      >
-                        <input
-                          value={rule.id}
-                          onChange={(event) =>
-                            setCorsDrafts((current) => ({
-                              ...current,
-                              [bucket.name]: corsRules.map((item, itemIndex) =>
-                                itemIndex === index ? { ...item, id: event.target.value } : item
-                              )
-                            }))
-                          }
-                          placeholder="规则 ID"
-                          className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                        />
-                        <input
-                          value={rule.allowed_origins}
-                          onChange={(event) =>
-                            setCorsDrafts((current) => ({
-                              ...current,
-                              [bucket.name]: corsRules.map((item, itemIndex) =>
-                                itemIndex === index
-                                  ? { ...item, allowed_origins: event.target.value }
-                                  : item
-                              )
-                            }))
-                          }
-                          placeholder="AllowedOrigin（逗号分隔）"
-                          className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                        />
-                        <input
-                          value={rule.allowed_methods}
-                          onChange={(event) =>
-                            setCorsDrafts((current) => ({
-                              ...current,
-                              [bucket.name]: corsRules.map((item, itemIndex) =>
-                                itemIndex === index
-                                  ? { ...item, allowed_methods: event.target.value }
-                                  : item
-                              )
-                            }))
-                          }
-                          placeholder="AllowedMethod（逗号分隔）"
-                          className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                        />
-                        <input
-                          value={rule.allowed_headers}
-                          onChange={(event) =>
-                            setCorsDrafts((current) => ({
-                              ...current,
-                              [bucket.name]: corsRules.map((item, itemIndex) =>
-                                itemIndex === index
-                                  ? { ...item, allowed_headers: event.target.value }
-                                  : item
-                              )
-                            }))
-                          }
-                          placeholder="AllowedHeader"
-                          className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                        />
-                        <input
-                          value={rule.expose_headers}
-                          onChange={(event) =>
-                            setCorsDrafts((current) => ({
-                              ...current,
-                              [bucket.name]: corsRules.map((item, itemIndex) =>
-                                itemIndex === index
-                                  ? { ...item, expose_headers: event.target.value }
-                                  : item
-                              )
-                            }))
-                          }
-                          placeholder="ExposeHeader"
-                          className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                        />
-                        <div className="flex items-center justify-between gap-2">
-                          <input
-                            value={rule.max_age_seconds}
-                            onChange={(event) =>
-                              setCorsDrafts((current) => ({
-                                ...current,
-                                [bucket.name]: corsRules.map((item, itemIndex) =>
-                                  itemIndex === index
-                                    ? { ...item, max_age_seconds: event.target.value }
-                                    : item
-                                )
-                              }))
-                            }
-                            placeholder="MaxAgeSeconds"
-                            className="h-9 w-full rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                          />
-                          <button
-                            className="rounded-md border border-rose-500/40 px-2 py-1 text-xs text-rose-300 hover:bg-rose-500/10"
-                            onClick={() =>
-                              setCorsDrafts((current) => ({
-                                ...current,
-                                [bucket.name]: corsRules.filter((_, itemIndex) => itemIndex !== index)
-                              }))
-                            }
-                          >
-                            删除
-                          </button>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-
-                <div className="mt-3 grid gap-2 rounded-md border border-white/10 p-2 md:grid-cols-6">
-                  <input
-                    value={newCorsRule.id}
-                    onChange={(event) =>
-                      setNewCorsRuleDrafts((current) => ({
-                        ...current,
-                        [bucket.name]: { ...newCorsRule, id: event.target.value }
-                      }))
-                    }
-                    placeholder="规则 ID"
-                    className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                  />
-                  <input
-                    value={newCorsRule.allowed_origins}
-                    onChange={(event) =>
-                      setNewCorsRuleDrafts((current) => ({
-                        ...current,
-                        [bucket.name]: { ...newCorsRule, allowed_origins: event.target.value }
-                      }))
-                    }
-                    placeholder="AllowedOrigin"
-                    className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                  />
-                  <input
-                    value={newCorsRule.allowed_methods}
-                    onChange={(event) =>
-                      setNewCorsRuleDrafts((current) => ({
-                        ...current,
-                        [bucket.name]: { ...newCorsRule, allowed_methods: event.target.value }
-                      }))
-                    }
-                    placeholder="AllowedMethod"
-                    className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                  />
-                  <input
-                    value={newCorsRule.allowed_headers}
-                    onChange={(event) =>
-                      setNewCorsRuleDrafts((current) => ({
-                        ...current,
-                        [bucket.name]: { ...newCorsRule, allowed_headers: event.target.value }
-                      }))
-                    }
-                    placeholder="AllowedHeader"
-                    className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                  />
-                  <input
-                    value={newCorsRule.expose_headers}
-                    onChange={(event) =>
-                      setNewCorsRuleDrafts((current) => ({
-                        ...current,
-                        [bucket.name]: { ...newCorsRule, expose_headers: event.target.value }
-                      }))
-                    }
-                    placeholder="ExposeHeader"
-                    className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                  />
-                  <div className="flex items-center gap-2">
-                    <input
-                      value={newCorsRule.max_age_seconds}
-                      onChange={(event) =>
-                        setNewCorsRuleDrafts((current) => ({
-                          ...current,
-                          [bucket.name]: { ...newCorsRule, max_age_seconds: event.target.value }
-                        }))
-                      }
-                      placeholder="MaxAgeSeconds"
-                      className="h-9 w-full rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                    />
-                    <button
-                      className="rounded-md border border-white/15 px-2 py-1 text-xs text-slate-200 hover:bg-white/5"
-                      onClick={() => {
-                        try {
-                          const normalized = normalizeCorsRuleDraft(newCorsRule);
-                          if (corsRules.some((rule) => rule.id.trim() === normalized.id)) {
-                            throw new Error(`CORS 规则 ID ${normalized.id} 已存在`);
-                          }
-                          setCorsDrafts((current) => ({
-                            ...current,
-                            [bucket.name]: [...corsRules, toCorsRuleDraft(normalized)]
-                          }));
-                          setNewCorsRuleDrafts((current) => ({
-                            ...current,
-                            [bucket.name]: defaultCorsRuleDraft()
-                          }));
-                          setError('');
-                        } catch (requestError) {
-                          setError(requestError instanceof Error ? requestError.message : '新增 CORS 规则失败');
-                        }
-                      }}
-                    >
-                      新增
-                    </button>
-                  </div>
-                </div>
-
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <button
-                    className="h-10 rounded-md border border-white/15 px-3 text-sm text-slate-100 hover:bg-white/5 disabled:opacity-60"
-                    disabled={savingKey === `${bucket.name}:cors`}
-                    onClick={async () => {
-                      setSavingKey(`${bucket.name}:cors`);
-                      setError('');
-                      setMessage('');
-                      try {
-                        const payload = corsRules.map(normalizeCorsRuleDraft);
-                        await bucketService.updateCors(client, bucket.name, payload);
-                        setMessage(`桶 ${bucket.name} 的 CORS 规则已更新`);
-                        await reload();
-                      } catch (requestError) {
-                        setError(requestError instanceof Error ? requestError.message : '更新 CORS 失败');
-                      } finally {
-                        setSavingKey('');
-                      }
-                    }}
-                  >
-                    {savingKey === `${bucket.name}:cors` ? '保存中...' : '保存 CORS'}
-                  </button>
-                  <button
-                    className="h-10 rounded-md border border-rose-500/40 px-3 text-sm text-rose-300 hover:bg-rose-500/10 disabled:opacity-60"
-                    disabled={savingKey === `${bucket.name}:cors-clear`}
-                    onClick={async () => {
-                      if (!window.confirm(`确认删除桶 ${bucket.name} 的 CORS 配置？`)) return;
-                      setSavingKey(`${bucket.name}:cors-clear`);
-                      setError('');
-                      setMessage('');
-                      try {
-                        await bucketService.deleteCors(client, bucket.name);
-                        setMessage(`桶 ${bucket.name} 的 CORS 配置已清除`);
-                        await reload();
-                      } catch (requestError) {
-                        setError(requestError instanceof Error ? requestError.message : '清除 CORS 失败');
-                      } finally {
-                        setSavingKey('');
-                      }
-                    }}
-                  >
-                    {savingKey === `${bucket.name}:cors-clear` ? '处理中...' : '清除 CORS'}
-                  </button>
-                </div>
-              </div>
-
-              <div className="mt-4 rounded-lg border border-white/10 bg-black/10 p-3">
-                <h3 className="text-sm font-medium text-white">桶标签（Tagging）</h3>
-                <div className="mt-3 space-y-2">
-                  {tags.length === 0 ? (
-                    <p className="text-xs text-slate-500">未配置标签</p>
-                  ) : (
-                    tags.map((tag, index) => (
-                      <div
-                        key={`${bucket.name}:tag:${tag.key || index}`}
-                        className="grid gap-2 rounded-md border border-white/10 p-2 md:grid-cols-3"
-                      >
-                        <input
-                          value={tag.key}
-                          onChange={(event) =>
-                            setTagDrafts((current) => ({
-                              ...current,
-                              [bucket.name]: tags.map((item, itemIndex) =>
-                                itemIndex === index ? { ...item, key: event.target.value } : item
-                              )
-                            }))
-                          }
-                          placeholder="Key"
-                          className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                        />
-                        <input
-                          value={tag.value}
-                          onChange={(event) =>
-                            setTagDrafts((current) => ({
-                              ...current,
-                              [bucket.name]: tags.map((item, itemIndex) =>
-                                itemIndex === index ? { ...item, value: event.target.value } : item
-                              )
-                            }))
-                          }
-                          placeholder="Value"
-                          className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                        />
-                        <div className="flex items-center justify-end">
-                          <button
-                            className="rounded-md border border-rose-500/40 px-2 py-1 text-xs text-rose-300 hover:bg-rose-500/10"
-                            onClick={() =>
-                              setTagDrafts((current) => ({
-                                ...current,
-                                [bucket.name]: tags.filter((_, itemIndex) => itemIndex !== index)
-                              }))
-                            }
-                          >
-                            删除
-                          </button>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-
-                <div className="mt-3 grid gap-2 rounded-md border border-white/10 p-2 md:grid-cols-3">
-                  <input
-                    value={newTag.key}
-                    onChange={(event) =>
-                      setNewTagDrafts((current) => ({
-                        ...current,
-                        [bucket.name]: { ...newTag, key: event.target.value }
-                      }))
-                    }
-                    placeholder="Key"
-                    className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                  />
-                  <input
-                    value={newTag.value}
-                    onChange={(event) =>
-                      setNewTagDrafts((current) => ({
-                        ...current,
-                        [bucket.name]: { ...newTag, value: event.target.value }
-                      }))
-                    }
-                    placeholder="Value"
-                    className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                  />
-                  <div className="flex items-center justify-end">
-                    <button
-                      className="rounded-md border border-white/15 px-2 py-1 text-xs text-slate-200 hover:bg-white/5"
-                      onClick={() => {
-                        try {
-                          const normalized = normalizeTagDraft(newTag);
-                          if (tags.some((item) => item.key.trim() === normalized.key)) {
-                            throw new Error(`标签 Key ${normalized.key} 已存在`);
-                          }
-                          setTagDrafts((current) => ({
-                            ...current,
-                            [bucket.name]: [...tags, { key: normalized.key, value: normalized.value }]
-                          }));
-                          setNewTagDrafts((current) => ({
-                            ...current,
-                            [bucket.name]: defaultTagDraft()
-                          }));
-                          setError('');
-                        } catch (requestError) {
-                          setError(requestError instanceof Error ? requestError.message : '新增标签失败');
-                        }
-                      }}
-                    >
-                      新增标签
-                    </button>
-                  </div>
-                </div>
-
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <button
-                    className="h-10 rounded-md border border-white/15 px-3 text-sm text-slate-100 hover:bg-white/5 disabled:opacity-60"
-                    disabled={savingKey === `${bucket.name}:tags`}
-                    onClick={async () => {
-                      setSavingKey(`${bucket.name}:tags`);
-                      setError('');
-                      setMessage('');
-                      try {
-                        const payload = tags.map(normalizeTagDraft);
-                        await bucketService.updateTags(client, bucket.name, payload);
-                        setMessage(`桶 ${bucket.name} 的标签已更新`);
-                        await reload();
-                      } catch (requestError) {
-                        setError(requestError instanceof Error ? requestError.message : '更新标签失败');
-                      } finally {
-                        setSavingKey('');
-                      }
-                    }}
-                  >
-                    {savingKey === `${bucket.name}:tags` ? '保存中...' : '保存标签'}
-                  </button>
-                  <button
-                    className="h-10 rounded-md border border-rose-500/40 px-3 text-sm text-rose-300 hover:bg-rose-500/10 disabled:opacity-60"
-                    disabled={savingKey === `${bucket.name}:tags-clear`}
-                    onClick={async () => {
-                      if (!window.confirm(`确认删除桶 ${bucket.name} 的所有标签？`)) return;
-                      setSavingKey(`${bucket.name}:tags-clear`);
-                      setError('');
-                      setMessage('');
-                      try {
-                        await bucketService.deleteTags(client, bucket.name);
-                        setMessage(`桶 ${bucket.name} 的标签已清除`);
-                        await reload();
-                      } catch (requestError) {
-                        setError(requestError instanceof Error ? requestError.message : '清除标签失败');
-                      } finally {
-                        setSavingKey('');
-                      }
-                    }}
-                  >
-                    {savingKey === `${bucket.name}:tags-clear` ? '处理中...' : '清除标签'}
-                  </button>
-                </div>
-              </div>
-
-              <div className="mt-4 rounded-lg border border-white/10 bg-black/10 p-3">
-                <h3 className="text-sm font-medium text-white">事件通知规则</h3>
-                <div className="mt-3 space-y-2">
-                  {notificationRules.length === 0 ? (
-                    <p className="text-xs text-slate-500">暂无通知规则</p>
-                  ) : (
-                    notificationRules.map((rule, index) => (
-                      <div key={`${bucket.name}:${rule.id || index}`} className="grid gap-2 rounded-md border border-white/10 p-2 md:grid-cols-6">
-                        <input
-                          value={rule.id}
-                          onChange={(event) =>
-                            setNotificationDrafts((current) => ({
-                              ...current,
-                              [bucket.name]: notificationRules.map((item, itemIndex) =>
-                                itemIndex === index ? { ...item, id: event.target.value } : item
-                              )
-                            }))
-                          }
-                          placeholder="规则 ID"
-                          className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                        />
-                        <input
-                          value={rule.event}
-                          onChange={(event) =>
-                            setNotificationDrafts((current) => ({
-                              ...current,
-                              [bucket.name]: notificationRules.map((item, itemIndex) =>
-                                itemIndex === index ? { ...item, event: event.target.value } : item
-                              )
-                            }))
-                          }
-                          placeholder="事件"
-                          className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                        />
-                        <input
-                          value={rule.target}
-                          onChange={(event) =>
-                            setNotificationDrafts((current) => ({
-                              ...current,
-                              [bucket.name]: notificationRules.map((item, itemIndex) =>
-                                itemIndex === index ? { ...item, target: event.target.value } : item
-                              )
-                            }))
-                          }
-                          placeholder="目标"
-                          className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                        />
-                        <input
-                          value={rule.prefix ?? ''}
-                          onChange={(event) =>
-                            setNotificationDrafts((current) => ({
-                              ...current,
-                              [bucket.name]: notificationRules.map((item, itemIndex) =>
-                                itemIndex === index ? { ...item, prefix: event.target.value } : item
-                              )
-                            }))
-                          }
-                          placeholder="prefix"
-                          className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                        />
-                        <input
-                          value={rule.suffix ?? ''}
-                          onChange={(event) =>
-                            setNotificationDrafts((current) => ({
-                              ...current,
-                              [bucket.name]: notificationRules.map((item, itemIndex) =>
-                                itemIndex === index ? { ...item, suffix: event.target.value } : item
-                              )
-                            }))
-                          }
-                          placeholder="suffix"
-                          className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                        />
-                        <div className="flex items-center justify-between gap-2">
-                          <label className="flex items-center gap-1 text-xs text-slate-300">
-                            <input
-                              type="checkbox"
-                              checked={rule.enabled}
-                              onChange={(event) =>
-                                setNotificationDrafts((current) => ({
-                                  ...current,
-                                  [bucket.name]: notificationRules.map((item, itemIndex) =>
-                                    itemIndex === index ? { ...item, enabled: event.target.checked } : item
-                                  )
-                                }))
-                              }
-                            />
-                            启用
-                          </label>
-                          <button
-                            className="rounded-md border border-rose-500/40 px-2 py-1 text-xs text-rose-300 hover:bg-rose-500/10"
-                            onClick={() =>
-                              setNotificationDrafts((current) => ({
-                                ...current,
-                                [bucket.name]: notificationRules.filter((_, itemIndex) => itemIndex !== index)
-                              }))
-                            }
-                          >
-                            删除
-                          </button>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-
-                <div className="mt-3 grid gap-2 rounded-md border border-white/10 p-2 md:grid-cols-6">
-                  <input
-                    value={newRule.id}
-                    onChange={(event) =>
-                      setNewRuleDrafts((current) => ({
-                        ...current,
-                        [bucket.name]: { ...newRule, id: event.target.value }
-                      }))
-                    }
-                    placeholder="规则 ID"
-                    className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                  />
-                  <input
-                    value={newRule.event}
-                    onChange={(event) =>
-                      setNewRuleDrafts((current) => ({
-                        ...current,
-                        [bucket.name]: { ...newRule, event: event.target.value }
-                      }))
-                    }
-                    placeholder="事件"
-                    className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                  />
-                  <input
-                    value={newRule.target}
-                    onChange={(event) =>
-                      setNewRuleDrafts((current) => ({
-                        ...current,
-                        [bucket.name]: { ...newRule, target: event.target.value }
-                      }))
-                    }
-                    placeholder="目标"
-                    className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                  />
-                  <input
-                    value={newRule.prefix ?? ''}
-                    onChange={(event) =>
-                      setNewRuleDrafts((current) => ({
-                        ...current,
-                        [bucket.name]: { ...newRule, prefix: event.target.value }
-                      }))
-                    }
-                    placeholder="prefix"
-                    className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                  />
-                  <input
-                    value={newRule.suffix ?? ''}
-                    onChange={(event) =>
-                      setNewRuleDrafts((current) => ({
-                        ...current,
-                        [bucket.name]: { ...newRule, suffix: event.target.value }
-                      }))
-                    }
-                    placeholder="suffix"
-                    className="h-9 rounded-md border border-white/15 bg-ink-900 px-2 text-xs text-slate-100"
-                  />
-                  <div className="flex items-center justify-between gap-2">
-                    <label className="flex items-center gap-1 text-xs text-slate-300">
-                      <input
-                        type="checkbox"
-                        checked={newRule.enabled}
-                        onChange={(event) =>
-                          setNewRuleDrafts((current) => ({
-                            ...current,
-                            [bucket.name]: { ...newRule, enabled: event.target.checked }
-                          }))
-                        }
-                      />
-                      启用
-                    </label>
-                    <button
-                      className="rounded-md border border-white/15 px-2 py-1 text-xs text-slate-200 hover:bg-white/5"
-                      onClick={() => {
-                        const normalized = normalizeRule(newRule);
-                        if (!normalized.id || !normalized.event || !normalized.target) {
-                          setError('通知规则的 ID、事件、目标不能为空');
-                          return;
-                        }
-                        if (notificationRules.some((rule) => rule.id === normalized.id)) {
-                          setError(`通知规则 ID ${normalized.id} 已存在`);
-                          return;
-                        }
-                        setError('');
-                        setNotificationDrafts((current) => ({
-                          ...current,
-                          [bucket.name]: [...notificationRules, normalized]
-                        }));
-                        setNewRuleDrafts((current) => ({
-                          ...current,
-                          [bucket.name]: defaultNotificationRule()
-                        }));
-                      }}
-                    >
-                      新增
-                    </button>
-                  </div>
-                </div>
-
-                <div className="mt-3">
-                  <button
-                    className="h-10 rounded-md border border-white/15 px-3 text-sm text-slate-100 hover:bg-white/5 disabled:opacity-60"
-                    disabled={savingKey === `${bucket.name}:notifications`}
-                    onClick={async () => {
-                      setSavingKey(`${bucket.name}:notifications`);
-                      setError('');
-                      setMessage('');
-                      try {
-                        const payload = notificationRules.map(normalizeRule);
-                        await bucketService.updateNotifications(client, bucket.name, payload);
-                        setMessage(`桶 ${bucket.name} 的通知规则已更新`);
-                        await reload();
-                      } catch (requestError) {
-                        setError(requestError instanceof Error ? requestError.message : '更新通知规则失败');
-                      } finally {
-                        setSavingKey('');
-                      }
-                    }}
-                  >
-                    {savingKey === `${bucket.name}:notifications` ? '保存中...' : '保存通知规则'}
-                  </button>
-                </div>
-              </div>
-            </article>
-          );
-        })}
-      </div>
+      </Dialog>
     </section>
   );
 }
