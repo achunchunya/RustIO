@@ -53,3 +53,4 @@ tokio-uring = { version = "0.5", optional = true }
 
 [features]
 io-uring = ["tokio-uring"]
+
