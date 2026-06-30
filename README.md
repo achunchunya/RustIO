@@ -71,6 +71,26 @@ chmod +x ./start-source.sh
 ./start-source.sh
 ```
 
+
+## 核心亮点
+
+| 维度 | 能力 |
+| --- | --- |
+| **LIST 元数据索引** | 25× 更快——redb 有序 KV 索引,单页延迟与桶规模解耦(O(log n+page)) |
+| **在线弹性扩缩** | 零停机——运行时增删节点 + 存量数据再平衡 |
+| **Raft 强一致 HA** | 控制面多节点共识 + 优雅 Leader 转移 + 动态成员 |
+| **EC + SIMD 高吞吐** | NEON / AVX 加速 5.7× 编码,单机 GET 吞吐超 MinIO 集群 2× |
+| **分层混合一致性** | 数据→quorum / 元数据→redb 索引 / 控制面→raft(业界独有架构) |
+| **全开源 Admin** | IAM / OIDC / LDAP / KMS / 治理 / 控制台 全开源,无商业锁定 |
+| **安全加固** | 恒定时间比较 / 安全响应头 / 账户 lockout / 注入防护 |
+| **S3 全兼容** | 15+ 子资源全覆盖,MinIO 健康检查别名兼容 |
+
+> 基准数字来源:[scripts/list-bench](./scripts/list-bench/)、[scripts/throughput-bench](./scripts/throughput-bench/)、EC criterion bench;同类产品对照为公开数字。
+
+## 控制台预览
+
+> 截图即将更新——Sandalwood & Ink 设计系统 · 博物馆极简美学。
+
 ## 默认端口与账号
 
 ### 默认端口
