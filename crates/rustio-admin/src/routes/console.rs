@@ -6,8 +6,7 @@ use rust_embed::RustEmbed;
 /// 编译期内嵌的前端构建产物(web/console/dist),让发布二进制自带控制台、无需外部 dist 文件。
 /// 路径相对于 Cargo.toml(即 crates/rustio-admin),所以 dist 在 ../../web/console/dist。
 #[derive(RustEmbed)]
-// 相对 Cargo.toml 的路径(cargo 自动处理为相对于 $CARGO_MANIFEST_DIR)
-#[folder = "../../web/console/dist"]
+#[folder = "../../assets/console/dist"]
 struct ConsoleAssets;
 
 /// 服务控制台静态资源:文件系统(开发 / RUSTIO_CONSOLE_DIST 覆盖)优先,内嵌资源兜底(生产单文件)。
