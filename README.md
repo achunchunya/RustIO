@@ -34,6 +34,18 @@ RustIO 是一个公开发布的纯源码版对象存储仓库，默认提供：
 
 ## 快速开始
 
+### 一键部署（推荐，服务器上直接跑）
+
+```bash
+# 指定版本(国内不撞墙)
+curl -sSL https://raw.githubusercontent.com/achunchunya/RustIO/main/scripts/deploy/install.sh | bash -s -- --version v1.0.0
+
+# 国内网络加速(挂 ghproxy 镜像)
+curl -sSL https://raw.githubusercontent.com/achunchunya/RustIO/main/scripts/deploy/install.sh | RUSTIO_GH_MIRROR=https://ghproxy.com/ bash -s -- --version v1.0.0
+```
+
+运行完成后 RustIO 即作为 systemd 服务运行，浏览器访问 `:9000`。
+
 ### Docker 一键启动
 
 ```bash
