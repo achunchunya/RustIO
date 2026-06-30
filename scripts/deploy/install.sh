@@ -20,6 +20,10 @@ set -euo pipefail
 REPO="achunchunya/RustIO"
 GITHUB_API="https://api.github.com/repos/${REPO}"
 DOWNLOAD_BASE="https://github.com/${REPO}/releases/download"
+# 国内可设镜像代理(如 https://ghproxy.com/ 或 https://gh-proxy.com/),前缀拼到完整 GitHub URL 前。
+GH_MIRROR="${RUSTIO_GH_MIRROR:-}"
+# curl 统一超时,避免连不上时无限挂起。
+CURL_OPTS=(--connect-timeout 15 --retry 3 --retry-delay 2 --max-time 1800)
 INSTALL_DIR="${RUSTIO_INSTALL_DIR:-/usr/local/bin}"
 BINARY="${INSTALL_DIR}/rustio"
 VERSION="${RUSTIO_VERSION:-}"
@@ -97,21 +101,27 @@ echo "  平台: ${PLATFORM}"
 # 获取版本
 if [[ -z "${VERSION}" ]]; then
   echo "  获取最新版本..."
-  VERSION=$(curl -sSf "${GITHUB_API}/releases/latest" 2>/dev/null \
+  VERSION=$(curl -sSf "${CURL_OPTS[@]}" "${GH_MIRROR}${GITHUB_API}/releases/latest" 2>/dev/null \
     | python3 -c "import sys,json;print(json.load(sys.stdin).get('tag_name',''))" 2>/dev/null)
   if [[ -z "${VERSION}" ]]; then
-    echo "❌ 无法获取最新版本"
+    echo "❌ 无法获取最新版本(可能是 api.github.com 不可达)。"
+    echo "   请改用手动指定版本,例如:"
+    echo "     ... | bash -s -- --version v1.0.0"
+    echo "   国内网络可加镜像:"
+    echo "     RUSTIO_GH_MIRROR=https://ghproxy.com/ ... | bash -s -- --version v1.0.0"
     exit 1
   fi
 fi
 echo "  版本: ${VERSION}"
 
 # 下载
-DOWNLOAD_URL="${DOWNLOAD_BASE}/${VERSION}/${PLATFORM}.tar.gz"
+DOWNLOAD_URL="${GH_MIRROR}${DOWNLOAD_BASE}/${VERSION}/${PLATFORM}.tar.gz"
 TMP_DIR=$(mktemp -d)
 echo "  下载 ${DOWNLOAD_URL}..."
-if ! curl -sSfL "${DOWNLOAD_URL}" -o "${TMP_DIR}/rustio.tar.gz"; then
-  echo "❌ 下载失败"
+if ! curl -sSfL "${CURL_OPTS[@]}" "${DOWNLOAD_URL}" -o "${TMP_DIR}/rustio.tar.gz"; then
+  echo "❌ 下载失败(GitHub 不可达或超时)。"
+  echo "   国内网络可加镜像重试:"
+  echo "     RUSTIO_GH_MIRROR=https://ghproxy.com/ ... | bash -s -- --version ${VERSION}"
   rm -rf "${TMP_DIR}"
   exit 1
 fi
