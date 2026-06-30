@@ -3,7 +3,7 @@
 /data-smoke
 **/*.rs.bk
 node_modules
-dist
+/dist
 .DS_Store
 .env
 .venv
