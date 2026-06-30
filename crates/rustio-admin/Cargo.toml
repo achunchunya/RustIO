@@ -49,6 +49,7 @@ lru.workspace = true
 redb.workspace = true
 openraft.workspace = true
 openssl = { version = "0.10", features = ["vendored"] }
+rust-embed = "8"
 tokio-uring = { version = "0.5", optional = true }
 
 [features]

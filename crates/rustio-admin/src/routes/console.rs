@@ -1,8 +1,23 @@
 //! 管理控制台静态资源服务
 
 use super::*;
+use rust_embed::RustEmbed;
 
+/// 编译期内嵌的前端构建产物(web/console/dist),让发布二进制自带控制台、无需外部 dist 文件。
+/// debug 构建从磁盘读取(便于开发热更),release 构建嵌入二进制。
+#[derive(RustEmbed)]
+#[folder = "../../web/console/dist"]
+struct ConsoleAssets;
+
+/// 服务控制台静态资源:文件系统(开发 / RUSTIO_CONSOLE_DIST 覆盖)优先,内嵌资源兜底(生产单文件)。
 pub(crate) async fn serve_console_path(path: &str, allow_spa_fallback: bool) -> Option<Response> {
+    if let Some(response) = serve_console_from_fs(path, allow_spa_fallback).await {
+        return Some(response);
+    }
+    serve_console_from_embedded(path, allow_spa_fallback)
+}
+
+async fn serve_console_from_fs(path: &str, allow_spa_fallback: bool) -> Option<Response> {
     let dist_dir = resolve_console_dist_dir()?;
     let normalized = normalize_console_path(path)?;
     let requested = dist_dir.join(&normalized);
@@ -25,6 +40,32 @@ pub(crate) async fn serve_console_path(path: &str, allow_spa_fallback: bool) -> 
         return None;
     }
     read_console_file_response(&index_path).await.ok()
+}
+
+/// 从内嵌资源服务(生产单文件部署)。
+fn serve_console_from_embedded(path: &str, allow_spa_fallback: bool) -> Option<Response> {
+    let normalized = normalize_console_path(path)?;
+    let rel = normalized.to_string_lossy().replace('\\', "/");
+    if let Some(file) = ConsoleAssets::get(&rel) {
+        return Some(embedded_console_response(&rel, file.data.into_owned()));
+    }
+
+    if !allow_spa_fallback {
+        return None;
+    }
+
+    let index = ConsoleAssets::get("index.html")?;
+    Some(embedded_console_response("index.html", index.data.into_owned()))
+}
+
+fn embedded_console_response(rel: &str, bytes: Vec<u8>) -> Response {
+    let mime = console_content_type(FsPath::new(rel));
+    let mut response = (StatusCode::OK, bytes).into_response();
+    response.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static(mime),
+    );
+    response
 }
 
 pub(crate) fn resolve_console_dist_dir() -> Option<PathBuf> {
