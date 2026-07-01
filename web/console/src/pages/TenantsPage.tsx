@@ -10,10 +10,11 @@ import {
   Input,
   PageHeader,
   Panel,
-  ProgressBar
+  ProgressBar,
+  useToast
 } from '../components/ui';
 import type { TenantSpec } from '../types';
-import { toBilingualNotice, toBilingualPrompt } from '../utils/bilingual';
+import { toBilingualPrompt } from '../utils/bilingual';
 
 type TenantsPageProps = {
   client: ApiClient;
@@ -50,10 +51,10 @@ function toDraft(tenant: TenantSpec): TenantEditDraft {
 }
 
 export function TenantsPage({ client }: TenantsPageProps) {
+  const showSuccess = useToast();
   const [tenants, setTenants] = useState<TenantSpec[]>([]);
   const [drafts, setDrafts] = useState<Record<string, TenantEditDraft>>({});
   const [error, setError] = useState('');
-  const [message, setMessage] = useState('');
   const [creating, setCreating] = useState(false);
   const [savingTenantId, setSavingTenantId] = useState('');
   const [newTenant, setNewTenant] = useState({
@@ -90,7 +91,6 @@ export function TenantsPage({ client }: TenantsPageProps) {
 
       <Card className="space-y-4">
         {error ? <p className="text-sm text-error">{toBilingualPrompt(error)}</p> : null}
-        {message ? <p className="text-sm text-primary">{toBilingualNotice(message)}</p> : null}
 
         <form
           className="grid gap-3 md:grid-cols-4"
@@ -98,7 +98,6 @@ export function TenantsPage({ client }: TenantsPageProps) {
             event.preventDefault();
             setCreating(true);
             setError('');
-            setMessage('');
             try {
               const hardLimit = tibToBytes(newTenant.hard_limit_tib);
               if (hardLimit <= 0) {
@@ -116,7 +115,7 @@ export function TenantsPage({ client }: TenantsPageProps) {
                 owner_group: 'platform-admins',
                 hard_limit_tib: '1'
               });
-              setMessage(`租户 ${newTenant.id.trim()} 创建成功`);
+              showSuccess(`租户 ${newTenant.id.trim()} 创建成功`);
               await reload();
             } catch (requestError) {
               setError(requestError instanceof Error ? requestError.message : '创建租户失败');
@@ -261,7 +260,6 @@ export function TenantsPage({ client }: TenantsPageProps) {
                   onClick={async () => {
                     setSavingTenantId(tenant.id);
                     setError('');
-                    setMessage('');
                     try {
                       const hardLimit = tibToBytes(draft.hard_limit_tib);
                       if (hardLimit <= 0) {
@@ -272,7 +270,7 @@ export function TenantsPage({ client }: TenantsPageProps) {
                         owner_group: draft.owner_group.trim(),
                         hard_limit_bytes: hardLimit
                       });
-                      setMessage(`租户 ${tenant.id} 已更新`);
+                      showSuccess(`租户 ${tenant.id} 已更新`);
                       await reload();
                     } catch (requestError) {
                       setError(requestError instanceof Error ? requestError.message : '更新租户失败');
@@ -290,10 +288,9 @@ export function TenantsPage({ client }: TenantsPageProps) {
                     actionLabel="暂停租户"
                     onConfirm={async (reason) => {
                       setError('');
-                      setMessage('');
                       try {
                         await clusterService.suspendTenant(client, tenant.id, reason);
-                        setMessage(`租户 ${tenant.id} 已暂停`);
+                        showSuccess(`租户 ${tenant.id} 已暂停`);
                         await reload();
                       } catch (requestError) {
                         setError(requestError instanceof Error ? requestError.message : '暂停租户失败');
@@ -308,10 +305,9 @@ export function TenantsPage({ client }: TenantsPageProps) {
                     actionLabel="恢复租户"
                     onConfirm={async (reason) => {
                       setError('');
-                      setMessage('');
                       try {
                         await clusterService.resumeTenant(client, tenant.id, reason);
-                        setMessage(`租户 ${tenant.id} 已恢复`);
+                        showSuccess(`租户 ${tenant.id} 已恢复`);
                         await reload();
                       } catch (requestError) {
                         setError(requestError instanceof Error ? requestError.message : '恢复租户失败');
@@ -327,10 +323,9 @@ export function TenantsPage({ client }: TenantsPageProps) {
                     actionLabel="删除租户"
                     onConfirm={async (reason) => {
                       setError('');
-                      setMessage('');
                       try {
                         await clusterService.deleteTenant(client, tenant.id, reason);
-                        setMessage(`租户 ${tenant.id} 已删除`);
+                        showSuccess(`租户 ${tenant.id} 已删除`);
                         await reload();
                       } catch (requestError) {
                         setError(requestError instanceof Error ? requestError.message : '删除租户失败');

@@ -271,6 +271,7 @@ export default function App() {
           <AppShell
             username={session.username}
             permissions={session.permissions}
+            client={client}
             onLogout={handleLogout}
           />
         }

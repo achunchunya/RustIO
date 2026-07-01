@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { toBilingualNotice, toBilingualPrompt } from '../utils/bilingual';
+import { toBilingualPrompt } from '../utils/bilingual';
 import { ApiClient } from '../api/client';
 import { alertService, jobsService, systemService } from '../api/services';
 import { StatCard } from '../components/StatCard';
-import { useConfirm } from '../components/ui';
+import { useConfirm, useToast } from '../components/ui';
 import type {
   AsyncJobSummary,
   AlertChannel,
@@ -125,6 +125,7 @@ function toggleId(ids: string[], id: string, checked: boolean) {
 
 export function AlertsPage({ client }: AlertsPageProps) {
   const confirm = useConfirm();
+  const showSuccess = useToast();
   const [channels, setChannels] = useState<AlertChannel[]>([]);
   const [rules, setRules] = useState<AlertRule[]>([]);
   const [silences, setSilences] = useState<AlertSilence[]>([]);
@@ -143,7 +144,6 @@ export function AlertsPage({ client }: AlertsPageProps) {
   const [creatingEscalation, setCreatingEscalation] = useState(false);
   const [savingKey, setSavingKey] = useState('');
   const [error, setError] = useState('');
-  const [message, setMessage] = useState('');
 
   const [newChannel, setNewChannel] = useState<ChannelDraft>({
     name: '',
@@ -311,7 +311,6 @@ export function AlertsPage({ client }: AlertsPageProps) {
           告警规则、通知渠道、静默窗口、升级策略与触发历史可视化管理。
         </p>
         {error ? <p className="mt-3 text-sm text-error">{toBilingualPrompt(error)}</p> : null}
-        {message ? <p className="mt-3 text-sm text-primary">{toBilingualNotice(message)}</p> : null}
 
         <div className="mt-4 grid gap-4 md:grid-cols-4">
           <StatCard
@@ -369,10 +368,9 @@ export function AlertsPage({ client }: AlertsPageProps) {
             event.preventDefault();
             setCreatingChannel(true);
             setError('');
-            setMessage('');
             try {
               await alertService.createChannel(client, newChannel);
-              setMessage(`通知渠道 ${newChannel.name} 创建成功`);
+              showSuccess(`通知渠道 ${newChannel.name} 创建成功`);
               setNewChannel({ name: '', kind: 'webhook', endpoint: '', enabled: true });
               await reloadConfig();
             } catch (requestError) {
@@ -505,10 +503,9 @@ export function AlertsPage({ client }: AlertsPageProps) {
                       onClick={async () => {
                         setSavingKey(`${channel.id}:save`);
                         setError('');
-                        setMessage('');
                         try {
                           await alertService.updateChannel(client, channel.id, draft);
-                          setMessage(`通知渠道 ${channel.name} 已更新`);
+                          showSuccess(`通知渠道 ${channel.name} 已更新`);
                           await reloadConfig();
                         } catch (requestError) {
                           setError(requestError instanceof Error ? requestError.message : '更新通知渠道失败');
@@ -525,10 +522,9 @@ export function AlertsPage({ client }: AlertsPageProps) {
                       onClick={async () => {
                         setSavingKey(`${channel.id}:test`);
                         setError('');
-                        setMessage('');
                         try {
                           await alertService.testChannel(client, channel.id);
-                          setMessage(`渠道 ${channel.name} 测试完成`);
+                          showSuccess(`渠道 ${channel.name} 测试完成`);
                           await Promise.all([reloadConfig(), reloadHistory()]);
                         } catch (requestError) {
                           setError(requestError instanceof Error ? requestError.message : '测试通知渠道失败');
@@ -546,10 +542,9 @@ export function AlertsPage({ client }: AlertsPageProps) {
                         if (!await confirm(`确认删除通知渠道 ${channel.name}？`)) return;
                         setSavingKey(`${channel.id}:delete`);
                         setError('');
-                        setMessage('');
                         try {
                           await alertService.deleteChannel(client, channel.id);
-                          setMessage(`通知渠道 ${channel.name} 已删除`);
+                          showSuccess(`通知渠道 ${channel.name} 已删除`);
                           await reloadConfig();
                         } catch (requestError) {
                           setError(requestError instanceof Error ? requestError.message : '删除通知渠道失败');
@@ -599,10 +594,9 @@ export function AlertsPage({ client }: AlertsPageProps) {
             }
             setCreatingRule(true);
             setError('');
-            setMessage('');
             try {
               await alertService.createRule(client, newRule);
-              setMessage(`告警规则 ${newRule.name} 创建成功`);
+              showSuccess(`告警规则 ${newRule.name} 创建成功`);
               setNewRule(defaultRuleDraft(channels.map((channel) => channel.id)));
               await reloadConfig();
             } catch (requestError) {
@@ -891,10 +885,9 @@ export function AlertsPage({ client }: AlertsPageProps) {
                         }
                         setSavingKey(`${rule.id}:save`);
                         setError('');
-                        setMessage('');
                         try {
                           await alertService.updateRule(client, rule.id, draft);
-                          setMessage(`告警规则 ${rule.name} 已更新`);
+                          showSuccess(`告警规则 ${rule.name} 已更新`);
                           await reloadConfig();
                         } catch (requestError) {
                           setError(requestError instanceof Error ? requestError.message : '更新告警规则失败');
@@ -911,10 +904,9 @@ export function AlertsPage({ client }: AlertsPageProps) {
                       onClick={async () => {
                         setSavingKey(`${rule.id}:simulate`);
                         setError('');
-                        setMessage('');
                         try {
                           const entry = await alertService.simulateRule(client, rule.id);
-                          setMessage(`规则 ${rule.name} 已完成实时评估（${historyStatusText(entry.status)}）`);
+                          showSuccess(`规则 ${rule.name} 已完成实时评估（${historyStatusText(entry.status)}）`);
                           await Promise.all([reloadConfig(), reloadHistory()]);
                         } catch (requestError) {
                           setError(requestError instanceof Error ? requestError.message : '规则评估失败');
@@ -932,10 +924,9 @@ export function AlertsPage({ client }: AlertsPageProps) {
                         if (!await confirm(`确认删除告警规则 ${rule.name}？`)) return;
                         setSavingKey(`${rule.id}:delete`);
                         setError('');
-                        setMessage('');
                         try {
                           await alertService.deleteRule(client, rule.id);
-                          setMessage(`告警规则 ${rule.name} 已删除`);
+                          showSuccess(`告警规则 ${rule.name} 已删除`);
                           await reloadConfig();
                         } catch (requestError) {
                           setError(requestError instanceof Error ? requestError.message : '删除告警规则失败');
@@ -972,7 +963,6 @@ export function AlertsPage({ client }: AlertsPageProps) {
             }
             setCreatingSilence(true);
             setError('');
-            setMessage('');
             try {
               await alertService.createSilence(client, {
                 name: newSilence.name,
@@ -982,7 +972,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
                 ends_at: endsAt,
                 enabled: newSilence.enabled
               });
-              setMessage(`静默窗口 ${newSilence.name} 创建成功`);
+              showSuccess(`静默窗口 ${newSilence.name} 创建成功`);
               setNewSilence((current) => ({
                 ...current,
                 name: '',
@@ -1088,10 +1078,9 @@ export function AlertsPage({ client }: AlertsPageProps) {
                       if (!await confirm(`确认删除静默窗口 ${silence.name}？`)) return;
                       setSavingKey(`${silence.id}:delete`);
                       setError('');
-                      setMessage('');
                       try {
                         await alertService.deleteSilence(client, silence.id);
-                        setMessage(`静默窗口 ${silence.name} 已删除`);
+                        showSuccess(`静默窗口 ${silence.name} 已删除`);
                         await reloadConfig();
                       } catch (requestError) {
                         setError(requestError instanceof Error ? requestError.message : '删除静默窗口失败');
@@ -1131,10 +1120,9 @@ export function AlertsPage({ client }: AlertsPageProps) {
             }
             setCreatingEscalation(true);
             setError('');
-            setMessage('');
             try {
               await alertService.createEscalation(client, newEscalation);
-              setMessage(`升级策略 ${newEscalation.name} 创建成功`);
+              showSuccess(`升级策略 ${newEscalation.name} 创建成功`);
               setNewEscalation(defaultEscalationDraft(channels.map((channel) => channel.id)));
               await reloadConfig();
             } catch (requestError) {
@@ -1300,10 +1288,9 @@ export function AlertsPage({ client }: AlertsPageProps) {
                         }
                         setSavingKey(`${policy.id}:save`);
                         setError('');
-                        setMessage('');
                         try {
                           await alertService.updateEscalation(client, policy.id, draft);
-                          setMessage(`升级策略 ${policy.name} 已更新`);
+                          showSuccess(`升级策略 ${policy.name} 已更新`);
                           await reloadConfig();
                         } catch (requestError) {
                           setError(requestError instanceof Error ? requestError.message : '更新升级策略失败');
@@ -1321,10 +1308,9 @@ export function AlertsPage({ client }: AlertsPageProps) {
                         if (!await confirm(`确认删除升级策略 ${policy.name}？`)) return;
                         setSavingKey(`${policy.id}:delete`);
                         setError('');
-                        setMessage('');
                         try {
                           await alertService.deleteEscalation(client, policy.id);
-                          setMessage(`升级策略 ${policy.name} 已删除`);
+                          showSuccess(`升级策略 ${policy.name} 已删除`);
                           await reloadConfig();
                         } catch (requestError) {
                           setError(requestError instanceof Error ? requestError.message : '删除升级策略失败');
@@ -1529,10 +1515,9 @@ export function AlertsPage({ client }: AlertsPageProps) {
                   onClick={async () => {
                     setSavingKey(`${entry.id}:claim`);
                     setError('');
-                    setMessage('');
                     try {
                       await alertService.claimHistory(client, entry.id);
-                      setMessage(`告警事件 ${entry.id} 已认领`);
+                      showSuccess(`告警事件 ${entry.id} 已认领`);
                       await reloadHistory(historyFilters);
                     } catch (requestError) {
                       setError(requestError instanceof Error ? requestError.message : '认领告警失败');
@@ -1549,10 +1534,9 @@ export function AlertsPage({ client }: AlertsPageProps) {
                   onClick={async () => {
                     setSavingKey(`${entry.id}:ack`);
                     setError('');
-                    setMessage('');
                     try {
                       await alertService.ackHistory(client, entry.id);
-                      setMessage(`告警事件 ${entry.id} 已确认`);
+                      showSuccess(`告警事件 ${entry.id} 已确认`);
                       await reloadHistory(historyFilters);
                     } catch (requestError) {
                       setError(requestError instanceof Error ? requestError.message : '确认告警失败');
@@ -1569,10 +1553,9 @@ export function AlertsPage({ client }: AlertsPageProps) {
                   onClick={async () => {
                     setSavingKey(`${entry.id}:resolve`);
                     setError('');
-                    setMessage('');
                     try {
                       await alertService.resolveHistory(client, entry.id);
-                      setMessage(`告警事件 ${entry.id} 已标记恢复`);
+                      showSuccess(`告警事件 ${entry.id} 已标记恢复`);
                       await reloadHistory(historyFilters);
                     } catch (requestError) {
                       setError(requestError instanceof Error ? requestError.message : '恢复告警失败');

@@ -422,6 +422,66 @@ pub(crate) async fn logout(
     })))
 }
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct ChangePasswordRequest {
+    pub(crate) current_password: String,
+    pub(crate) new_password: String,
+}
+
+/// 登录用户自助修改本人密码:校验原密码,写回 Argon2 哈希并经 raft 落盘。
+pub(crate) async fn change_own_password(
+    State(state): State<Arc<AppState>>,
+    auth: AuthContext,
+    Json(body): Json<ChangePasswordRequest>,
+) -> Result<Json<ApiEnvelope<serde_json::Value>>, AppError> {
+    let username = auth.username.clone();
+    let rollback = capture_iam_runtime_snapshot(state.as_ref()).await;
+
+    let stored_password = {
+        let credentials = state.credentials.read().await;
+        credentials
+            .get(&username)
+            .map(|cred| cred.password.clone())
+            .ok_or_else(|| {
+                AppError::bad_request(
+                    "外部身份用户请在身份提供方修改密码 / external identity users must change password at the provider",
+                )
+            })?
+    };
+
+    if !verify_password(&body.current_password, &stored_password) {
+        return Err(AppError::unauthorized("原密码不正确 / current password is incorrect"));
+    }
+    validate_new_password(&body.new_password).map_err(AppError::bad_request)?;
+    if verify_password(&body.new_password, &stored_password) {
+        return Err(AppError::bad_request(
+            "新密码不能与原密码相同 / new password must differ from current password",
+        ));
+    }
+
+    let hashed = hash_password(&body.new_password)
+        .map_err(|err| AppError::internal(format!("密码哈希失败 / failed to hash password: {err}")))?;
+    {
+        let mut credentials = state.credentials.write().await;
+        if let Some(cred) = credentials.get_mut(&username) {
+            cred.password = hashed;
+        }
+    }
+
+    commit_iam_runtime_change(state.as_ref(), "auth-password-change", rollback).await?;
+    state
+        .append_audit(
+            &username,
+            "auth.password.change",
+            &format!("auth/password/{username}"),
+            "success",
+            None,
+            json!({}),
+        )
+        .await;
+    Ok(wrap(json!({ "changed": true })))
+}
+
 pub(crate) async fn current_console_session(
     State(state): State<Arc<AppState>>,
     auth: AuthContext,

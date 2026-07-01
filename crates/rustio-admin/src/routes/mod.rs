@@ -144,7 +144,7 @@ use crate::{
     },
     error::AppError,
     state::{
-        hash_password, verify_password, AlertDeliveryItem, AppState,
+        hash_password, validate_new_password, verify_password, AlertDeliveryItem, AppState,
         ArchitectureAlignmentReport, ArchitectureTopology, CompletedOidcLogin,
         InternalReplicationApplyRequest, LocalCredential,
         MetadataRaftStatus, MetadataRaftSyncRequest, MultipartPart, MultipartUpload,
@@ -182,6 +182,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/api/v1/auth/refresh", post(refresh_token))
         .route("/api/v1/auth/logout", post(logout))
+        .route("/api/v1/auth/password", post(change_own_password))
         .route("/api/v1/system/info", get(index))
         .route("/api/v1/system/capabilities", get(system_capabilities))
         .route("/api/v1/system/topology", get(system_topology))
@@ -297,6 +298,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/api/v1/iam/users/{username}/enable", post(enable_user))
         .route("/api/v1/iam/users/{username}/disable", post(disable_user))
+        .route(
+            "/api/v1/iam/users/{username}/password",
+            post(reset_user_password),
+        )
         .route("/api/v1/iam/groups", get(list_groups).post(create_group))
         .route("/api/v1/iam/groups/{name}/members", post(add_group_member))
         .route(

@@ -104,6 +104,10 @@ export const authService = {
     client.post<LoginResponse>('/api/v1/auth/refresh', { refresh_token: refreshToken }),
   logout: (client: ApiClient) =>
     client.post<{ logged_out: boolean; session_id: string }>('/api/v1/auth/logout'),
+  changePassword: (
+    client: ApiClient,
+    payload: { current_password: string; new_password: string }
+  ) => client.post<{ changed: boolean }>('/api/v1/auth/password', payload),
   currentSession: (client: ApiClient) =>
     client.get<ConsoleSession>('/api/v1/auth/session/current'),
   redeemOidcSession: (client: ApiClient, requestId: string) =>
@@ -270,6 +274,15 @@ export const iamService = {
     client.post<IamUser>(`/api/v1/iam/users/${encodeURIComponent(username)}/enable`),
   disableUser: (client: ApiClient, username: string) =>
     client.post<IamUser>(`/api/v1/iam/users/${encodeURIComponent(username)}/disable`),
+  resetUserPassword: (
+    client: ApiClient,
+    username: string,
+    payload: { new_password: string }
+  ) =>
+    client.post<{ reset: boolean; username: string; revoked_console_sessions: number }>(
+      `/api/v1/iam/users/${encodeURIComponent(username)}/password`,
+      payload
+    ),
   deleteUser: (client: ApiClient, username: string) =>
     client.delete<{
       deleted: boolean;

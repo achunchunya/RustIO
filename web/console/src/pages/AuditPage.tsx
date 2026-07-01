@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { toBilingualNotice, toBilingualPrompt } from '../utils/bilingual';
+import { toBilingualPrompt } from '../utils/bilingual';
 import { ApiClient } from '../api/client';
 import { auditService } from '../api/services';
 import type { AuditEvent } from '../types';
@@ -11,6 +11,7 @@ import {
   Select,
   Button,
   Badge,
+  useToast,
   type BadgeTone
 } from '../components/ui';
 
@@ -51,11 +52,11 @@ function outcomeTone(outcome: string): BadgeTone {
 }
 
 export function AuditPage({ client }: AuditPageProps) {
+  const showSuccess = useToast();
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const [limit, setLimit] = useState(200);
   const [filters, setFilters] = useState<AuditFilters>(EMPTY_FILTERS);
   const [error, setError] = useState('');
-  const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
 
   async function reload(nextLimit = limit, nextFilters = filters) {
@@ -127,7 +128,6 @@ export function AuditPage({ client }: AuditPageProps) {
               variant="primary"
               onClick={async () => {
                 setError('');
-                setMessage('');
                 try {
                   const content = await auditService.exportEvents(client);
                   const blob = new Blob([content], { type: 'application/json' });
@@ -139,7 +139,7 @@ export function AuditPage({ client }: AuditPageProps) {
                   link.click();
                   document.body.removeChild(link);
                   URL.revokeObjectURL(url);
-                  setMessage('审计文件已导出');
+                  showSuccess('审计文件已导出');
                 } catch (requestError) {
                   setError(requestError instanceof Error ? requestError.message : '导出审计文件失败');
                 }
@@ -233,7 +233,6 @@ export function AuditPage({ client }: AuditPageProps) {
       </Card>
 
       {error ? <p className="text-sm text-error">{toBilingualPrompt(error)}</p> : null}
-      {message ? <p className="text-sm text-primary">{toBilingualNotice(message)}</p> : null}
       {loading ? <p className="text-sm text-muted">加载中...</p> : null}
 
       <Card className="p-0">

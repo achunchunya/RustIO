@@ -11,10 +11,11 @@ import {
   Panel,
   ProgressBar,
   SectionTitle,
+  useToast,
   type BadgeTone
 } from '../components/ui';
 import type { SystemMetricsSummary } from '../types';
-import { toBilingualNotice, toBilingualPrompt } from '../utils/bilingual';
+import { toBilingualPrompt } from '../utils/bilingual';
 
 type MetricsPageProps = {
   client: ApiClient;
@@ -111,7 +112,7 @@ export function MetricsPage({ client }: MetricsPageProps) {
   const [refreshing, setRefreshing] = useState(false);
   const [copying, setCopying] = useState(false);
   const [error, setError] = useState('');
-  const [message, setMessage] = useState('');
+  const showSuccess = useToast();
 
   async function reload(silent = false) {
     if (!silent) {
@@ -192,7 +193,6 @@ export function MetricsPage({ client }: MetricsPageProps) {
               disabled={refreshing || loading}
               onClick={async () => {
                 setRefreshing(true);
-                setMessage('');
                 await reload(true);
                 setRefreshing(false);
               }}
@@ -207,10 +207,9 @@ export function MetricsPage({ client }: MetricsPageProps) {
                 if (!rawMetrics) return;
                 setCopying(true);
                 setError('');
-                setMessage('');
                 try {
                   await navigator.clipboard.writeText(rawMetrics);
-                  setMessage('Prometheus 指标文本已复制');
+                  showSuccess('Prometheus 指标文本已复制');
                 } catch {
                   setError('复制指标文本失败');
                 } finally {
@@ -226,7 +225,6 @@ export function MetricsPage({ client }: MetricsPageProps) {
       <p className="-mt-2 text-xs text-muted">最近生成时间：{generatedAt}</p>
 
       {error ? <p className="rounded-lg bg-error/10 p-3 text-sm text-error">{toBilingualPrompt(error)}</p> : null}
-      {message ? <p className="rounded-lg bg-success/10 p-3 text-sm text-success">{toBilingualNotice(message)}</p> : null}
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <StatCard

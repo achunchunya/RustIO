@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { toBilingualNotice, toBilingualPrompt } from '../utils/bilingual';
+import { toBilingualPrompt } from '../utils/bilingual';
 import { ApiClient } from '../api/client';
 import { bucketService, jobsService, replicationService, systemService } from '../api/services';
 import { ConfirmActionDialog } from '../components/ConfirmActionDialog';
@@ -18,6 +18,7 @@ import {
   SectionTitle,
   Select,
   useConfirm,
+  useToast,
   type BadgeTone
 } from '../components/ui';
 import type {
@@ -59,6 +60,7 @@ function switchJobStatusTone(status: string): BadgeTone {
 
 export function ReplicationPage({ client }: ReplicationPageProps) {
   const confirm = useConfirm();
+  const showSuccess = useToast();
   const [rules, setRules] = useState<ReplicationStatus[]>([]);
   const [sites, setSites] = useState<SiteReplicationStatus[]>([]);
   const [buckets, setBuckets] = useState<BucketSpec[]>([]);
@@ -67,7 +69,6 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
   const [replicationSummary, setReplicationSummary] = useState<AsyncJobSummary | null>(null);
   const [switchJobs, setSwitchJobs] = useState<AsyncJobStatus[]>([]);
   const [error, setError] = useState('');
-  const [message, setMessage] = useState('');
   const [saving, setSaving] = useState(false);
   const [updatingRule, setUpdatingRule] = useState('');
   const [deletingRule, setDeletingRule] = useState('');
@@ -261,7 +262,6 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
       <PageHeader title="复制" subtitle="跨站复制链路状态、规则配置与失败重试队列。" />
 
       {error ? <p className="text-sm text-error">{toBilingualPrompt(error)}</p> : null}
-      {message ? <p className="text-sm text-success">{toBilingualNotice(message)}</p> : null}
 
       <div className="grid gap-4 md:grid-cols-4">
         <StatCard
@@ -309,7 +309,6 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
             event.preventDefault();
             setBootstrapping(true);
             setError('');
-            setMessage('');
             try {
               await replicationService.bootstrapSite(client, {
                 site_id: bootstrapForm.site_id.trim(),
@@ -317,7 +316,7 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
                 reason: bootstrapForm.reason.trim(),
                 preferred_primary: bootstrapForm.preferred_primary
               });
-              setMessage(`站点 ${bootstrapForm.site_id} 的初始化任务已创建`);
+              showSuccess(`站点 ${bootstrapForm.site_id} 的初始化任务已创建`);
               setBootstrapForm({ site_id: '', endpoint: '', reason: '', preferred_primary: false });
               await reload();
             } catch (requestError) {
@@ -407,7 +406,6 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
             event.preventDefault();
             setSaving(true);
             setError('');
-            setMessage('');
             try {
               await bucketService.updateReplication(client, form.source_bucket, {
                 rule_id: form.rule_id || undefined,
@@ -420,7 +418,7 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
                 sync_deletes: form.sync_deletes,
                 enabled: form.enabled
               });
-              setMessage(`桶 ${form.source_bucket} 的复制规则已保存`);
+              showSuccess(`桶 ${form.source_bucket} 的复制规则已保存`);
               resetRuleForm();
               await reload();
             } catch (requestError) {
@@ -648,10 +646,9 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
                       onConfirm={async (reason) => {
                         setSwitchingSiteAction(`resync:${site.site_id}`);
                         setError('');
-                        setMessage('');
                         try {
                           await replicationService.resyncSite(client, site.site_id, reason);
-                          setMessage(`站点 ${site.site_id} 的重同步任务已创建`);
+                          showSuccess(`站点 ${site.site_id} 的重同步任务已创建`);
                           await reload();
                         } catch (requestError) {
                           setError(requestError instanceof Error ? requestError.message : '重同步失败');
@@ -668,10 +665,9 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
                       onConfirm={async (reason) => {
                         setSwitchingSiteAction(`reconcile:${site.site_id}`);
                         setError('');
-                        setMessage('');
                         try {
                           await replicationService.reconcileSite(client, site.site_id, reason);
-                          setMessage(`站点 ${site.site_id} 的收敛任务已创建`);
+                          showSuccess(`站点 ${site.site_id} 的收敛任务已创建`);
                           await reload();
                         } catch (requestError) {
                           setError(requestError instanceof Error ? requestError.message : '执行收敛失败');
@@ -689,10 +685,9 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
                         onConfirm={async (reason) => {
                           setSwitchingSiteAction(`failover:${site.site_id}`);
                           setError('');
-                          setMessage('');
                           try {
                             await replicationService.failoverSite(client, site.site_id, reason);
-                            setMessage(`站点 ${site.site_id} 的 Failover 任务已创建`);
+                            showSuccess(`站点 ${site.site_id} 的 Failover 任务已创建`);
                             await reload();
                           } catch (requestError) {
                             setError(requestError instanceof Error ? requestError.message : '执行 Failover 失败');
@@ -711,10 +706,9 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
                         onConfirm={async (reason) => {
                           setSwitchingSiteAction(`failback:${site.site_id}`);
                           setError('');
-                          setMessage('');
                           try {
                             await replicationService.failbackSite(client, site.site_id, reason);
-                            setMessage(`站点 ${site.site_id} 的 Failback 任务已创建`);
+                            showSuccess(`站点 ${site.site_id} 的 Failback 任务已创建`);
                             await reload();
                           } catch (requestError) {
                             setError(requestError instanceof Error ? requestError.message : '执行 Failback 失败');
@@ -786,7 +780,6 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
                 onClick={async () => {
                   setUpdatingRule(rule.rule_id);
                   setError('');
-                  setMessage('');
                   try {
                     await bucketService.updateReplication(client, rule.source_bucket, {
                       rule_id: rule.rule_id,
@@ -799,7 +792,7 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
                       sync_deletes: rule.sync_deletes,
                       enabled: rule.status !== 'healthy'
                     });
-                    setMessage(
+                    showSuccess(
                       `复制规则 ${rule.rule_name || rule.source_bucket} 已${rule.status === 'healthy' ? '暂停' : '启用'}`
                     );
                     await reload();
@@ -827,10 +820,9 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
                   }
                   setDeletingRule(rule.rule_id);
                   setError('');
-                  setMessage('');
                   try {
                     await bucketService.deleteReplication(client, rule.source_bucket, rule.rule_id);
-                    setMessage(`复制规则 ${rule.rule_name || rule.source_bucket} 已删除`);
+                    showSuccess(`复制规则 ${rule.rule_name || rule.source_bucket} 已删除`);
                     if (form.rule_id === rule.rule_id) {
                       resetRuleForm();
                     }
@@ -878,10 +870,9 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
                 if (!await confirm('确认重试全部复制积压项?')) return;
                 setRetryingAllBacklog(true);
                 setError('');
-                setMessage('');
                 try {
                   const result = await jobsService.retryAsyncJobs(client, { kind: 'replication' });
-                  setMessage(`已触发全部重试,处理 ${result.updated} 条复制任务`);
+                  showSuccess(`已触发全部重试,处理 ${result.updated} 条复制任务`);
                   await reload();
                 } catch (requestError) {
                   setError(requestError instanceof Error ? requestError.message : '重试全部积压失败');
@@ -900,13 +891,12 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
               onClick={async () => {
                 setCleaningDoneBacklog(true);
                 setError('');
-                setMessage('');
                 try {
                   const result = await jobsService.cleanupAsyncJobs(client, {
                     kind: 'replication',
                     status: 'done'
                   });
-                  setMessage(`已清理 ${result.removed} 条复制终态任务`);
+                  showSuccess(`已清理 ${result.removed} 条复制终态任务`);
                   await reload();
                 } catch (requestError) {
                   setError(requestError instanceof Error ? requestError.message : '清理复制终态任务失败');
@@ -948,10 +938,9 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
                     onClick={async () => {
                       setRetryingBacklogId(item.id);
                       setError('');
-                      setMessage('');
                       try {
                         await jobsService.retryAsyncJobs(client, {}, [item.id]);
-                        setMessage(`积压项 ${item.id} 已触发重试`);
+                        showSuccess(`积压项 ${item.id} 已触发重试`);
                         await reload();
                       } catch (requestError) {
                         setError(requestError instanceof Error ? requestError.message : '重试积压项失败');

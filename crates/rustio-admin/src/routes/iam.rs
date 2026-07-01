@@ -78,6 +78,71 @@ pub(crate) async fn create_user(
     Ok(wrap(user))
 }
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct ResetPasswordRequest {
+    pub(crate) new_password: String,
+}
+
+/// 管理员重置指定用户密码:无需原密码,写回哈希后撤销该用户会话强制重登。
+pub(crate) async fn reset_user_password(
+    State(state): State<Arc<AppState>>,
+    auth: AuthContext,
+    Path(username): Path<String>,
+    Json(body): Json<ResetPasswordRequest>,
+) -> Result<Json<ApiEnvelope<serde_json::Value>>, AppError> {
+    auth.require(Permission::IamWrite)?;
+    let rollback = capture_iam_runtime_snapshot(state.as_ref()).await;
+
+    if !state
+        .users
+        .read()
+        .await
+        .iter()
+        .any(|user| user.username == username)
+    {
+        return Err(AppError::not_found("用户不存在 / user not found"));
+    }
+    if !state.credentials.read().await.contains_key(&username) {
+        return Err(AppError::bad_request(
+            "外部身份用户无法重置密码 / cannot reset password for external identity user",
+        ));
+    }
+    validate_new_password(&body.new_password).map_err(AppError::bad_request)?;
+
+    let hashed = hash_password(&body.new_password)
+        .map_err(|err| AppError::internal(format!("密码哈希失败 / failed to hash password: {err}")))?;
+    {
+        let mut credentials = state.credentials.write().await;
+        if let Some(cred) = credentials.get_mut(&username) {
+            cred.password = hashed;
+        }
+    }
+
+    let revoked_console_sessions = revoke_console_sessions_for_principal_in_memory(
+        state.as_ref(),
+        &username,
+        "密码已被管理员重置 / password reset by administrator",
+    )
+    .await;
+
+    commit_iam_runtime_change(state.as_ref(), "iam-user-password-reset", rollback).await?;
+    state
+        .append_audit(
+            &auth.username,
+            "iam.user.password.reset",
+            &format!("iam/user/{username}"),
+            "success",
+            None,
+            json!({ "revoked_console_sessions": revoked_console_sessions }),
+        )
+        .await;
+    Ok(wrap(json!({
+        "reset": true,
+        "username": username,
+        "revoked_console_sessions": revoked_console_sessions,
+    })))
+}
+
 pub(crate) async fn enable_user(
     State(state): State<Arc<AppState>>,
     auth: AuthContext,

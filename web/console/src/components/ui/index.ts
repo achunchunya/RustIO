@@ -8,6 +8,7 @@ export { EmptyState } from './EmptyState';
 export { Tabs, ViewToggle, type TabItem } from './Tabs';
 export { Dialog } from './Dialog';
 export { ConfirmProvider, useConfirm, type ConfirmOptions } from './ConfirmProvider';
+export { ToastProvider, useToast } from './ToastProvider';
 export { ThemeToggle } from './ThemeToggle';
 export { Logo, LogoMark } from './Logo';
 export {

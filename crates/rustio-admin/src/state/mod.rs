@@ -10,7 +10,9 @@ mod runtime_config;
 mod session_sync;
 
 use meta_store::MetaStore;
-pub(crate) use password::{hash_password, is_hashed as password_is_hashed, verify_password};
+pub(crate) use password::{
+    hash_password, is_hashed as password_is_hashed, validate_new_password, verify_password,
+};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs::OpenOptions,

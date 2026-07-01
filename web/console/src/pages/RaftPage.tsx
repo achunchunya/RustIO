@@ -2,13 +2,13 @@ import { useCallback, useEffect, useState } from 'react';
 import type { ApiClient } from '../api/client';
 import { systemService } from '../api/services';
 import type { MetadataRaftStatus } from '../types';
-import { Badge, Button, Card, Panel, PageHeader, SectionTitle, Field, Input, IconRefresh } from '../components/ui';
+import { Badge, Button, Card, Panel, PageHeader, SectionTitle, Field, Input, IconRefresh, useToast } from '../components/ui';
 import { ConfirmActionDialog } from '../components/ConfirmActionDialog';
 
 export function RaftPage({ client, canWrite }: { client: ApiClient; canWrite: boolean }) {
   const [status, setStatus] = useState<MetadataRaftStatus | null>(null);
   const [error, setError] = useState('');
-  const [message, setMessage] = useState('');
+  const showSuccess = useToast();
   const [loading, setLoading] = useState(false);
   const [peerId, setPeerId] = useState('');
   const [peerEndpoint, setPeerEndpoint] = useState('');
@@ -31,10 +31,9 @@ export function RaftPage({ client, canWrite }: { client: ApiClient; canWrite: bo
 
   const runAction = async (fn: () => Promise<MetadataRaftStatus>, ok: string) => {
     setError('');
-    setMessage('');
     try {
       setStatus(await fn());
-      setMessage(ok);
+      showSuccess(ok);
     } catch (err) {
       setError(err instanceof Error ? err.message : '操作失败');
     }
@@ -53,7 +52,6 @@ export function RaftPage({ client, canWrite }: { client: ApiClient; canWrite: bo
       />
 
       {error ? <p className="text-sm text-error">{error}</p> : null}
-      {message ? <p className="text-sm text-success">{message}</p> : null}
 
       {status ? (
         <Card>

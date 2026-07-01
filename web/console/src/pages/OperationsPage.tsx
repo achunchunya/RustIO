@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
-import { toBilingualNotice, toBilingualPrompt } from '../utils/bilingual';
+import { toBilingualPrompt } from '../utils/bilingual';
 import { ApiClient } from '../api/client';
 import { clusterService } from '../api/services';
 import { ConfirmActionDialog } from '../components/ConfirmActionDialog';
-import { PageHeader, Card, Button, Badge } from '../components/ui';
+import { PageHeader, Card, Button, Badge, useToast } from '../components/ui';
 import type { ClusterNode, DiagnosticReport } from '../types';
 
 type OperationsPageProps = {
@@ -13,7 +13,7 @@ type OperationsPageProps = {
 export function OperationsPage({ client }: OperationsPageProps) {
   const [nodes, setNodes] = useState<ClusterNode[]>([]);
   const [error, setError] = useState('');
-  const [message, setMessage] = useState('');
+  const showSuccess = useToast();
   const [latestDiagnostic, setLatestDiagnostic] = useState<DiagnosticReport | null>(null);
   const [creatingDiagnostic, setCreatingDiagnostic] = useState(false);
 
@@ -41,11 +41,10 @@ export function OperationsPage({ client }: OperationsPageProps) {
             onClick={async () => {
               setCreatingDiagnostic(true);
               setError('');
-              setMessage('');
               try {
                 const report = await clusterService.createDiagnostic(client);
                 setLatestDiagnostic(report);
-                setMessage(`诊断报告已生成：${report.id}`);
+                showSuccess(`诊断报告已生成：${report.id}`);
               } catch (requestError) {
                 setError(requestError instanceof Error ? requestError.message : '生成诊断报告失败');
               } finally {
@@ -60,7 +59,6 @@ export function OperationsPage({ client }: OperationsPageProps) {
 
       <Card>
         {error ? <p className="text-sm text-error">{toBilingualPrompt(error)}</p> : null}
-        {message ? <p className="text-sm text-primary">{toBilingualNotice(message)}</p> : null}
         {latestDiagnostic ? (
           <p className="mt-2 text-xs text-muted">
             最近报告：{latestDiagnostic.summary}（{new Date(latestDiagnostic.created_at).toLocaleString()}）
@@ -90,10 +88,9 @@ export function OperationsPage({ client }: OperationsPageProps) {
                     actionLabel="执行下线"
                     onConfirm={async (reason) => {
                       setError('');
-                      setMessage('');
                       try {
                         await clusterService.setNodeOffline(client, node.id, reason);
-                        setMessage(`节点 ${node.hostname} 已下线`);
+                        showSuccess(`节点 ${node.hostname} 已下线`);
                         await reload();
                       } catch (requestError) {
                         setError(requestError instanceof Error ? requestError.message : '下线节点失败');
@@ -108,10 +105,9 @@ export function OperationsPage({ client }: OperationsPageProps) {
                     actionLabel="执行上线"
                     onConfirm={async (reason) => {
                       setError('');
-                      setMessage('');
                       try {
                         await clusterService.setNodeOnline(client, node.id, reason);
-                        setMessage(`节点 ${node.hostname} 已上线`);
+                        showSuccess(`节点 ${node.hostname} 已上线`);
                         await reload();
                       } catch (requestError) {
                         setError(requestError instanceof Error ? requestError.message : '上线节点失败');

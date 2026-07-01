@@ -18,7 +18,8 @@ import {
   Input,
   ProgressBar,
   Tabs,
-  IconRefresh
+  IconRefresh,
+  useToast
 } from '../components/ui';
 import type { BadgeTone, TabItem } from '../components/ui';
 import { ConfirmActionDialog } from '../components/ConfirmActionDialog';
@@ -46,9 +47,9 @@ const tierHealthTone = (status: string): BadgeTone => {
 };
 
 export function StoragePage({ client, canWrite }: { client: ApiClient; canWrite: boolean }) {
+  const showSuccess = useToast();
   const [tab, setTab] = useState('governance');
   const [error, setError] = useState('');
-  const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
 
   const [governance, setGovernance] = useState<StorageGovernanceStatusResponse | null>(null);
@@ -61,7 +62,6 @@ export function StoragePage({ client, canWrite }: { client: ApiClient; canWrite:
 
   const notify = (fn: () => void) => {
     setError('');
-    setMessage('');
     fn();
   };
 
@@ -106,7 +106,6 @@ export function StoragePage({ client, canWrite }: { client: ApiClient; canWrite:
       <Tabs items={TABS} active={tab} onChange={setTab} />
 
       {error ? <p className="text-sm text-error">{error}</p> : null}
-      {message ? <p className="text-sm text-success">{message}</p> : null}
 
       {/* 治理概览 */}
       {tab === 'governance' && governance ? (
@@ -202,7 +201,7 @@ export function StoragePage({ client, canWrite }: { client: ApiClient; canWrite:
                             void storageService
                               .checkTierHealth(client, tier.name)
                               .then(() => reload())
-                              .then(() => setMessage(`已检查 ${tier.name}`))
+                              .then(() => showSuccess(`已检查 ${tier.name}`))
                               .catch((e) => setError(e instanceof Error ? e.message : '检查失败'));
                           })
                         }
@@ -307,7 +306,7 @@ export function StoragePage({ client, canWrite }: { client: ApiClient; canWrite:
                         disk_ids: diskIds ? diskIds.split(',').map((s) => s.trim()).filter(Boolean) : undefined,
                         reason
                       })
-                      .then(() => notify(() => setMessage('已提交再平衡计划')))
+                      .then(() => notify(() => showSuccess('已提交再平衡计划')))
                   }
                 />
                 <ConfirmActionDialog
@@ -317,7 +316,7 @@ export function StoragePage({ client, canWrite }: { client: ApiClient; canWrite:
                   onConfirm={(reason) =>
                     storageService
                       .startClusterRebalance(client, { reason })
-                      .then(() => notify(() => setMessage('已提交集群摊匀')))
+                      .then(() => notify(() => showSuccess('已提交集群摊匀')))
                   }
                 />
                 <ConfirmActionDialog
@@ -330,7 +329,7 @@ export function StoragePage({ client, canWrite }: { client: ApiClient; canWrite:
                         disk_ids: diskIds.split(',').map((s) => s.trim()).filter(Boolean),
                         reason
                       })
-                      .then(() => notify(() => setMessage('已提交退役计划')))
+                      .then(() => notify(() => showSuccess('已提交退役计划')))
                   }
                 />
                 <Button
@@ -338,7 +337,7 @@ export function StoragePage({ client, canWrite }: { client: ApiClient; canWrite:
                   onClick={() =>
                     storageService
                       .cancelClusterRebalance(client)
-                      .then((r) => notify(() => setMessage(`已取消 ${r.cancelled} 个再平衡任务`)))
+                      .then((r) => notify(() => showSuccess(`已取消 ${r.cancelled} 个再平衡任务`)))
                       .catch((e) => setError(e instanceof Error ? e.message : '取消失败'))
                   }
                 >

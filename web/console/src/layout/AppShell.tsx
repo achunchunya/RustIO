@@ -1,8 +1,10 @@
 import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom';
-import type { ComponentType, SVGProps } from 'react';
+import { useState, type ComponentType, type SVGProps } from 'react';
+import type { ApiClient } from '../api/client';
 import { Logo } from '../components/ui/Logo';
 import { ThemeToggle } from '../components/ui/ThemeToggle';
 import { Button } from '../components/ui/Button';
+import { ChangePasswordDialog } from '../components/ChangePasswordDialog';
 import { cn } from '../components/ui/cn';
 import {
   IconDashboard,
@@ -22,7 +24,8 @@ import {
   IconConfig,
   IconAudit,
   IconJobs,
-  IconLogout
+  IconLogout,
+  IconKey
 } from '../components/ui/icons';
 
 type NavItem = {
@@ -85,11 +88,13 @@ const navGroups: NavGroup[] = [
 type AppShellProps = {
   username: string;
   permissions: string[];
+  client: ApiClient;
   onLogout: () => Promise<void> | void;
 };
 
-export function AppShell({ username, permissions, onLogout }: AppShellProps) {
+export function AppShell({ username, permissions, client, onLogout }: AppShellProps) {
   const navigate = useNavigate();
+  const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
   const canSee = (item: NavItem) => !item.permission || permissions.includes(item.permission);
 
   return (
@@ -154,6 +159,14 @@ export function AppShell({ username, permissions, onLogout }: AppShellProps) {
               <Button
                 variant="secondary"
                 size="sm"
+                icon={<IconKey size={16} />}
+                onClick={() => setPasswordDialogOpen(true)}
+              >
+                修改密码
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
                 icon={<IconLogout size={16} />}
                 onClick={async () => {
                   await onLogout();
@@ -169,6 +182,11 @@ export function AppShell({ username, permissions, onLogout }: AppShellProps) {
           <Outlet />
         </main>
       </div>
+      <ChangePasswordDialog
+        open={passwordDialogOpen}
+        onClose={() => setPasswordDialogOpen(false)}
+        client={client}
+      />
     </div>
   );
 }

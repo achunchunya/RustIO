@@ -2,9 +2,9 @@ import { useEffect, useState } from 'react';
 import { ApiClient } from '../api/client';
 import { clusterService } from '../api/services';
 import { ConfirmActionDialog } from '../components/ConfirmActionDialog';
-import { Badge, Button, Card, PageHeader, SectionTitle, Textarea } from '../components/ui';
+import { Badge, Button, Card, PageHeader, SectionTitle, Textarea, useToast } from '../components/ui';
 import type { ClusterConfigSnapshot, ClusterConfigValidationResult } from '../types';
-import { toBilingualNotice, toBilingualPrompt } from '../utils/bilingual';
+import { toBilingualPrompt } from '../utils/bilingual';
 
 type ConfigPageProps = {
   client: ApiClient;
@@ -24,9 +24,9 @@ function parseConfigEditor(raw: string): Record<string, unknown> {
 }
 
 export function ConfigPage({ client, canWrite }: ConfigPageProps) {
+  const showSuccess = useToast();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [message, setMessage] = useState('');
   const [current, setCurrent] = useState<ClusterConfigSnapshot | null>(null);
   const [history, setHistory] = useState<ClusterConfigSnapshot[]>([]);
   const [editor, setEditor] = useState('{}');
@@ -67,12 +67,11 @@ export function ConfigPage({ client, canWrite }: ConfigPageProps) {
                 disabled={loading}
                 onClick={async () => {
                   setError('');
-                  setMessage('');
                   setLoading(true);
                   try {
                     await reload();
                     setValidation(null);
-                    setMessage('配置已刷新 / Configuration refreshed');
+                    showSuccess('配置已刷新 / Configuration refreshed');
                   } catch (requestError) {
                     setError(requestError instanceof Error ? requestError.message : '刷新配置失败');
                   } finally {
@@ -89,7 +88,6 @@ export function ConfigPage({ client, canWrite }: ConfigPageProps) {
                 onClick={async () => {
                   setExporting(true);
                   setError('');
-                  setMessage('');
                   try {
                     const text = await clusterService.exportConfig(client);
                     const blob = new Blob([text], { type: 'application/json' });
@@ -100,7 +98,7 @@ export function ConfigPage({ client, canWrite }: ConfigPageProps) {
                       .replace(/[:.]/g, '-')}.json`;
                     link.click();
                     URL.revokeObjectURL(link.href);
-                    setMessage('配置文件已导出 / Cluster config exported');
+                    showSuccess('配置文件已导出 / Cluster config exported');
                   } catch (requestError) {
                     setError(requestError instanceof Error ? requestError.message : '导出配置失败');
                   } finally {
@@ -114,7 +112,6 @@ export function ConfigPage({ client, canWrite }: ConfigPageProps) {
           }
         />
         {error ? <p className="text-sm text-error">{toBilingualPrompt(error)}</p> : null}
-        {message ? <p className="text-sm text-primary">{toBilingualNotice(message)}</p> : null}
       </div>
 
       <div className="grid gap-6 xl:grid-cols-3">
@@ -127,7 +124,7 @@ export function ConfigPage({ client, canWrite }: ConfigPageProps) {
               onClick={() => {
                 if (current) {
                   setEditor(formatConfig(current.payload));
-                  setMessage('已同步当前配置到编辑器 / Synced current config to editor');
+                  showSuccess('已同步当前配置到编辑器 / Synced current config to editor');
                 }
               }}
             >
@@ -149,15 +146,14 @@ export function ConfigPage({ client, canWrite }: ConfigPageProps) {
               onClick={async () => {
                 setValidating(true);
                 setError('');
-                setMessage('');
                 try {
                   const payload = parseConfigEditor(editor);
                   const result = await clusterService.validateConfig(client, payload);
                   setValidation(result);
                   if (result.valid) {
-                    setMessage('配置校验通过 / Configuration validation passed');
+                    showSuccess('配置校验通过 / Configuration validation passed');
                   } else {
-                    setMessage(
+                    showSuccess(
                       `配置校验失败（${result.errors.length} 个错误） / Configuration validation failed (${result.errors.length} errors)`
                     );
                   }
@@ -177,14 +173,13 @@ export function ConfigPage({ client, canWrite }: ConfigPageProps) {
                 actionLabel="应用配置"
                 onConfirm={async (reason) => {
                   setError('');
-                  setMessage('');
                   try {
                     const payload = parseConfigEditor(editor);
                     const snapshot = await clusterService.applyConfig(client, payload, reason);
                     setCurrent(snapshot);
                     setEditor(formatConfig(snapshot.payload));
                     setValidation(null);
-                    setMessage(`配置版本 ${snapshot.version} 已应用`);
+                    showSuccess(`配置版本 ${snapshot.version} 已应用`);
                     await reload();
                   } catch (requestError) {
                     setError(requestError instanceof Error ? requestError.message : '应用配置失败');
@@ -233,13 +228,12 @@ export function ConfigPage({ client, canWrite }: ConfigPageProps) {
                       actionLabel="回滚到此版本"
                       onConfirm={async (reason) => {
                         setError('');
-                        setMessage('');
                         try {
                           const snapshot = await clusterService.rollbackConfig(client, item.version, reason);
                           setCurrent(snapshot);
                           setEditor(formatConfig(snapshot.payload));
                           setValidation(null);
-                          setMessage(`配置已回滚到 ${item.version}`);
+                          showSuccess(`配置已回滚到 ${item.version}`);
                           await reload();
                         } catch (requestError) {
                           setError(requestError instanceof Error ? requestError.message : '回滚配置失败');

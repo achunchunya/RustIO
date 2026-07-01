@@ -1,9 +1,9 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
-import { toBilingualNotice, toBilingualPrompt } from '../utils/bilingual';
+import { toBilingualPrompt } from '../utils/bilingual';
 import { ApiClient } from '../api/client';
 import { bucketService } from '../api/services';
 import { ConfirmActionDialog } from '../components/ConfirmActionDialog';
-import { Dialog, Button, Badge, Chip, useConfirm } from '../components/ui';
+import { Dialog, Button, Badge, Chip, useConfirm, useToast } from '../components/ui';
 import type { BucketObjectEntry, BucketObjectVersionEntry, BucketSpec } from '../types';
 
 const IMAGE_EXT = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif'];
@@ -52,6 +52,7 @@ type DisplayItem = FolderItem | FileItem;
 
 export function ObjectsPage({ client, canWrite = true }: ObjectsPageProps) {
   const confirm = useConfirm();
+  const showSuccess = useToast();
   const [buckets, setBuckets] = useState<BucketSpec[]>([]);
   const [objects, setObjects] = useState<BucketObjectEntry[]>([]);
   const [versions, setVersions] = useState<BucketObjectVersionEntry[]>([]);
@@ -61,7 +62,6 @@ export function ObjectsPage({ client, canWrite = true }: ObjectsPageProps) {
   const [uploadKey, setUploadKey] = useState('');
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
   const [error, setError] = useState('');
-  const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const [versionsLoading, setVersionsLoading] = useState(false);
   const [versionsError, setVersionsError] = useState('');
@@ -217,7 +217,6 @@ export function ObjectsPage({ client, canWrite = true }: ObjectsPageProps) {
 
     setUploading(true);
     setError('');
-    setMessage('');
     let successCount = 0;
 
     for (const file of files) {
@@ -233,7 +232,7 @@ export function ObjectsPage({ client, canWrite = true }: ObjectsPageProps) {
 
     setUploading(false);
     if (successCount > 0) {
-      setMessage(`成功上传 ${successCount} 个文件`);
+      showSuccess(`成功上传 ${successCount} 个文件`);
       setUploadFiles([]);
       await reloadObjects(bucket);
     }
@@ -242,7 +241,6 @@ export function ObjectsPage({ client, canWrite = true }: ObjectsPageProps) {
   async function handleDeleteSelected(reason: string) {
     if (!bucket || selectedKeys.size === 0) return;
     setError('');
-    setMessage('');
     let successCount = 0;
 
     for (const key of selectedKeys) {
@@ -256,7 +254,7 @@ export function ObjectsPage({ client, canWrite = true }: ObjectsPageProps) {
     }
 
     if (successCount > 0) {
-      setMessage(`成功删除 ${successCount} 个对象`);
+      showSuccess(`成功删除 ${successCount} 个对象`);
       setSelectedKeys(new Set());
       await reloadObjects(bucket);
     }
@@ -266,10 +264,9 @@ export function ObjectsPage({ client, canWrite = true }: ObjectsPageProps) {
     if (!bucket) return;
     setDeletingKey(key);
     setError('');
-    setMessage('');
     try {
       await bucketService.deleteObject(client, bucket, key);
-      setMessage(`对象 ${key} 已删除`);
+      showSuccess(`对象 ${key} 已删除`);
       await reloadObjects(bucket);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : '删除对象失败');
@@ -296,7 +293,7 @@ export function ObjectsPage({ client, canWrite = true }: ObjectsPageProps) {
 
   function copyToClipboard(text: string) {
     navigator.clipboard.writeText(text).then(
-      () => setMessage(`已复制: ${text}`),
+      () => showSuccess(`已复制: ${text}`),
       () => setError('复制失败')
     );
   }
@@ -327,14 +324,12 @@ export function ObjectsPage({ client, canWrite = true }: ObjectsPageProps) {
         <h1 className="font-heading text-2xl text-on-surface">对象浏览器</h1>
         <p className="mt-1 text-sm text-muted">可视化上传、下载、删除对象，并查看对象版本历史。</p>
         {error ? <p className="mt-3 text-sm text-error">{toBilingualPrompt(error)}</p> : null}
-        {message ? <p className="mt-3 text-sm text-primary">{toBilingualNotice(message)}</p> : null}
 
         <form
           className="mt-4 grid gap-3 rounded-xl border border-outline/60 bg-surface-container-high p-4 md:grid-cols-2"
           onSubmit={async (event: FormEvent) => {
             event.preventDefault();
             setError('');
-            setMessage('');
             try {
               await reloadObjects();
             } catch (requestError) {
@@ -647,7 +642,6 @@ export function ObjectsPage({ client, canWrite = true }: ObjectsPageProps) {
                                   return;
                                 setVersionActionKey(`${actionKey}:delete`);
                                 setError('');
-                                setMessage('');
                                 try {
                                   await bucketService.deleteObject(
                                     client,
@@ -655,7 +649,7 @@ export function ObjectsPage({ client, canWrite = true }: ObjectsPageProps) {
                                     selectedObjectKey,
                                     item.version_id
                                   );
-                                  setMessage(`版本 ${item.version_id} 已删除`);
+                                  showSuccess(`版本 ${item.version_id} 已删除`);
                                   await reloadObjects(bucket);
                                   await loadObjectVersions(selectedObjectKey, bucket);
                                 } catch (requestError) {

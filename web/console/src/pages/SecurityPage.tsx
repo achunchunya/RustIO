@@ -3,8 +3,9 @@ import { ApiClient } from '../api/client';
 import { securityService, systemService } from '../api/services';
 import { ConfirmActionDialog } from '../components/ConfirmActionDialog';
 import { StatCard } from '../components/StatCard';
+import { useToast } from '../components/ui';
 import type { SecurityConfig, SystemKmsMetricsSummary, SystemMetricsSummary } from '../types';
-import { toBilingualNotice, toBilingualPrompt } from '../utils/bilingual';
+import { toBilingualPrompt } from '../utils/bilingual';
 
 type SecurityPageProps = {
   client: ApiClient;
@@ -99,12 +100,12 @@ const textareaClass =
   'mt-1 min-h-24 w-full rounded-md border border-outline/60 bg-surface-lowest px-3 py-3 text-on-surface';
 
 export function SecurityPage({ client }: SecurityPageProps) {
+  const showSuccess = useToast();
   const [config, setConfig] = useState<SecurityConfig | null>(null);
   const [summary, setSummary] = useState<SystemMetricsSummary | null>(null);
   const [kmsStatus, setKmsStatus] = useState<SystemKmsMetricsSummary | null>(null);
   const [form, setForm] = useState<SecurityFormState>(EMPTY_FORM);
   const [error, setError] = useState('');
-  const [message, setMessage] = useState('');
   const [saving, setSaving] = useState(false);
 
   async function reload() {
@@ -156,7 +157,6 @@ export function SecurityPage({ client }: SecurityPageProps) {
       <article className="rounded-2xl border border-outline/60 bg-surface-container/70 p-4">
         <h1 className="font-heading text-2xl text-on-surface">安全与 KMS</h1>
         {error ? <p className="mt-3 text-sm text-error">{toBilingualPrompt(error)}</p> : null}
-        {message ? <p className="mt-3 text-sm text-primary">{toBilingualNotice(message)}</p> : null}
 
         <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <StatCard
@@ -260,10 +260,9 @@ export function SecurityPage({ client }: SecurityPageProps) {
             event.preventDefault();
             setSaving(true);
             setError('');
-            setMessage('');
             try {
               await securityService.updateConfig(client, form);
-              setMessage('安全配置已更新');
+              showSuccess('安全配置已更新');
               await reload();
             } catch (requestError) {
               setError(requestError instanceof Error ? requestError.message : '更新安全配置失败');
@@ -517,10 +516,9 @@ export function SecurityPage({ client }: SecurityPageProps) {
             actionLabel="轮换密钥"
             onConfirm={async (reason) => {
               setError('');
-              setMessage('');
               try {
                 const result = await securityService.rotateKms(client, reason);
-                setMessage(`KMS 轮换完成：成功 ${result.rotated}，失败 ${result.failed}`);
+                showSuccess(`KMS 轮换完成：成功 ${result.rotated}，失败 ${result.failed}`);
                 await reload();
               } catch (requestError) {
                 setError(requestError instanceof Error ? requestError.message : '轮换密钥失败');
@@ -537,10 +535,9 @@ export function SecurityPage({ client }: SecurityPageProps) {
               actionLabel="重试失败对象"
               onConfirm={async (reason) => {
                 setError('');
-                setMessage('');
                 try {
                   const result = await securityService.retryKmsRotation(client, reason);
-                  setMessage(`KMS 重试完成：成功 ${result.rotated}，失败 ${result.failed}`);
+                  showSuccess(`KMS 重试完成：成功 ${result.rotated}，失败 ${result.failed}`);
                   await reload();
                 } catch (requestError) {
                   setError(requestError instanceof Error ? requestError.message : '重试 KMS 轮换失败');

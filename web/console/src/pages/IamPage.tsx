@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { toBilingualNotice, toBilingualPrompt } from '../utils/bilingual';
+import { toBilingualPrompt } from '../utils/bilingual';
 import { ApiClient } from '../api/client';
 import { iamService, systemService } from '../api/services';
-import { useConfirm } from '../components/ui';
+import { useConfirm, useToast, Dialog, Button, Field, Input } from '../components/ui';
 import type {
   ConsoleSession,
   IamGroup,
@@ -19,6 +19,7 @@ type IamPageProps = {
 
 export function IamPage({ client }: IamPageProps) {
   const confirm = useConfirm();
+  const showSuccess = useToast();
   const [users, setUsers] = useState<IamUser[]>([]);
   const [groups, setGroups] = useState<IamGroup[]>([]);
   const [policies, setPolicies] = useState<IamPolicy[]>([]);
@@ -27,7 +28,6 @@ export function IamPage({ client }: IamPageProps) {
   const [consoleSessions, setConsoleSessions] = useState<ConsoleSession[]>([]);
   const [summary, setSummary] = useState<SystemMetricsSummary | null>(null);
   const [error, setError] = useState('');
-  const [message, setMessage] = useState('');
 
   const [userForm, setUserForm] = useState({
     username: '',
@@ -46,6 +46,10 @@ export function IamPage({ client }: IamPageProps) {
   const [stsForm, setStsForm] = useState({ principal: '', ttl_minutes: 60 });
   const [busy, setBusy] = useState(false);
   const [userActionKey, setUserActionKey] = useState('');
+  const [resetTarget, setResetTarget] = useState<string | null>(null);
+  const [resetPasswordValue, setResetPasswordValue] = useState('');
+  const [resetError, setResetError] = useState('');
+  const [resetBusy, setResetBusy] = useState(false);
 
   const sortedUsers = useMemo(
     () => [...users].sort((left, right) => left.username.localeCompare(right.username)),
@@ -89,7 +93,6 @@ export function IamPage({ client }: IamPageProps) {
         <h1 className="font-heading text-2xl text-on-surface">身份与访问</h1>
         <p className="mt-1 text-sm text-muted">用户、组、策略、服务账号、控制台会话、STS 会话管理。</p>
         {error ? <p className="mt-3 text-sm text-error">{toBilingualPrompt(error)}</p> : null}
-        {message ? <p className="mt-3 text-sm text-primary">{toBilingualNotice(message)}</p> : null}
         {summary ? (
           <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             <div className="rounded-lg border border-outline/60 bg-surface-container-high p-3 text-sm text-muted">
@@ -124,10 +127,9 @@ export function IamPage({ client }: IamPageProps) {
             event.preventDefault();
             setBusy(true);
             setError('');
-            setMessage('');
             try {
               await iamService.createUser(client, userForm);
-              setMessage(`用户 ${userForm.username} 创建成功`);
+              showSuccess(`用户 ${userForm.username} 创建成功`);
               setUserForm({ username: '', display_name: '', password: '', role: 'viewer' });
               await reloadAll();
             } catch (requestError) {
@@ -207,11 +209,10 @@ export function IamPage({ client }: IamPageProps) {
                           onClick={async () => {
                             if (!await confirm(`确认禁用用户 ${user.username}？`)) return;
                             setError('');
-                            setMessage('');
                             setUserActionKey(`${user.username}:disable`);
                             try {
                               await iamService.disableUser(client, user.username);
-                              setMessage(`用户 ${user.username} 已禁用`);
+                              showSuccess(`用户 ${user.username} 已禁用`);
                               await reloadAll();
                             } catch (requestError) {
                               setError(requestError instanceof Error ? requestError.message : '禁用用户失败');
@@ -228,11 +229,10 @@ export function IamPage({ client }: IamPageProps) {
                           disabled={userActionKey === `${user.username}:enable`}
                           onClick={async () => {
                             setError('');
-                            setMessage('');
                             setUserActionKey(`${user.username}:enable`);
                             try {
                               await iamService.enableUser(client, user.username);
-                              setMessage(`用户 ${user.username} 已启用`);
+                              showSuccess(`用户 ${user.username} 已启用`);
                               await reloadAll();
                             } catch (requestError) {
                               setError(requestError instanceof Error ? requestError.message : '启用用户失败');
@@ -245,16 +245,25 @@ export function IamPage({ client }: IamPageProps) {
                         </button>
                       )}
                       <button
+                        className="rounded-md border border-primary/40 px-2 py-1 text-xs text-primary hover:bg-primary/10 disabled:opacity-60"
+                        onClick={() => {
+                          setResetTarget(user.username);
+                          setResetPasswordValue('');
+                          setResetError('');
+                        }}
+                      >
+                        重置密码
+                      </button>
+                      <button
                         className="rounded-md border border-error/40 px-2 py-1 text-xs text-error hover:bg-error/10 disabled:opacity-60"
                         disabled={userActionKey === `${user.username}:delete`}
                         onClick={async () => {
                           if (!await confirm(`确认删除用户 ${user.username}？相关会话与归属账号将被清理。`)) return;
                           setError('');
-                          setMessage('');
                           setUserActionKey(`${user.username}:delete`);
                           try {
                             await iamService.deleteUser(client, user.username);
-                            setMessage(`用户 ${user.username} 已删除`);
+                            showSuccess(`用户 ${user.username} 已删除`);
                             await reloadAll();
                           } catch (requestError) {
                             setError(requestError instanceof Error ? requestError.message : '删除用户失败');
@@ -282,10 +291,9 @@ export function IamPage({ client }: IamPageProps) {
             event.preventDefault();
             setBusy(true);
             setError('');
-            setMessage('');
             try {
               await iamService.createGroup(client, groupForm);
-              setMessage(`组 ${groupForm.name} 创建成功`);
+              showSuccess(`组 ${groupForm.name} 创建成功`);
               setGroupForm({ name: '' });
               await reloadAll();
             } catch (requestError) {
@@ -328,10 +336,9 @@ export function IamPage({ client }: IamPageProps) {
                       onClick={async () => {
                         if (!await confirm(`确认将 ${member} 从组 ${group.name} 移除？`)) return;
                         setError('');
-                        setMessage('');
                         try {
                           await iamService.removeGroupMember(client, group.name, member);
-                          setMessage(`已将 ${member} 从 ${group.name} 移除`);
+                          showSuccess(`已将 ${member} 从 ${group.name} 移除`);
                           await reloadAll();
                         } catch (requestError) {
                           setError(requestError instanceof Error ? requestError.message : '移除成员失败');
@@ -361,11 +368,10 @@ export function IamPage({ client }: IamPageProps) {
                       return;
                     }
                     setError('');
-                    setMessage('');
                     try {
                       await iamService.addGroupMember(client, group.name, { username });
                       setGroupMemberDraft((current) => ({ ...current, [group.name]: '' }));
-                      setMessage(`成员 ${username} 已加入组 ${group.name}`);
+                      showSuccess(`成员 ${username} 已加入组 ${group.name}`);
                       await reloadAll();
                     } catch (requestError) {
                       setError(requestError instanceof Error ? requestError.message : '添加成员失败');
@@ -388,14 +394,13 @@ export function IamPage({ client }: IamPageProps) {
             event.preventDefault();
             setBusy(true);
             setError('');
-            setMessage('');
             try {
               const document = JSON.parse(policyForm.document) as Record<string, unknown>;
               await iamService.createPolicy(client, {
                 name: policyForm.name,
                 document
               });
-              setMessage(`策略 ${policyForm.name} 创建成功`);
+              showSuccess(`策略 ${policyForm.name} 创建成功`);
               setPolicyForm({
                 name: '',
                 document: '{\n  "Version": "2012-10-17",\n  "Statement": []\n}'
@@ -457,10 +462,9 @@ export function IamPage({ client }: IamPageProps) {
                       return;
                     }
                     setError('');
-                    setMessage('');
                     try {
                       await iamService.attachPolicy(client, policy.name, { principal });
-                      setMessage(`策略 ${policy.name} 已挂载到 ${principal}`);
+                      showSuccess(`策略 ${policy.name} 已挂载到 ${principal}`);
                       await reloadAll();
                     } catch (requestError) {
                       setError(requestError instanceof Error ? requestError.message : '挂载策略失败');
@@ -478,10 +482,9 @@ export function IamPage({ client }: IamPageProps) {
                       return;
                     }
                     setError('');
-                    setMessage('');
                     try {
                       await iamService.detachPolicy(client, policy.name, { principal });
-                      setMessage(`策略 ${policy.name} 已从 ${principal} 解绑`);
+                      showSuccess(`策略 ${policy.name} 已从 ${principal} 解绑`);
                       await reloadAll();
                     } catch (requestError) {
                       setError(requestError instanceof Error ? requestError.message : '解绑策略失败');
@@ -504,10 +507,9 @@ export function IamPage({ client }: IamPageProps) {
             onSubmit={async (event) => {
               event.preventDefault();
               setError('');
-              setMessage('');
               try {
                 await iamService.createServiceAccount(client, serviceForm);
-                setMessage(`服务账号已为 ${serviceForm.owner} 创建`);
+                showSuccess(`服务账号已为 ${serviceForm.owner} 创建`);
                 await reloadAll();
               } catch (requestError) {
                 setError(requestError instanceof Error ? requestError.message : '创建服务账号失败');
@@ -542,10 +544,9 @@ export function IamPage({ client }: IamPageProps) {
                   onClick={async () => {
                     if (!await confirm(`确认删除服务账号 ${account.access_key}？`)) return;
                     setError('');
-                    setMessage('');
                     try {
                       await iamService.deleteServiceAccount(client, account.access_key);
-                      setMessage(`服务账号 ${account.access_key} 已删除`);
+                      showSuccess(`服务账号 ${account.access_key} 已删除`);
                       await reloadAll();
                     } catch (requestError) {
                       setError(requestError instanceof Error ? requestError.message : '删除服务账号失败');
@@ -587,10 +588,9 @@ export function IamPage({ client }: IamPageProps) {
                   onClick={async () => {
                     if (!await confirm(`确认回收控制台会话 ${session.session_id}？`)) return;
                     setError('');
-                    setMessage('');
                     try {
                       await iamService.deleteConsoleSession(client, session.session_id);
-                      setMessage(`控制台会话 ${session.session_id} 已回收`);
+                      showSuccess(`控制台会话 ${session.session_id} 已回收`);
                       await reloadAll();
                     } catch (requestError) {
                       setError(requestError instanceof Error ? requestError.message : '回收控制台会话失败');
@@ -611,10 +611,9 @@ export function IamPage({ client }: IamPageProps) {
             onSubmit={async (event) => {
               event.preventDefault();
               setError('');
-              setMessage('');
               try {
                 await iamService.createStsSession(client, stsForm);
-                setMessage(`已为 ${stsForm.principal} 创建 STS 会话`);
+                showSuccess(`已为 ${stsForm.principal} 创建 STS 会话`);
                 await reloadAll();
               } catch (requestError) {
                 setError(requestError instanceof Error ? requestError.message : '创建 STS 会话失败');
@@ -670,10 +669,9 @@ export function IamPage({ client }: IamPageProps) {
                   onClick={async () => {
                     if (!await confirm(`确认回收 STS 会话 ${session.session_id}？`)) return;
                     setError('');
-                    setMessage('');
                     try {
                       await iamService.deleteStsSession(client, session.session_id);
-                      setMessage(`STS 会话 ${session.session_id} 已回收`);
+                      showSuccess(`STS 会话 ${session.session_id} 已回收`);
                       await reloadAll();
                     } catch (requestError) {
                       setError(requestError instanceof Error ? requestError.message : '回收 STS 会话失败');
@@ -687,6 +685,61 @@ export function IamPage({ client }: IamPageProps) {
           </div>
         </article>
       </div>
+
+      <Dialog
+        open={resetTarget !== null}
+        onClose={() => setResetTarget(null)}
+        title="重置密码"
+        description={resetTarget ? `为用户 ${resetTarget} 设置新密码` : undefined}
+        footer={
+          <>
+            <Button variant="tertiary" onClick={() => setResetTarget(null)} disabled={resetBusy}>
+              取消
+            </Button>
+            <Button
+              variant="primary"
+              disabled={resetBusy}
+              onClick={async () => {
+                if (!resetTarget) return;
+                setResetError('');
+                if (resetPasswordValue.length < 8) {
+                  setResetError('新密码长度不能少于 8 位');
+                  return;
+                }
+                setResetBusy(true);
+                try {
+                  await iamService.resetUserPassword(client, resetTarget, {
+                    new_password: resetPasswordValue
+                  });
+                  showSuccess(`用户 ${resetTarget} 密码已重置`);
+                  setResetTarget(null);
+                  await reloadAll();
+                } catch (requestError) {
+                  setResetError(
+                    requestError instanceof Error ? toBilingualPrompt(requestError.message) : '重置密码失败'
+                  );
+                } finally {
+                  setResetBusy(false);
+                }
+              }}
+            >
+              {resetBusy ? '提交中...' : '确认重置'}
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-3">
+          <Field label="新密码" hint="长度不少于 8 位；重置后该用户已有会话将失效">
+            <Input
+              type="password"
+              autoComplete="new-password"
+              value={resetPasswordValue}
+              onChange={(event) => setResetPasswordValue(event.target.value)}
+            />
+          </Field>
+          {resetError ? <p className="text-sm text-error">{resetError}</p> : null}
+        </div>
+      </Dialog>
     </section>
   );
 }

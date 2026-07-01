@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
-import { toBilingualNotice, toBilingualPrompt } from '../utils/bilingual';
+import { toBilingualPrompt } from '../utils/bilingual';
 import { ApiClient } from '../api/client';
 import { jobsService } from '../api/services';
 import { ConfirmActionDialog } from '../components/ConfirmActionDialog';
 import { StatCard } from '../components/StatCard';
+import { useToast } from '../components/ui';
 import type { AsyncJobPage, AsyncJobStatus, AsyncJobSummary } from '../types';
 
 type JobsPageProps = {
@@ -65,6 +66,7 @@ function buildQuery(filters: Filters, cursor?: string) {
 }
 
 export function JobsPage({ client }: JobsPageProps) {
+  const showSuccess = useToast();
   const [target, setTarget] = useState('cluster');
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
   const [jobsPage, setJobsPage] = useState<AsyncJobPage>({ items: [], next_cursor: null });
@@ -72,7 +74,6 @@ export function JobsPage({ client }: JobsPageProps) {
   const [cursorStack, setCursorStack] = useState<string[]>([]);
   const [currentCursor, setCurrentCursor] = useState('');
   const [error, setError] = useState('');
-  const [message, setMessage] = useState('');
   const [starting, setStarting] = useState(false);
   const [loading, setLoading] = useState(false);
   const [actioning, setActioning] = useState('');
@@ -109,7 +110,6 @@ export function JobsPage({ client }: JobsPageProps) {
   ) {
     setActioning(action);
     setError('');
-    setMessage('');
     try {
       if (action === 'retry') {
         await jobsService.retryAsyncJobs(client, buildQuery(filters), jobIds);
@@ -118,7 +118,7 @@ export function JobsPage({ client }: JobsPageProps) {
       } else {
         await jobsService.skipAsyncJobs(client, buildQuery(filters), jobIds);
       }
-      setMessage(successMessage ?? '批量操作已完成');
+      showSuccess(successMessage ?? '批量操作已完成');
       await reload();
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : '批量任务操作失败');
@@ -148,10 +148,9 @@ export function JobsPage({ client }: JobsPageProps) {
               onClick={async () => {
                 setStarting(true);
                 setError('');
-                setMessage('');
                 try {
                   await jobsService.heal(client, target || 'cluster');
-                  setMessage('修复任务已启动');
+                  showSuccess('修复任务已启动');
                   await reload();
                 } catch (requestError) {
                   setError(requestError instanceof Error ? requestError.message : '启动修复失败');
@@ -176,7 +175,6 @@ export function JobsPage({ client }: JobsPageProps) {
         </div>
 
         {error ? <p className="mt-3 text-sm text-error">{toBilingualPrompt(error)}</p> : null}
-        {message ? <p className="mt-3 text-sm text-primary">{toBilingualNotice(message)}</p> : null}
 
         <div className="mt-4 grid gap-4 md:grid-cols-4">
           <StatCard label="任务总数" value={summary ? String(summary.total) : '...'} helper="统一异步任务口径" />
@@ -365,10 +363,9 @@ export function JobsPage({ client }: JobsPageProps) {
                       actionLabel="取消任务"
                       onConfirm={async (reason) => {
                         setError('');
-                        setMessage('');
                         try {
                           await jobsService.cancel(client, job.job_id, reason);
-                          setMessage(`任务 ${job.job_id} 已取消`);
+                          showSuccess(`任务 ${job.job_id} 已取消`);
                           await reload();
                         } catch (requestError) {
                           setError(requestError instanceof Error ? requestError.message : '取消任务失败');
