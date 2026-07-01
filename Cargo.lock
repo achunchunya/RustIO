@@ -2547,7 +2547,7 @@ dependencies = [
 
 [[package]]
 name = "rustio"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -2561,7 +2561,7 @@ dependencies = [
 
 [[package]]
 name = "rustio-admin"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2612,7 +2612,7 @@ dependencies = [
 
 [[package]]
 name = "rustio-cli"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -2625,7 +2625,7 @@ dependencies = [
 
 [[package]]
 name = "rustio-core"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "chrono",
  "serde",
