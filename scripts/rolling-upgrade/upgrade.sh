@@ -16,6 +16,7 @@ set -euo pipefail
 
 REPO="achunchunya/RustIO"
 GITHUB_API="https://api.github.com/repos/${REPO}"
+DOWNLOAD_BASE="https://github.com/${REPO}/releases/download"
 INSTALL_DIR="${RUSTIO_INSTALL_DIR:-/usr/local/bin}"
 BINARY_PATH="${RUSTIO_BINARY:-${INSTALL_DIR}/rustio}"
 NODE_CONFIG=""
@@ -78,20 +79,20 @@ get_current_version() {
 # ── 下载 ──
 download_binary() {
   local version="$1" asset="$2"
-  local url="${GITHUB_API}/releases/download/${version}/${asset}.tar.gz"
+  local url="${DOWNLOAD_BASE}/${version}/${asset}.tar.gz"
   local tmp_dir
   tmp_dir=$(mktemp -d)
 
-  echo "  下载 ${url}..."
+  echo "  下载 ${url}..." >&2
   if ! curl -sSfL "${url}" -o "${tmp_dir}/${asset}.tar.gz"; then
-    echo "❌ 下载失败(版本 ${version} 可能不存在对应平台二进制)"
+    echo "❌ 下载失败(版本 ${version} 可能不存在对应平台二进制)" >&2
     rm -rf "${tmp_dir}"
     return 1
   fi
 
   tar xzf "${tmp_dir}/${asset}.tar.gz" -C "${tmp_dir}"
   if [[ ! -f "${tmp_dir}/rustio" ]]; then
-    echo "❌ 归档中未找到 rustio 二进制"
+    echo "❌ 归档中未找到 rustio 二进制" >&2
     rm -rf "${tmp_dir}"
     return 1
   fi
