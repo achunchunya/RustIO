@@ -158,8 +158,10 @@ upgrade_node() {
 
   # 部署二进制
   if is_local "${host}"; then
-    cp "${new_bin}" "${BINARY_PATH}"
-    chmod +x "${BINARY_PATH}"
+    # 同目录临时文件 + rename,规避覆盖运行中二进制的 ETXTBSY(systemd Restart 场景)
+    cp "${new_bin}" "${BINARY_PATH}.new.$$"
+    chmod +x "${BINARY_PATH}.new.$$"
+    mv -f "${BINARY_PATH}.new.$$" "${BINARY_PATH}"
   else
     scp -o StrictHostKeyChecking=no ${SSH_KEY:+-i ${SSH_KEY}} "${new_bin}" "${SSH_USER}@${host}:${BINARY_PATH}.new"
     ${SSH_CMD} "${SSH_USER}@${host}" "mv '${BINARY_PATH}.new' '${BINARY_PATH}' && chmod +x '${BINARY_PATH}'"
@@ -215,7 +217,7 @@ if [[ -z "${TARGET_VERSION}" ]]; then
 fi
 echo "  目标版本: ${TARGET_VERSION}"
 
-if [[ "${CURRENT}" == *"${TARGET_VERSION}"* ]]; then
+if [[ "${CURRENT}" == *"${TARGET_VERSION#v}"* ]]; then
   echo "  已是最新版本,无需升级"
   exit 0
 fi
@@ -286,8 +288,13 @@ else
   # ── 单节点升级 ──
   echo ""
   echo "=== 单节点升级 ==="
-  cp "${NEW_BIN}" "${BINARY_PATH}"
-  chmod +x "${BINARY_PATH}"
+  # 用同目录临时文件 + 原子 rename 替换,避免直接 cp 覆盖正在运行的二进制时的
+  # "Text file busy"(ETXTBSY):rename 不触碰运行中的旧 inode,进程照常运行,
+  # 新名字指向新 inode,随后 restart 即加载新二进制。
+  NEW_INSTALL="${BINARY_PATH}.new.$$"
+  cp "${NEW_BIN}" "${NEW_INSTALL}"
+  chmod +x "${NEW_INSTALL}"
+  mv -f "${NEW_INSTALL}" "${BINARY_PATH}"
   rm -f "${NEW_BIN}"
 
   if systemctl is-active rustio >/dev/null 2>&1; then

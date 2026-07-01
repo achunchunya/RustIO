@@ -253,6 +253,10 @@ fn parse_launch_config() -> anyhow::Result<LaunchConfig> {
                 print_help();
                 std::process::exit(0);
             }
+            "--version" | "-V" => {
+                println!("rustio {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
             "--address" | "-a" => {
                 i += 1;
                 let value = args.get(i).cloned().ok_or_else(|| {
@@ -291,6 +295,10 @@ fn print_help() {
     println!("用法:");
     println!("  rustio");
     println!("  rustio server [DATA_DIR] [--address HOST:PORT]");
+    println!();
+    println!("其它:");
+    println!("  rustio --version   打印版本");
+    println!("  rustio --help      打印帮助");
     println!();
     println!("示例:");
     println!("  rustio server ./data --address :9000");
