@@ -115,6 +115,17 @@ pub struct LocalCredential {
     pub role: String,
 }
 
+/// 落盘的 IAM 身份态(凭据/用户/组/策略/服务账号)。
+/// 由 `persist_iam_state_snapshot`/`load_iam_state` 读写,详见其注释。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct PersistedIamState {
+    pub(crate) credentials: Vec<(String, LocalCredential)>,
+    pub(crate) users: Vec<IamUser>,
+    pub(crate) groups: Vec<IamGroup>,
+    pub(crate) policies: Vec<IamPolicy>,
+    pub(crate) service_accounts: Vec<rustio_core::ServiceAccount>,
+}
+
 #[derive(Debug, Clone)]
 pub struct MultipartPart {
     pub part_number: u32,

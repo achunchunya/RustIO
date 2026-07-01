@@ -133,6 +133,52 @@ impl AppState {
         std::fs::rename(&temp_path, &path).map_err(|err| err.to_string())
     }
 
+    pub(crate) fn iam_state_path(data_dir: &Path) -> PathBuf {
+        data_dir.join(".rustio_meta").join("iam-state.json")
+    }
+
+    /// 从盘加载持久化的 IAM 身份态(凭据/用户/组/策略/服务账号)。
+    /// 缺失或损坏时返回 None,由调用方回退到环境变量种子默认值。
+    pub(crate) fn load_iam_state(data_dir: &Path) -> Option<PersistedIamState> {
+        let path = Self::iam_state_path(data_dir);
+        std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<PersistedIamState>(&bytes).ok())
+    }
+
+    /// 落盘 IAM 身份态。任何 IAM 变更(改密码/建删用户/组/策略/服务账号)提交后调用,
+    /// 保证进程重启后从盘恢复,而非退回环境变量种子(否则改过的密码会在重启后丢失)。
+    pub(crate) fn persist_iam_state_snapshot(
+        data_dir: &Path,
+        credentials: &HashMap<String, LocalCredential>,
+        users: &[IamUser],
+        groups: &[IamGroup],
+        policies: &[IamPolicy],
+        service_accounts: &[rustio_core::ServiceAccount],
+    ) -> Result<(), String> {
+        let path = Self::iam_state_path(data_dir);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+        }
+        let mut credential_entries = credentials
+            .iter()
+            .map(|(username, credential)| (username.clone(), credential.clone()))
+            .collect::<Vec<_>>();
+        credential_entries.sort_by(|left, right| left.0.cmp(&right.0));
+        let payload = PersistedIamState {
+            credentials: credential_entries,
+            users: users.to_vec(),
+            groups: groups.to_vec(),
+            policies: policies.to_vec(),
+            service_accounts: service_accounts.to_vec(),
+        };
+        let bytes = serde_json::to_vec_pretty(&payload).map_err(|err| err.to_string())?;
+        let temp_path = path.with_extension("json.tmp");
+        std::fs::write(&temp_path, bytes).map_err(|err| err.to_string())?;
+        std::fs::rename(&temp_path, &path).map_err(|err| err.to_string())
+    }
+
+
     /// 打开 redb 元数据库,若文件损坏则自动删除重建(元数据可从 bucket 目录扫描恢复)。
     fn open_meta_store_or_recover(data_dir: &Path) -> Result<MetaStore, String> {
         let path = data_dir.join(".rustio_meta.redb");
@@ -275,6 +321,13 @@ impl AppState {
                     role: "admin".to_string(),
                 },
             );
+        }
+
+        // 优先从盘恢复 IAM 身份态(凭据/用户/组/策略/服务账号),否则用上面的环境变量种子。
+        // 缺失此步会导致:改密码等 IAM 变更只落会话、不落身份态,进程重启后退回种子密码。
+        let persisted_iam = Self::load_iam_state(&data_dir);
+        if let Some(persisted) = persisted_iam.as_ref() {
+            credentials = persisted.credentials.iter().cloned().collect();
         }
 
         let remote_tiers = Self::load_remote_tiers(&data_dir);
@@ -705,60 +758,74 @@ impl AppState {
             ]),
             diagnostics: RwLock::new(vec![]),
             cluster_config_history: RwLock::new(cluster_config_history),
-            users: RwLock::new({
-                let mut users = vec![IamUser {
-                    username: console_user.clone(),
-                    display_name: "RustIO Admin".to_string(),
-                    role: "admin".to_string(),
-                    enabled: true,
-                    created_at: now,
-                }];
-                if console_user != "admin" {
-                    users.push(IamUser {
-                        username: "admin".to_string(),
-                        display_name: "RustIO Legacy Admin".to_string(),
+            users: RwLock::new(match persisted_iam.as_ref() {
+                Some(persisted) => persisted.users.clone(),
+                None => {
+                    let mut users = vec![IamUser {
+                        username: console_user.clone(),
+                        display_name: "RustIO Admin".to_string(),
                         role: "admin".to_string(),
                         enabled: true,
                         created_at: now,
-                    });
+                    }];
+                    if console_user != "admin" {
+                        users.push(IamUser {
+                            username: "admin".to_string(),
+                            display_name: "RustIO Legacy Admin".to_string(),
+                            role: "admin".to_string(),
+                            enabled: true,
+                            created_at: now,
+                        });
+                    }
+                    users
                 }
-                users
             }),
-            groups: RwLock::new(vec![IamGroup {
-                name: "platform-admins".to_string(),
-                members: {
-                    let mut members = vec![console_user.clone()];
-                    if console_user != "admin" {
-                        members.push("admin".to_string());
-                    }
-                    members
-                },
-            }]),
-            policies: RwLock::new(vec![IamPolicy {
-                name: "cluster-admin".to_string(),
-                document: json!({
-                    "Version": "2012-10-17",
-                    "Statement": [{
-                        "Effect": "Allow",
-                        "Action": ["*"],
-                        "Resource": ["*"]
-                    }]
-                }),
-                attached_to: {
-                    let mut attached = vec![console_user.clone()];
-                    if console_user != "admin" {
-                        attached.push("admin".to_string());
-                    }
-                    attached
-                },
-            }]),
-            service_accounts: RwLock::new(vec![rustio_core::ServiceAccount {
-                access_key: "sa-bootstrap".to_string(),
-                secret_key: "sa-bootstrap-secret".to_string(),
-                owner: "admin".to_string(),
-                created_at: now,
-                status: "enabled".to_string(),
-            }]),
+            groups: RwLock::new(persisted_iam.as_ref().map(|p| p.groups.clone()).unwrap_or_else(|| {
+                vec![IamGroup {
+                    name: "platform-admins".to_string(),
+                    members: {
+                        let mut members = vec![console_user.clone()];
+                        if console_user != "admin" {
+                            members.push("admin".to_string());
+                        }
+                        members
+                    },
+                }]
+            })),
+            policies: RwLock::new(persisted_iam.as_ref().map(|p| p.policies.clone()).unwrap_or_else(|| {
+                vec![IamPolicy {
+                    name: "cluster-admin".to_string(),
+                    document: json!({
+                        "Version": "2012-10-17",
+                        "Statement": [{
+                            "Effect": "Allow",
+                            "Action": ["*"],
+                            "Resource": ["*"]
+                        }]
+                    }),
+                    attached_to: {
+                        let mut attached = vec![console_user.clone()];
+                        if console_user != "admin" {
+                            attached.push("admin".to_string());
+                        }
+                        attached
+                    },
+                }]
+            })),
+            service_accounts: RwLock::new(
+                persisted_iam
+                    .as_ref()
+                    .map(|p| p.service_accounts.clone())
+                    .unwrap_or_else(|| {
+                        vec![rustio_core::ServiceAccount {
+                            access_key: "sa-bootstrap".to_string(),
+                            secret_key: "sa-bootstrap-secret".to_string(),
+                            owner: "admin".to_string(),
+                            created_at: now,
+                            status: "enabled".to_string(),
+                        }]
+                    }),
+            ),
             admin_sessions: RwLock::new(console_sessions),
             sts_sessions: RwLock::new(vec![StsSession {
                 session_id: Uuid::new_v4().to_string(),

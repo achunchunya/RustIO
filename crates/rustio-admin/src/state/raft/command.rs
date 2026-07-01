@@ -160,6 +160,18 @@ impl MetadataCommand {
                 {
                     tracing::warn!("持久化控制台会话失败: {err}");
                 }
+                // 落盘 IAM 身份态(凭据/用户/组/策略/服务账号)。此前只落会话不落身份态,
+                // 进程重启后身份态会退回环境变量种子,导致改过的密码丢失——此处补齐。
+                if let Err(err) = AppState::persist_iam_state_snapshot(
+                    &app.data_dir,
+                    &s.credentials,
+                    &s.users,
+                    &s.groups,
+                    &s.policies,
+                    &s.service_accounts,
+                ) {
+                    tracing::warn!("持久化 IAM 身份态失败: {err}");
+                }
             }
             MetadataCommand::UpsertClusterPeer(peer) => {
                 let peer = peer.as_ref().clone();
