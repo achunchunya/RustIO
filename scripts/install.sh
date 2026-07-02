@@ -320,13 +320,19 @@ ENVEOF2
   echo "  控制台用户:  ${console_user}"
   echo "  控制台密码:  ${console_pass}"
   echo ""
-  echo "  配置文件:    /etc/rustio/env"
+  echo "  配置文件:    ${ENV_FILE}"
   echo "  数据目录:    ${data_dir}"
   echo "  服务管理:    systemctl {start|stop|restart|status} rustio"
   echo "  查看日志:    journalctl -u rustio -f"
   echo ""
-  echo "  升级到新版本:"
-  echo "    curl -sSL https://raw.githubusercontent.com/${REPO}/main/scripts/install.sh | bash -s -- upgrade"
+
+  # 把部署脚本存到服务器上,以后直接 run rustio-deploy upgrade 等。
+  local deploy_bin="${INSTALL_DIR}/rustio-deploy"
+  cp "${BASH_SOURCE[0]}" "${deploy_bin}" 2>/dev/null || true
+  chmod +x "${deploy_bin}" 2>/dev/null || true
+  echo "  部署工具已留存: ${deploy_bin}"
+  echo "    ${deploy_bin} upgrade    # 升级"
+  echo "    ${deploy_bin} menu       # 交互菜单"
   echo ""
   echo "  ⚠️  请保存以上密码,此密码仅显示一次。"
 }
