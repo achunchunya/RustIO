@@ -45,10 +45,36 @@ chmod +x ./scripts/start-source.sh
 ./scripts/start-source.sh
 ```
 
-三种方式启动后都通过 `http://<服务器IP>:9000` 访问控制台与 S3 / Admin API（单端口模式）。升级：
+三种方式启动后都通过 `http://<服务器IP>:9000` 访问控制台与 S3 / Admin API（单端口模式）。
+
+## 部署后运维
+
+安装完成后，**`rustio-deploy` 工具已自动留存到服务器**（路径 `/usr/local/bin/rustio-deploy`），下面所有操作都可用它，不用重新下载脚本。
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/achunchunya/RustIO/main/scripts/install.sh | bash -s -- upgrade
+# 升级
+rustio-deploy upgrade
+curl -sSL https://raw.githubusercontent.com/achunchunya/RustIO/main/scripts/install.sh | bash -s -- upgrade   # 或在线升级
+
+# 卸载
+rustio-deploy uninstall
+rustio-deploy uninstall --purge     # 连同数据一起删(不可恢复)
+
+# 交互菜单(安装/升级/卸载/集群/接管 systemd 等)
+rustio-deploy
+./scripts/install.sh                                                         # 本地 clone 了仓库的话
+bash <(curl -sSL https://raw.githubusercontent.com/achunchunya/RustIO/main/scripts/install.sh)  # 在线交互
+
+# 把正在跑的 nohup/手动进程接管为 systemd 服务
+rustio-deploy systemd
+
+# 本地多节点测试集群(含自动升级与停止)
+rustio-deploy cluster --nodes 3 --base-port 19801
+rustio-deploy cluster --down --data ~/.rustio/cluster
+rustio-deploy upgrade --nodes <集群数据>/nodes.conf --dry-run   # 验证滚动升级
+
+# 把已部署的单机实例扩容为集群
+rustio-deploy expand --peer 2=http://<新机器IP>:9000
 ```
 
 ## 核心亮点
@@ -106,8 +132,7 @@ curl http://127.0.0.1:9000/health/cluster
   ```bash
   curl -sSL https://raw.githubusercontent.com/achunchunya/RustIO/main/scripts/install.sh | bash -s -- systemd
   ```
-- 需要多节点部署时：本地测试集群用 `./scripts/install.sh cluster`；把已部署的单机实例扩容为集群用 `./scripts/install.sh expand --peer <node_id>=<host:port>`
-- 想要交互式菜单（安装/升级/卸载/集群/接管 systemd 一次选）：本地直接执行 `./scripts/install.sh` 即可（有终端会自动弹菜单），或用 `bash <(curl -sSL https://raw.githubusercontent.com/achunchunya/RustIO/main/scripts/install.sh)`
+- 需要多节点集群时：本地测试用 `rustio-deploy cluster`；把已部署的单机扩容为集群用 `rustio-deploy expand --peer <node_id>=<host:port>`
 
 ## 常见问题
 
@@ -115,6 +140,7 @@ curl http://127.0.0.1:9000/health/cluster
 - **老系统跑不了 Node.js 22**：`./scripts/start-source.sh` 会自动回退到 Docker 构建前端；两者都没有时，换台机器构建好 `web/console/dist` 后同步过来，再 `./scripts/start-source.sh --skip-web-build`。
 - **页面能打开但登录不了**：确认访问的是服务器真实 IP/域名而非 `127.0.0.1`、对外端口已放行、控制台账号是否被环境变量覆盖过。
 - **Docker 重启后数据丢失**：检查宿主机数据目录是否被清理、`docker-compose.yml` 的数据卷挂载是否被改动。
+- **怎么卸载**：`rustio-deploy uninstall`（保留数据目录），或 `rustio-deploy uninstall --purge`（连同数据一起删，不可恢复）。如果 `rustio-deploy` 找不到了，用在线命令：`curl -sSL https://raw.githubusercontent.com/achunchunya/RustIO/main/scripts/install.sh | bash -s -- uninstall`。
 
 ## 仓库结构
 
