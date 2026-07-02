@@ -17,8 +17,8 @@
 - [ ] `web/console/`
 - [ ] `Dockerfile.rustio`
 - [ ] `docker-compose.yml`
-- [ ] `start.sh`
-- [ ] `start-source.sh`
+- [ ] `scripts/start.sh`
+- [ ] `scripts/start-source.sh`
 - [ ] `README.md`
 - [ ] 其他
 
@@ -35,8 +35,8 @@
 
 - [ ] 本地编译通过
 - [ ] 本地测试通过
-- [ ] `./start.sh --help` 验证通过
-- [ ] `./start-source.sh --help` 验证通过
+- [ ] `./scripts/start.sh --help` 验证通过
+- [ ] `./scripts/start-source.sh --help` 验证通过
 - [ ] Docker 单端口启动验证通过
 - [ ] 源码启动验证通过
 - [ ] 控制台页面验证通过
