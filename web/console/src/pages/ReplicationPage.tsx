@@ -89,7 +89,8 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
     rule_id: '',
     source_bucket: '',
     rule_name: '',
-    target_site: 'dr-site-a',
+    // 目标站点改为从已有站点列表选择,默认取加载后的首个站点
+    target_site: '',
     endpoint: '',
     prefix: '',
     priority: 100,
@@ -127,6 +128,10 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
     setSwitchJobs([...failoverJobs, ...failbackJobs]);
     if (!form.source_bucket && bucketRows[0]) {
       setForm((current) => ({ ...current, source_bucket: bucketRows[0].name }));
+    }
+    // 目标站点为空时默认选中首个已有站点
+    if (!form.target_site && siteRows[0]) {
+      setForm((current) => ({ ...current, target_site: siteRows[0].site_id }));
     }
   }
 
@@ -449,14 +454,30 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
               placeholder="例如:logs-dr"
             />
           </Field>
-          <Field label="目标站点" htmlFor="rule-target-site">
-            <Input
+          <Field
+            label="目标站点"
+            htmlFor="rule-target-site"
+            hint={sites.length === 0 ? '暂无复制站点,请先在本页完成站点 Bootstrap' : undefined}
+          >
+            <Select
               id="rule-target-site"
               size="sm"
               required
               value={form.target_site}
               onChange={(event) => setForm((current) => ({ ...current, target_site: event.target.value }))}
-            />
+              disabled={sites.length === 0}
+            >
+              {sites.length === 0 ? <option value="">无可用站点</option> : null}
+              {/* 编辑规则时目标站点可能已不在站点列表中,补一个选项避免回显丢失 */}
+              {form.target_site && !sites.some((site) => site.site_id === form.target_site) ? (
+                <option value={form.target_site}>{form.target_site}</option>
+              ) : null}
+              {sites.map((site) => (
+                <option key={site.site_id} value={site.site_id}>
+                  {site.site_id}
+                </option>
+              ))}
+            </Select>
           </Field>
           <Field label="站点端点" htmlFor="rule-endpoint">
             <Input
@@ -521,7 +542,7 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
             同步删除操作
           </label>
           <div className="md:col-span-4">
-            <Button type="submit" loading={saving} disabled={saving || !form.source_bucket}>
+            <Button type="submit" loading={saving} disabled={saving || !form.source_bucket || !form.target_site}>
               {saving ? '保存中...' : '保存复制规则'}
             </Button>
           </div>

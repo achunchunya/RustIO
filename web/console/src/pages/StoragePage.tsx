@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { ApiClient } from '../api/client';
-import { storageService } from '../api/services';
+import { bucketService, storageService } from '../api/services';
 import type {
+  BucketSpec,
   RemoteTierConfig,
   StorageInventoryEntry,
   StorageGovernanceStatusResponse,
@@ -17,6 +18,7 @@ import {
   Field,
   Input,
   ProgressBar,
+  Select,
   Tabs,
   IconRefresh,
   useToast
@@ -58,6 +60,7 @@ export function StoragePage({ client, canWrite }: { client: ApiClient; canWrite:
   const [invBucket, setInvBucket] = useState('');
   const [invPrefix, setInvPrefix] = useState('');
   const [diskIds, setDiskIds] = useState('');
+  const [buckets, setBuckets] = useState<BucketSpec[]>([]);
 
   const notify = (fn: () => void) => {
     fn();
@@ -66,7 +69,8 @@ export function StoragePage({ client, canWrite }: { client: ApiClient; canWrite:
   const reload = useCallback(async () => {
     setLoading(true);
     try {
-      if (tab === 'governance') setGovernance(await storageService.governance(client));
+      // 「再平衡与退役」tab 也依赖 governance 中的磁盘列表,进入时同样加载
+      if (tab === 'governance' || tab === 'maintenance') setGovernance(await storageService.governance(client));
       else if (tab === 'tiers') setTiers(await storageService.listTiers(client));
       else if (tab === 'inventory') {
         const query = { bucket: invBucket || undefined, prefix: invPrefix || undefined, limit: 200 };
@@ -89,6 +93,14 @@ export function StoragePage({ client, canWrite }: { client: ApiClient; canWrite:
     const interval = window.setInterval(() => { void reload(); }, 15000);
     return () => window.clearInterval(interval);
   }, [reload]);
+
+  useEffect(() => {
+    // 加载桶列表供库存过滤下拉使用,失败时静默降级为空列表
+    bucketService
+      .buckets(client)
+      .then(setBuckets)
+      .catch(() => setBuckets([]));
+  }, [client]);
 
   return (
     <div className="space-y-6">
@@ -220,7 +232,14 @@ export function StoragePage({ client, canWrite }: { client: ApiClient; canWrite:
           <Card>
             <div className="flex flex-wrap items-end gap-3">
               <Field label="桶" htmlFor="inv-bucket" className="w-48">
-                <Input id="inv-bucket" value={invBucket} onChange={(e) => setInvBucket(e.target.value)} placeholder="可选" />
+                <Select id="inv-bucket" value={invBucket} onChange={(e) => setInvBucket(e.target.value)}>
+                  <option value="">全部桶</option>
+                  {buckets.map((bucket) => (
+                    <option key={bucket.name} value={bucket.name}>
+                      {bucket.name}
+                    </option>
+                  ))}
+                </Select>
               </Field>
               <Field label="前缀" htmlFor="inv-prefix" className="w-48">
                 <Input id="inv-prefix" value={invPrefix} onChange={(e) => setInvPrefix(e.target.value)} placeholder="可选" />
@@ -289,8 +308,37 @@ export function StoragePage({ client, canWrite }: { client: ApiClient; canWrite:
           <SectionTitle>再平衡与退役</SectionTitle>
           {canWrite ? (
             <>
-              <Field label="磁盘 ID(逗号分隔,如 disk-0,disk-1;集群再平衡可留空)" htmlFor="disk-ids" className="mt-4">
-                <Input id="disk-ids" value={diskIds} onChange={(e) => setDiskIds(e.target.value)} placeholder="disk-0,disk-1" />
+              <Field
+                label="目标磁盘(多选;集群再平衡可不选)"
+                className="mt-4"
+                hint={(governance?.disks ?? []).length === 0 ? '暂无磁盘数据,请先等待治理数据加载' : undefined}
+              >
+                {/* 复选框多选,选中集合以逗号拼接写回 diskIds,保持原有提交逻辑不变 */}
+                <div className="flex flex-wrap gap-3">
+                  {(governance?.disks ?? []).length === 0 ? (
+                    <span className="text-sm text-muted">无可用磁盘</span>
+                  ) : (
+                    (governance?.disks ?? []).map((disk) => {
+                      const selectedDiskIds = diskIds.split(',').map((s) => s.trim()).filter(Boolean);
+                      const checked = selectedDiskIds.includes(disk.disk_id);
+                      return (
+                        <label key={disk.disk_id} className="flex items-center gap-2 text-sm text-on-surface">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(e) => {
+                              const next = e.target.checked
+                                ? [...selectedDiskIds, disk.disk_id]
+                                : selectedDiskIds.filter((id) => id !== disk.disk_id);
+                              setDiskIds(next.join(','));
+                            }}
+                          />
+                          {disk.disk_id}
+                        </label>
+                      );
+                    })
+                  )}
+                </div>
               </Field>
               <div className="mt-4 flex flex-wrap gap-2">
                 <ConfirmActionDialog

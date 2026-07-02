@@ -2,15 +2,17 @@ import { useCallback, useEffect, useState } from 'react';
 import type { ApiClient } from '../api/client';
 import { systemService } from '../api/services';
 import type { MetadataRaftStatus } from '../types';
-import { Badge, Button, Card, Panel, PageHeader, SectionTitle, Field, Input, IconRefresh, useToast } from '../components/ui';
+import { Badge, Button, Card, Panel, PageHeader, SectionTitle, Field, Input, Select, IconRefresh, useToast } from '../components/ui';
 import { ConfirmActionDialog } from '../components/ConfirmActionDialog';
 
 export function RaftPage({ client, canWrite }: { client: ApiClient; canWrite: boolean }) {
   const [status, setStatus] = useState<MetadataRaftStatus | null>(null);
   const toast = useToast();
   const [loading, setLoading] = useState(false);
-  const [peerId, setPeerId] = useState('');
+  // 添加节点为新实体,保留手填;其余操作引用已有 peer,改为下拉选择
+  const [newPeerId, setNewPeerId] = useState('');
   const [peerEndpoint, setPeerEndpoint] = useState('');
+  const [selectedPeerId, setSelectedPeerId] = useState('');
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -28,6 +30,19 @@ export function RaftPage({ client, canWrite }: { client: ApiClient; canWrite: bo
     const interval = window.setInterval(() => { void reload(); }, 15000);
     return () => window.clearInterval(interval);
   }, [reload]);
+
+  const peers = status?.peers ?? [];
+
+  useEffect(() => {
+    // 已选节点被移除或尚未选择时,默认选中首个已有节点
+    if (peers.length === 0) {
+      setSelectedPeerId('');
+      return;
+    }
+    if (!selectedPeerId || !peers.includes(selectedPeerId)) {
+      setSelectedPeerId(peers[0]);
+    }
+  }, [peers, selectedPeerId]);
 
   const runAction = async (fn: () => Promise<MetadataRaftStatus>, ok: string) => {
     try {
@@ -103,11 +118,11 @@ export function RaftPage({ client, canWrite }: { client: ApiClient; canWrite: bo
           <p className="mt-1 text-sm text-muted">以下均为危险操作,需填写审计原因后执行。</p>
 
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            <Field label="节点 ID" htmlFor="raft-peer-id">
+            <Field label="新节点 ID(添加时)" htmlFor="raft-peer-id">
               <Input
                 id="raft-peer-id"
-                value={peerId}
-                onChange={(e) => setPeerId(e.target.value)}
+                value={newPeerId}
+                onChange={(e) => setNewPeerId(e.target.value)}
                 placeholder="如 1"
               />
             </Field>
@@ -124,13 +139,13 @@ export function RaftPage({ client, canWrite }: { client: ApiClient; canWrite: bo
           <div className="mt-4 flex flex-wrap gap-2">
             <ConfirmActionDialog
               title="添加 Raft 节点"
-              description={`将节点 ${peerId || '?'} 加入 Raft 成员。`}
+              description={`将节点 ${newPeerId || '?'} 加入 Raft 成员。`}
               actionLabel="添加节点"
               onConfirm={(reason) =>
                 runAction(
                   () =>
                     systemService.raftAddPeer(client, {
-                      id: peerId,
+                      id: newPeerId,
                       endpoint: peerEndpoint || undefined,
                       reason
                     }),
@@ -138,36 +153,62 @@ export function RaftPage({ client, canWrite }: { client: ApiClient; canWrite: bo
                 )
               }
             />
+          </div>
+
+          <div className="mt-4 grid gap-3 border-t border-outline/50 pt-4 sm:grid-cols-2">
+            <Field
+              label="操作目标节点"
+              htmlFor="raft-target-peer"
+              hint={peers.length === 0 ? '暂无集群节点' : undefined}
+            >
+              <Select
+                id="raft-target-peer"
+                value={selectedPeerId}
+                onChange={(e) => setSelectedPeerId(e.target.value)}
+                disabled={peers.length === 0}
+              >
+                {peers.length === 0 ? <option value="">无可用节点</option> : null}
+                {peers.map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                    {p === status?.leader_id ? ' (leader)' : ''}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          </div>
+
+          <div className="mt-4 flex flex-wrap gap-2">
             <ConfirmActionDialog
               title="转移 Leader"
-              description={`将 Leader 转移到节点 ${peerId || '?'}。`}
+              description={`将 Leader 转移到节点 ${selectedPeerId || '?'}。`}
               actionLabel="转移 Leader"
-              onConfirm={(reason) => runAction(() => systemService.raftTransfer(client, peerId, reason), '已提交转移')}
+              onConfirm={(reason) => runAction(() => systemService.raftTransfer(client, selectedPeerId, reason), '已提交转移')}
             />
             <ConfirmActionDialog
               title="触发选举"
-              description={`让节点 ${peerId || '?'} 发起选举。`}
+              description={`让节点 ${selectedPeerId || '?'} 发起选举。`}
               actionLabel="触发选举"
-              onConfirm={(reason) => runAction(() => systemService.raftElect(client, peerId, reason), '已提交选举')}
+              onConfirm={(reason) => runAction(() => systemService.raftElect(client, selectedPeerId, reason), '已提交选举')}
             />
             <ConfirmActionDialog
               title="节点下线"
-              description={`将节点 ${peerId || '?'} 标记为离线。`}
+              description={`将节点 ${selectedPeerId || '?'} 标记为离线。`}
               actionLabel="下线"
-              onConfirm={(reason) => runAction(() => systemService.raftPeerOffline(client, peerId, reason), '已提交下线')}
+              onConfirm={(reason) => runAction(() => systemService.raftPeerOffline(client, selectedPeerId, reason), '已提交下线')}
             />
             <ConfirmActionDialog
               title="节点上线"
-              description={`将节点 ${peerId || '?'} 标记为在线。`}
+              description={`将节点 ${selectedPeerId || '?'} 标记为在线。`}
               actionLabel="上线"
-              onConfirm={(reason) => runAction(() => systemService.raftPeerOnline(client, peerId, reason), '已提交上线')}
+              onConfirm={(reason) => runAction(() => systemService.raftPeerOnline(client, selectedPeerId, reason), '已提交上线')}
             />
             <ConfirmActionDialog
               title="移除节点"
-              description={`从 Raft 成员中移除节点 ${peerId || '?'}。`}
+              description={`从 Raft 成员中移除节点 ${selectedPeerId || '?'}。`}
               actionLabel="移除"
               onConfirm={(reason) =>
-                runAction(() => systemService.raftRemovePeer(client, peerId, { reason }), '已提交移除')
+                runAction(() => systemService.raftRemovePeer(client, selectedPeerId, { reason }), '已提交移除')
               }
             />
           </div>

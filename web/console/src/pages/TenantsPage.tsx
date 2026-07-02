@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ApiClient } from '../api/client';
-import { clusterService } from '../api/services';
+import { clusterService, iamService } from '../api/services';
 import { ConfirmActionDialog } from '../components/ConfirmActionDialog';
 import {
   Badge,
@@ -11,9 +11,10 @@ import {
   PageHeader,
   Panel,
   ProgressBar,
+  Select,
   useToast
 } from '../components/ui';
-import type { TenantSpec } from '../types';
+import type { IamGroup, TenantSpec } from '../types';
 
 type TenantsPageProps = {
   client: ApiClient;
@@ -52,6 +53,7 @@ function toDraft(tenant: TenantSpec): TenantEditDraft {
 export function TenantsPage({ client }: TenantsPageProps) {
   const toast = useToast();
   const [tenants, setTenants] = useState<TenantSpec[]>([]);
+  const [groups, setGroups] = useState<IamGroup[]>([]);
   const [drafts, setDrafts] = useState<Record<string, TenantEditDraft>>({});
   const [creating, setCreating] = useState(false);
   const [savingTenantId, setSavingTenantId] = useState('');
@@ -71,6 +73,18 @@ export function TenantsPage({ client }: TenantsPageProps) {
         TenantEditDraft
       >
     );
+    // 加载 IAM 组列表用于「归属组」下拉，失败时静默降级为空列表
+    const groupRows = await iamService.groups(client).catch(() => [] as IamGroup[]);
+    setGroups(groupRows);
+    setNewTenant((current) => {
+      if (groupRows.some((group) => group.name === current.owner_group)) {
+        return current;
+      }
+      const fallback = groupRows.some((group) => group.name === 'platform-admins')
+        ? 'platform-admins'
+        : groupRows[0]?.name ?? '';
+      return { ...current, owner_group: fallback };
+    });
   }
 
   useEffect(() => {
@@ -110,7 +124,10 @@ export function TenantsPage({ client }: TenantsPageProps) {
               setNewTenant({
                 id: '',
                 display_name: '',
-                owner_group: 'platform-admins',
+                // 重置为默认组：优先 platform-admins，否则取第一个组
+                owner_group: groups.some((group) => group.name === 'platform-admins')
+                  ? 'platform-admins'
+                  : groups[0]?.name ?? '',
                 hard_limit_tib: '1'
               });
               toast.success(`租户 ${newTenant.id.trim()} 创建成功`);
@@ -144,15 +161,27 @@ export function TenantsPage({ client }: TenantsPageProps) {
               placeholder="租户名称"
             />
           </Field>
-          <Field label="归属组" htmlFor="new-tenant-group">
-            <Input
+          <Field
+            label="归属组"
+            htmlFor="new-tenant-group"
+            hint={groups.length === 0 ? '暂无可用组，请先到「IAM 管理」页面创建组' : undefined}
+          >
+            <Select
               id="new-tenant-group"
               required
               value={newTenant.owner_group}
               onChange={(event) =>
                 setNewTenant((current) => ({ ...current, owner_group: event.target.value }))
               }
-            />
+              disabled={groups.length === 0}
+            >
+              {groups.length === 0 ? <option value="">无可用组</option> : null}
+              {groups.map((group) => (
+                <option key={group.name} value={group.name}>
+                  {group.name}
+                </option>
+              ))}
+            </Select>
           </Field>
           <Field label="硬配额（TiB）" htmlFor="new-tenant-quota">
             <Input
@@ -168,7 +197,7 @@ export function TenantsPage({ client }: TenantsPageProps) {
             />
           </Field>
           <div className="md:col-span-4">
-            <Button type="submit" variant="primary" loading={creating}>
+            <Button type="submit" variant="primary" loading={creating} disabled={groups.length === 0}>
               {creating ? '创建中...' : '创建租户'}
             </Button>
           </div>
@@ -219,8 +248,12 @@ export function TenantsPage({ client }: TenantsPageProps) {
                     }
                   />
                 </Field>
-                <Field label="归属组" htmlFor={`edit-group-${tenant.id}`}>
-                  <Input
+                <Field
+                  label="归属组"
+                  htmlFor={`edit-group-${tenant.id}`}
+                  hint={groups.length === 0 ? '暂无可用组，请先到「IAM 管理」页面创建组' : undefined}
+                >
+                  <Select
                     id={`edit-group-${tenant.id}`}
                     size="sm"
                     value={draft.owner_group}
@@ -230,7 +263,18 @@ export function TenantsPage({ client }: TenantsPageProps) {
                         [tenant.id]: { ...draft, owner_group: event.target.value }
                       }))
                     }
-                  />
+                    disabled={groups.length === 0}
+                  >
+                    {/* 当前归属组不在组列表中时保留为选项，避免值丢失 */}
+                    {!groups.some((group) => group.name === draft.owner_group) ? (
+                      <option value={draft.owner_group}>{draft.owner_group || '无可用组'}</option>
+                    ) : null}
+                    {groups.map((group) => (
+                      <option key={group.name} value={group.name}>
+                        {group.name}
+                      </option>
+                    ))}
+                  </Select>
                 </Field>
                 <Field label="硬配额（TiB）" htmlFor={`edit-quota-${tenant.id}`}>
                   <Input

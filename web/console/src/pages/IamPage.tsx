@@ -310,7 +310,10 @@ export function IamPage({ client }: IamPageProps) {
           </Button>
         </form>
         <div className="mt-3 space-y-3">
-          {groups.map((group) => (
+          {groups.map((group) => {
+            // 排除已是该组成员的用户，得到可添加的候选列表
+            const candidateUsers = users.filter((user) => !group.members.includes(user.username));
+            return (
             <article key={group.name} className="rounded-lg border border-outline/60 bg-surface-container-high p-3">
               <div className="flex items-center justify-between">
                 <p className="font-medium text-on-surface">{group.name}</p>
@@ -341,21 +344,33 @@ export function IamPage({ client }: IamPageProps) {
                 )}
               </div>
               <div className="mt-3 flex gap-2">
-                <input
+                <select
                   value={groupMemberDraft[group.name] ?? ''}
                   onChange={(event) =>
                     setGroupMemberDraft((current) => ({ ...current, [group.name]: event.target.value }))
                   }
-                  placeholder="新增成员用户名"
+                  disabled={candidateUsers.length === 0}
                   className="h-10 flex-1 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
-                />
+                >
+                  {candidateUsers.length === 0 ? (
+                    <option value="">无可添加用户</option>
+                  ) : (
+                    <option value="">选择用户</option>
+                  )}
+                  {candidateUsers.map((user) => (
+                    <option key={user.username} value={user.username}>
+                      {user.username}
+                    </option>
+                  ))}
+                </select>
                 <Button
                   variant="secondary"
                   size="sm"
+                  disabled={candidateUsers.length === 0}
                   onClick={async () => {
                     const username = (groupMemberDraft[group.name] ?? '').trim();
                     if (!username) {
-                      toast.error('成员用户名不能为空');
+                      toast.error('请先选择要添加的用户');
                       return;
                     }
                     try {
@@ -372,7 +387,8 @@ export function IamPage({ client }: IamPageProps) {
                 </Button>
               </div>
             </article>
-          ))}
+            );
+          })}
         </div>
       </article>
 
@@ -427,7 +443,7 @@ export function IamPage({ client }: IamPageProps) {
                 已挂载：{policy.attached_to.length === 0 ? '无' : policy.attached_to.join(', ')}
               </p>
               <div className="mt-2 flex gap-2">
-                <input
+                <select
                   value={policyPrincipalDraft[policy.name] ?? ''}
                   onChange={(event) =>
                     setPolicyPrincipalDraft((current) => ({
@@ -435,16 +451,33 @@ export function IamPage({ client }: IamPageProps) {
                       [policy.name]: event.target.value
                     }))
                   }
-                  placeholder="principal（用户名或组名）"
+                  disabled={users.length === 0 && groups.length === 0}
                   className="h-10 flex-1 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
-                />
+                >
+                  {users.length === 0 && groups.length === 0 ? (
+                    <option value="">无可用用户或组</option>
+                  ) : (
+                    <option value="">选择 principal（用户或组）</option>
+                  )}
+                  {users.map((user) => (
+                    <option key={`user:${user.username}`} value={user.username}>
+                      用户：{user.username}
+                    </option>
+                  ))}
+                  {groups.map((group) => (
+                    <option key={`group:${group.name}`} value={group.name}>
+                      组：{group.name}
+                    </option>
+                  ))}
+                </select>
                 <Button
                   variant="secondary"
                   size="sm"
+                  disabled={users.length === 0 && groups.length === 0}
                   onClick={async () => {
                     const principal = (policyPrincipalDraft[policy.name] ?? '').trim();
                     if (!principal) {
-                      toast.error('principal 不能为空');
+                      toast.error('请先选择 principal');
                       return;
                     }
                     try {
@@ -461,10 +494,11 @@ export function IamPage({ client }: IamPageProps) {
                 <Button
                   variant="danger"
                   size="sm"
+                  disabled={users.length === 0 && groups.length === 0}
                   onClick={async () => {
                     const principal = (policyPrincipalDraft[policy.name] ?? '').trim();
                     if (!principal) {
-                      toast.error('principal 不能为空');
+                      toast.error('请先选择 principal');
                       return;
                     }
                     try {
@@ -503,15 +537,17 @@ export function IamPage({ client }: IamPageProps) {
             <select
               value={serviceForm.owner}
               onChange={(event) => setServiceForm({ owner: event.target.value })}
+              disabled={users.length === 0}
               className="h-10 flex-1 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
             >
+              {users.length === 0 ? <option value="">无可用用户</option> : null}
               {users.map((user) => (
                 <option key={user.username} value={user.username}>
                   {user.username}
                 </option>
               ))}
             </select>
-            <Button type="submit" variant="primary" size="sm">
+            <Button type="submit" variant="primary" size="sm" disabled={users.length === 0}>
               创建
             </Button>
           </form>
@@ -608,8 +644,10 @@ export function IamPage({ client }: IamPageProps) {
             <select
               value={stsForm.principal}
               onChange={(event) => setStsForm((current) => ({ ...current, principal: event.target.value }))}
+              disabled={users.length === 0}
               className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
             >
+              {users.length === 0 ? <option value="">无可用用户</option> : null}
               {users.map((user) => (
                 <option key={user.username} value={user.username}>
                   {user.username}
@@ -626,7 +664,7 @@ export function IamPage({ client }: IamPageProps) {
               }
               className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
             />
-            <Button type="submit" variant="primary" size="sm">
+            <Button type="submit" variant="primary" size="sm" disabled={users.length === 0}>
               创建会话
             </Button>
           </form>

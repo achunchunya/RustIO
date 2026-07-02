@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ApiClient } from '../api/client';
-import { bucketService } from '../api/services';
+import { bucketService, clusterService } from '../api/services';
 import {
   Badge,
   Button,
@@ -32,7 +32,9 @@ import type {
   BucketUsageStats,
   BucketRetentionConfig,
   BucketSpec,
-  BucketTag
+  BucketTag,
+  ReplicationStatus,
+  TenantSpec
 } from '../types';
 
 type BucketsPageProps = {
@@ -103,6 +105,17 @@ function defaultLegalHoldConfig(): BucketLegalHoldConfig {
 
 function defaultAclConfig(): BucketAclConfig {
   return { acl: 'private' };
+}
+
+// 租户默认值:优先 'default',否则取第一个,空列表为空字符串
+function defaultTenantId(rows: TenantSpec[]): string {
+  if (rows.some((tenant) => tenant.id === 'default')) return 'default';
+  return rows[0]?.id ?? '';
+}
+
+// 复制规则用于 replication_policy 的取值:优先规则名称,兼容无名称的旧规则
+function replicationOptionValue(rule: ReplicationStatus): string {
+  return rule.rule_name || rule.rule_id;
 }
 
 function defaultPublicAccessBlockConfig(): BucketPublicAccessBlockConfig {
@@ -328,6 +341,8 @@ export function BucketsPage({ client }: BucketsPageProps) {
   const [tagDrafts, setTagDrafts] = useState<Record<string, TagDraft[]>>({});
   const [newTagDrafts, setNewTagDrafts] = useState<Record<string, TagDraft>>({});
   const [encryptionDrafts, setEncryptionDrafts] = useState<Record<string, EncryptionDraft>>({});
+  const [tenants, setTenants] = useState<TenantSpec[]>([]);
+  const [replicationRules, setReplicationRules] = useState<ReplicationStatus[]>([]);
   const [newBucket, setNewBucket] = useState({
     name: '',
     tenant_id: 'default',
@@ -344,6 +359,23 @@ export function BucketsPage({ client }: BucketsPageProps) {
       .usage(client)
       .then((stats) => setUsage(Object.fromEntries(stats.map((s) => [s.name, s]))))
       .catch(() => setUsage({}));
+    // 加载租户列表供「新建桶」选择,失败静默降级为空列表
+    clusterService
+      .tenants(client)
+      .then((tenantRows) => {
+        setTenants(tenantRows);
+        setNewBucket((current) =>
+          tenantRows.some((tenant) => tenant.id === current.tenant_id)
+            ? current
+            : { ...current, tenant_id: defaultTenantId(tenantRows) }
+        );
+      })
+      .catch(() => setTenants([]));
+    // 加载全局复制规则供复制策略选择,失败静默降级为空列表
+    bucketService
+      .replications(client)
+      .then(setReplicationRules)
+      .catch(() => setReplicationRules([]));
 
     const nextGovernance: Record<string, GovernanceDraft> = {};
     for (const bucket of rows) {
@@ -805,7 +837,10 @@ export function BucketsPage({ client }: BucketsPageProps) {
                 />
                 对象锁
               </label>
-              <Field label="ILM 策略">
+              <Field
+                label="ILM 策略"
+                hint="填写生命周期策略名称,创建桶后可在桶详情配置生命周期规则"
+              >
                 <Input
                   value={governanceDraft.ilm_policy}
                   onChange={(event) =>
@@ -819,8 +854,15 @@ export function BucketsPage({ client }: BucketsPageProps) {
                   }
                 />
               </Field>
-              <Field label="复制策略">
-                <Input
+              <Field
+                label="复制策略"
+                hint={
+                  replicationRules.length === 0
+                    ? '暂无复制规则,可到「复制管理」页面创建'
+                    : undefined
+                }
+              >
+                <Select
                   value={governanceDraft.replication_policy}
                   onChange={(event) =>
                     setDrafts((current) => ({
@@ -831,7 +873,24 @@ export function BucketsPage({ client }: BucketsPageProps) {
                       }
                     }))
                   }
-                />
+                  disabled={replicationRules.length === 0 && !governanceDraft.replication_policy}
+                >
+                  <option value="">不设置</option>
+                  {/* 当前值不在规则列表中时保留为选项,避免历史配置丢失 */}
+                  {governanceDraft.replication_policy &&
+                  !replicationRules.some(
+                    (rule) => replicationOptionValue(rule) === governanceDraft.replication_policy
+                  ) ? (
+                    <option value={governanceDraft.replication_policy}>
+                      {governanceDraft.replication_policy}（已失效）
+                    </option>
+                  ) : null}
+                  {replicationRules.map((rule) => (
+                    <option key={rule.rule_id} value={replicationOptionValue(rule)}>
+                      {rule.rule_name || rule.rule_id}（{rule.source_bucket} → {rule.target_site}）
+                    </option>
+                  ))}
+                </Select>
               </Field>
               <Button
                 variant="secondary"
@@ -2113,7 +2172,7 @@ export function BucketsPage({ client }: BucketsPageProps) {
               toast.success(`桶 ${newBucket.name} 创建成功`);
               setNewBucket({
                 name: '',
-                tenant_id: 'default',
+                tenant_id: defaultTenantId(tenants),
                 versioning: true,
                 object_lock: false,
                 ilm_policy: '',
@@ -2136,15 +2195,31 @@ export function BucketsPage({ client }: BucketsPageProps) {
               onChange={(event) => setNewBucket((current) => ({ ...current, name: event.target.value }))}
             />
           </Field>
-          <Field label="租户" htmlFor="new-bucket-tenant">
-            <Input
+          <Field
+            label="租户"
+            htmlFor="new-bucket-tenant"
+            hint={tenants.length === 0 ? '暂无可用租户,请先到「租户管理」页面创建' : undefined}
+          >
+            <Select
               id="new-bucket-tenant"
               required
               value={newBucket.tenant_id}
               onChange={(event) => setNewBucket((current) => ({ ...current, tenant_id: event.target.value }))}
-            />
+              disabled={tenants.length === 0}
+            >
+              {tenants.length === 0 ? <option value="">无可用租户</option> : null}
+              {tenants.map((tenant) => (
+                <option key={tenant.id} value={tenant.id}>
+                  {tenant.display_name}（{tenant.id}）
+                </option>
+              ))}
+            </Select>
           </Field>
-          <Field label="ILM 策略" htmlFor="new-bucket-ilm">
+          <Field
+            label="ILM 策略"
+            htmlFor="new-bucket-ilm"
+            hint="填写生命周期策略名称,创建桶后可在桶详情配置生命周期规则"
+          >
             <Input
               id="new-bucket-ilm"
               value={newBucket.ilm_policy}
@@ -2152,15 +2227,26 @@ export function BucketsPage({ client }: BucketsPageProps) {
               placeholder="可选"
             />
           </Field>
-          <Field label="复制策略" htmlFor="new-bucket-replication">
-            <Input
+          <Field
+            label="复制策略"
+            htmlFor="new-bucket-replication"
+            hint={replicationRules.length === 0 ? '暂无复制规则,可到「复制管理」页面创建' : undefined}
+          >
+            <Select
               id="new-bucket-replication"
               value={newBucket.replication_policy}
               onChange={(event) =>
                 setNewBucket((current) => ({ ...current, replication_policy: event.target.value }))
               }
-              placeholder="可选"
-            />
+              disabled={replicationRules.length === 0}
+            >
+              <option value="">不设置</option>
+              {replicationRules.map((rule) => (
+                <option key={rule.rule_id} value={replicationOptionValue(rule)}>
+                  {rule.rule_name || rule.rule_id}（{rule.source_bucket} → {rule.target_site}）
+                </option>
+              ))}
+            </Select>
           </Field>
           <label className="flex items-center gap-2 text-sm text-muted">
             <input
@@ -2182,7 +2268,7 @@ export function BucketsPage({ client }: BucketsPageProps) {
             <Button type="button" variant="tertiary" onClick={() => setCreateOpen(false)}>
               取消
             </Button>
-            <Button type="submit" variant="primary" loading={creating}>
+            <Button type="submit" variant="primary" loading={creating} disabled={tenants.length === 0}>
               {creating ? '创建中...' : '创建桶'}
             </Button>
           </div>

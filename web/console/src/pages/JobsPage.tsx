@@ -1,11 +1,18 @@
 import { useEffect, useState } from 'react';
 import { toBilingualPrompt } from '../utils/bilingual';
 import { ApiClient } from '../api/client';
-import { jobsService } from '../api/services';
+import { jobsService, bucketService, clusterService, replicationService } from '../api/services';
 import { ConfirmActionDialog } from '../components/ConfirmActionDialog';
 import { StatCard } from '../components/StatCard';
 import { useToast, Button } from '../components/ui';
-import type { AsyncJobPage, AsyncJobStatus, AsyncJobSummary } from '../types';
+import type {
+  AsyncJobPage,
+  AsyncJobStatus,
+  AsyncJobSummary,
+  BucketSpec,
+  ClusterNode,
+  SiteReplicationStatus
+} from '../types';
 
 type JobsPageProps = {
   client: ApiClient;
@@ -76,6 +83,9 @@ export function JobsPage({ client }: JobsPageProps) {
   const [starting, setStarting] = useState(false);
   const [loading, setLoading] = useState(false);
   const [actioning, setActioning] = useState('');
+  const [buckets, setBuckets] = useState<BucketSpec[]>([]);
+  const [sites, setSites] = useState<SiteReplicationStatus[]>([]);
+  const [nodes, setNodes] = useState<ClusterNode[]>([]);
 
   async function reload(cursor?: string, resetStack = false) {
     setLoading(true);
@@ -103,6 +113,13 @@ export function JobsPage({ client }: JobsPageProps) {
     const interval = window.setInterval(() => { void reload(undefined, true); }, 15000);
     return () => window.clearInterval(interval);
   }, [client, filters]);
+
+  useEffect(() => {
+    // 加载桶/站点/节点列表供筛选与修复目标下拉使用,失败时静默降级为空列表
+    bucketService.buckets(client).then(setBuckets).catch(() => setBuckets([]));
+    replicationService.listSites(client).then(setSites).catch(() => setSites([]));
+    clusterService.nodes(client).then(setNodes).catch(() => setNodes([]));
+  }, [client]);
 
   async function runBulkAction(
     action: 'retry' | 'cleanup' | 'skip',
@@ -136,12 +153,19 @@ export function JobsPage({ client }: JobsPageProps) {
             <p className="mt-1 text-sm text-muted">统一查看 replication / lifecycle / notification / failover / failback。</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <input
+            <select
               value={target}
               onChange={(event) => setTarget(event.target.value)}
               className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
-              placeholder="修复目标"
-            />
+              aria-label="修复目标"
+            >
+              <option value="cluster">整个集群</option>
+              {nodes.map((node) => (
+                <option key={node.id} value={node.id}>
+                  {node.id}
+                </option>
+              ))}
+            </select>
             <Button
               variant="primary"
               size="sm"
@@ -223,18 +247,32 @@ export function JobsPage({ client }: JobsPageProps) {
             <option value="done">done</option>
             <option value="skipped">skipped</option>
           </select>
-          <input
+          <select
             value={filters.bucket}
             onChange={(event) => setFilters((current) => ({ ...current, bucket: event.target.value }))}
             className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
-            placeholder="桶名"
-          />
-          <input
+            aria-label="桶名"
+          >
+            <option value="">全部桶</option>
+            {buckets.map((bucket) => (
+              <option key={bucket.name} value={bucket.name}>
+                {bucket.name}
+              </option>
+            ))}
+          </select>
+          <select
             value={filters.site_id}
             onChange={(event) => setFilters((current) => ({ ...current, site_id: event.target.value }))}
             className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
-            placeholder="站点 ID"
-          />
+            aria-label="站点 ID"
+          >
+            <option value="">全部站点</option>
+            {sites.map((site) => (
+              <option key={site.site_id} value={site.site_id}>
+                {site.site_id}
+              </option>
+            ))}
+          </select>
           <input
             value={filters.keyword}
             onChange={(event) => setFilters((current) => ({ ...current, keyword: event.target.value }))}
