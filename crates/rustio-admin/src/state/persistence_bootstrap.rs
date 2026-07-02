@@ -599,7 +599,7 @@ impl AppState {
             data_dir,
             data_disks,
             local_node_id,
-            cluster_peers: RwLock::new(cluster_peers),
+            cluster_peers: RwLock::new(cluster_peers.clone()),
             membership_change_lock: tokio::sync::Mutex::new(()),
             architecture: ArchitectureTopology {
                 version: "m0-architecture-aligned".to_string(),
@@ -713,10 +713,10 @@ impl AppState {
             },
             credentials: RwLock::new(credentials),
             nodes: RwLock::new({
-                // 只初始化本机节点,容量取本机数据目录所在文件系统的实际值。
-                // 集群模式下其余节点由 raft 成员变更时补入。
+                // 初始化本机节点,容量取本机数据目录所在文件系统的实际值。
+                // 集群模式下同时从 seed peers 构造其余节点的条目,使初始启动就能看到完整成员。
                 let (capacity_total_bytes, capacity_used_bytes) = local_disk_capacity;
-                vec![ClusterNode {
+                let mut nodes = vec![ClusterNode {
                     id: if cluster_config.is_cluster() {
                         cluster_config.local_node_name.clone()
                     } else {
@@ -728,7 +728,33 @@ impl AppState {
                     capacity_total_bytes,
                     capacity_used_bytes,
                     last_heartbeat: now,
-                }]
+                }];
+                // 将 seed peers 中的其他节点也加入 nodes 列表
+                if cluster_config.is_cluster() {
+                    for peer in cluster_peers.values() {
+                        if peer.node_name == cluster_config.local_node_name {
+                            continue;
+                        }
+                        let hostname = peer
+                            .api_addr
+                            .trim_start_matches("http://")
+                            .trim_start_matches("https://")
+                            .split(':')
+                            .next()
+                            .unwrap_or(&peer.node_name)
+                            .to_string();
+                        nodes.push(ClusterNode {
+                            id: peer.node_name.clone(),
+                            hostname,
+                            zone: peer.zone.clone(),
+                            online: false, // 初始未知,等 health probe 探测后更新
+                            capacity_total_bytes: 0,
+                            capacity_used_bytes: 0,
+                            last_heartbeat: now,
+                        });
+                    }
+                }
+                nodes
             }),
             quotas: RwLock::new(vec![]),
             tenants: RwLock::new(vec![]),

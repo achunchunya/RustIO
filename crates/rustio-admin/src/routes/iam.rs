@@ -513,6 +513,27 @@ pub(crate) async fn create_policy(
     Json(body): Json<CreatePolicyRequest>,
 ) -> Result<Json<ApiEnvelope<IamPolicy>>, AppError> {
     auth.require(Permission::IamWrite)?;
+    // 所有校验必须在副作用(rollback+状态写入)之前,避免校验失败时产生不一致。
+    if body.name.trim().is_empty() {
+        return Err(AppError::bad_request(
+            "策略名称不能为空 / policy name cannot be empty",
+        ));
+    }
+    if !body.document.is_object() {
+        return Err(AppError::bad_request(
+            "策略文档必须是 JSON 对象 / policy document must be a JSON object",
+        ));
+    }
+    if state
+        .policies
+        .read()
+        .await
+        .iter()
+        .any(|item| item.name == body.name)
+    {
+        return Err(AppError::bad_request("策略已存在 / policy already exists"));
+    }
+
     let rollback = capture_iam_runtime_snapshot(state.as_ref()).await;
     let policy = IamPolicy {
         name: body.name,

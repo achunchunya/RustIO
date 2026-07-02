@@ -996,7 +996,7 @@ impl AppState {
             guard
                 .values()
                 .filter(|peer| peer.node_id != self.local_node_id)
-                .map(|peer| (peer.node_id, peer.api_addr.clone()))
+                .map(|peer| (peer.node_id, peer.api_addr.clone(), peer.node_name.clone()))
                 .collect::<Vec<_>>()
         };
         if peers.is_empty() {
@@ -1008,7 +1008,7 @@ impl AppState {
             .map_err(|err| err.to_string())?;
 
         let mut went_offline = false;
-        for (node_id, api_addr) in peers {
+        for (node_id, api_addr, node_name) in peers {
             let now = Utc::now();
             let healthy = client
                 .get(format!("{api_addr}/minio/health/live"))
@@ -1016,6 +1016,17 @@ impl AppState {
                 .await
                 .map(|resp| resp.status().is_success())
                 .unwrap_or(false);
+
+            // 同步 health 探测结果到 state.nodes，使 Ops 页面能看到各节点真实在线状态
+            {
+                let mut nodes = self.nodes.write().await;
+                if let Some(node) = nodes.iter_mut().find(|n| n.id == node_name) {
+                    node.online = healthy;
+                    if healthy {
+                        node.last_heartbeat = now;
+                    }
+                }
+            }
 
             let mut runtime = self.storage_governance.write().await;
             let was_online = runtime

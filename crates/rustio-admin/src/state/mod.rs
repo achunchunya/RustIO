@@ -1024,10 +1024,14 @@ impl AppState {
         *self.jobs.write().await = snapshot.jobs;
         // 合并集群拓扑:快照里的 peers 整体更新本地视图(含通过动态成员变更加入的新节点),
         // 使经快照追赶的节点拿到完整拓扑,EC 放置/布局与全集群一致。
+        // 同时从 peers 重建 state.nodes,使 /api/v1/cluster/nodes 和 /health/cluster 反映完整集群成员。
         if !snapshot.cluster_peers.is_empty() {
             let mut peers = self.cluster_peers.write().await;
-            for peer in snapshot.cluster_peers {
-                peers.insert(peer.node_id, peer);
+            let now = Utc::now();
+            let mut nodes = self.nodes.write().await;
+            for peer in snapshot.cluster_peers.iter() {
+                peers.insert(peer.node_id, peer.clone());
+                crate::state::raft::command::upsert_node_from_peer(&mut nodes, peer, now);
             }
         }
     }

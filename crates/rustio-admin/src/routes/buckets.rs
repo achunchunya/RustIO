@@ -101,14 +101,16 @@ pub(crate) async fn create_bucket_spec(
             "存储桶已存在 / bucket already exists",
         ));
     }
+
+    // 所有校验(租户存在性等)必须先于目录创建等副作用,否则校验失败会留下孤儿桶目录。
+    let tenant_id =
+        resolve_bucket_tenant_id(&state.tenants.read().await, body.tenant_id, body.project_id)?;
+
     tokio::fs::create_dir_all(&path).await.map_err(|err| {
         AppError::internal(format!(
             "创建存储桶目录失败 / failed to create bucket dir: {err}"
         ))
     })?;
-
-    let tenant_id =
-        resolve_bucket_tenant_id(&state.tenants.read().await, body.tenant_id, body.project_id)?;
     let spec = BucketSpec {
         name: body.name,
         tenant_id: tenant_id.clone(),
@@ -119,14 +121,16 @@ pub(crate) async fn create_bucket_spec(
         replication_policy: body.replication_policy,
     };
 
-    state
+    if let Err(err) = state
         .submit_metadata_command(MetadataCommand::CreateBucket(Box::new(spec.clone())))
         .await
-        .map_err(|err| {
-            AppError::internal(format!(
-                "元数据 Raft 提交失败 / metadata raft commit failed: {err}"
-            ))
-        })?;
+    {
+        // 元数据提交失败时回滚已创建的目录,避免留下"目录存在但元数据没有"的孤儿桶。
+        let _ = tokio::fs::remove_dir_all(&path).await;
+        return Err(AppError::internal(format!(
+            "元数据 Raft 提交失败 / metadata raft commit failed: {err}"
+        )));
+    }
 
     state
         .append_audit(

@@ -5,16 +5,48 @@
 
 use std::collections::HashMap;
 
-use rustio_core::{BucketSpec, ClusterConfigSnapshot, RemoteTierConfig, SecurityConfig};
+use chrono::{DateTime, Utc};
+use rustio_core::{BucketSpec, ClusterConfigSnapshot, ClusterNode, RemoteTierConfig, SecurityConfig};
 use serde::{Deserialize, Serialize};
 
 use crate::routes::{
     default_bucket_acl_config, default_bucket_public_access_block_config, default_legal_hold_config,
     default_object_lock_config, default_retention_config, IamRuntimeSnapshot,
 };
+use crate::state::cluster::ClusterPeerInfo;
 use crate::state::AppState;
 
-/// 元数据状态机命令。阶段②补全其余 ~20 种变更(对应现 `sync_metadata_raft` 各 reason)。
+/// 根据 ClusterPeerInfo 将节点 upsert 到 state.nodes 列表，使
+/// `/api/v1/cluster/nodes` 与 `/health/cluster` 能反映所有集群成员。
+/// - 节点已存在（id 匹配）时，只更新 zone / online / last_heartbeat，保留已有容量信息。
+/// - 节点不存在时，新建条目（容量初始为 0，待后续 health probe 更新）。
+pub(crate) fn upsert_node_from_peer(nodes: &mut Vec<ClusterNode>, peer: &ClusterPeerInfo, now: DateTime<Utc>) {
+    if let Some(existing) = nodes.iter_mut().find(|n| n.id == peer.node_name) {
+        existing.zone = peer.zone.clone();
+        existing.online = true;
+        existing.last_heartbeat = now;
+    } else {
+        let hostname = peer
+            .api_addr
+            .trim_start_matches("http://")
+            .trim_start_matches("https://")
+            .split(':')
+            .next()
+            .unwrap_or(&peer.node_name)
+            .to_string();
+        nodes.push(ClusterNode {
+            id: peer.node_name.clone(),
+            hostname,
+            zone: peer.zone.clone(),
+            online: true,
+            capacity_total_bytes: 0,
+            capacity_used_bytes: 0,
+            last_heartbeat: now,
+        });
+    }
+}
+
+/// 元数据状态机命令(对应现 `sync_metadata_raft` 各 reason)。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) enum MetadataCommand {
     /// 创建 bucket。apply:insert `buckets` + 各 bucket 配置默认值
@@ -175,9 +207,20 @@ impl MetadataCommand {
             }
             MetadataCommand::UpsertClusterPeer(peer) => {
                 let peer = peer.as_ref().clone();
+                let now = Utc::now();
+                let mut nodes = app.nodes.write().await;
+                upsert_node_from_peer(&mut nodes, &peer, now);
                 app.cluster_peers.write().await.insert(peer.node_id, peer);
             }
             MetadataCommand::RemoveClusterPeer { node_id } => {
+                // 先查 node_name 以便从 state.nodes 中移除
+                let node_name = {
+                    let peers = app.cluster_peers.read().await;
+                    peers.get(node_id).map(|p| p.node_name.clone())
+                };
+                if let Some(ref name) = node_name {
+                    app.nodes.write().await.retain(|n| n.id != *name);
+                }
                 app.cluster_peers.write().await.remove(node_id);
             }
         }
