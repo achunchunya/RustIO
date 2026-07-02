@@ -379,7 +379,11 @@ cmd_uninstall() {
     for svc in "${services[@]+"${services[@]}"}"; do
       [[ -z "$svc" ]] && continue
       echo "  停止 ${svc}..."
-      systemctl stop "$svc" 2>/dev/null || true
+      # systemctl stop 超时/卡住时用 kill -9 兜底,不会永远 hang。
+      timeout 30 systemctl stop "$svc" 2>/dev/null || {
+        echo "  ⚠️  正常停止超时,强制杀掉..."
+        systemctl kill -s KILL "$svc" 2>/dev/null || true
+      }
       systemctl disable "$svc" 2>/dev/null || true
       rm -f "/etc/systemd/system/${svc}"
       systemctl reset-failed "$svc" 2>/dev/null || true
@@ -990,7 +994,10 @@ cluster_down() {
   for svc in "${systemd_units[@]+"${systemd_units[@]}"}"; do
     svc=$(basename "${svc}")
     echo "  停止 ${svc}..."
-    systemctl stop "${svc}" 2>/dev/null || true
+    timeout 30 systemctl stop "${svc}" 2>/dev/null || {
+      echo "  ⚠️  正常停止超时,强制杀掉..."
+      systemctl kill -s KILL "${svc}" 2>/dev/null || true
+    }
     systemctl disable "${svc}" 2>/dev/null || true
     rm -f "/etc/systemd/system/${svc}"
   done
