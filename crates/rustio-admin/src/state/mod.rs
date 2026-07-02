@@ -555,8 +555,8 @@ pub(crate) fn default_security_config_from_env() -> SecurityConfig {
         ldap_default_role: std::env::var("RUSTIO_LDAP_DEFAULT_ROLE")
             .unwrap_or_else(|_| "viewer".to_string()),
         ldap_group_role_map: std::env::var("RUSTIO_LDAP_GROUP_ROLE_MAP").unwrap_or_default(),
-        kms_endpoint: std::env::var("RUSTIO_KMS_ENDPOINT")
-            .unwrap_or_else(|_| "https://vault.example.internal".to_string()),
+        // 未配置时留空;非空默认值会让 kms_endpoint_valid() 误判为"已配置"并发起请求。
+        kms_endpoint: std::env::var("RUSTIO_KMS_ENDPOINT").unwrap_or_default(),
         kms_healthy: true,
         kms_last_error: None,
         kms_last_checked_at: None,

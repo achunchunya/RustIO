@@ -1318,8 +1318,14 @@ impl AppState {
                 site.topology_version += 1;
                 (false, site.endpoint.clone())
             } else {
-                let effective_endpoint =
-                    endpoint.unwrap_or_else(|| format!("https://{site_id}.example.internal"));
+                // 路由层(join_site_replication)已要求新站点必须带 endpoint;这里作为纵深防御
+                // 再次校验,缺失时中止任务而不是回退到占位值。
+                let Some(effective_endpoint) = endpoint.clone() else {
+                    return Err(bilingual_runtime_error(
+                        "加入新站点缺少 endpoint,任务已中止",
+                        "join job for a new site is missing endpoint, aborting",
+                    ));
+                };
                 sites.push(SiteReplicationStatus {
                     site_id: site_id.clone(),
                     endpoint: effective_endpoint.clone(),

@@ -1326,13 +1326,16 @@ pub(crate) async fn sync_site_replication_from_rules(state: &Arc<AppState>) {
         if known_sites.contains(site_id) {
             continue;
         }
+        // 复制规则里没有配置 endpoint 的站点先不自动创建记录
+        // (复制 worker 会向 site.endpoint 发起 HTTP 请求)。等规则补上 endpoint、
+        // 或用户显式 join 时再出现。
+        let Some(endpoint) = endpoints_by_site.get(site_id).cloned() else {
+            continue;
+        };
         let lag = max_lag_seconds.get(site_id).copied().unwrap_or(0);
         sites.push(SiteReplicationStatus {
             site_id: site_id.clone(),
-            endpoint: endpoints_by_site
-                .get(site_id)
-                .cloned()
-                .unwrap_or_else(|| format!("https://{site_id}.example.internal")),
+            endpoint,
             role: "secondary".to_string(),
             preferred_primary: false,
             state: "healthy".to_string(),
@@ -1558,6 +1561,18 @@ pub(crate) async fn join_site_replication(
         Some(value) => Some(normalize_site_replication_endpoint(value)?),
         None => None,
     };
+    // 加入一个此前从未记录过的新站点时必须提供 endpoint;已存在的站点可省略(沿用现有值)。
+    let site_known = state
+        .site_replications
+        .read()
+        .await
+        .iter()
+        .any(|site| site.site_id == site_id);
+    if !site_known && endpoint.is_none() {
+        return Err(AppError::bad_request(
+            "加入新站点必须提供 endpoint / endpoint is required when joining a new site",
+        ));
+    }
     let job = enqueue_site_governance_job(
         &state,
         "site-join",

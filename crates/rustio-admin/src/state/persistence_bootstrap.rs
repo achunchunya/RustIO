@@ -2,6 +2,40 @@
 
 use super::*;
 
+/// 查询挂载路径所在文件系统的总容量/已用容量(字节)。
+/// 路径不存在或系统调用失败时返回 `(0, 0)`,由调用方据此判断该磁盘不可用。
+fn query_real_disk_capacity(path: &Path) -> (u64, u64) {
+    let Ok(c_path) = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()) else {
+        return (0, 0);
+    };
+    unsafe {
+        let mut stat: libc::statvfs = std::mem::zeroed();
+        if libc::statvfs(c_path.as_ptr() as *const libc::c_char, &mut stat) != 0 {
+            return (0, 0);
+        }
+        let block_size = stat.f_frsize as u64;
+        let total = block_size.saturating_mul(stat.f_blocks as u64);
+        let free = block_size.saturating_mul(stat.f_bavail as u64);
+        (total, total.saturating_sub(free))
+    }
+}
+
+/// 本机主机名;获取失败(极少见)时回退到 `local_node_name`。
+fn resolve_local_hostname(fallback: &str) -> String {
+    let mut buf = [0u8; 256];
+    unsafe {
+        if libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) == 0 {
+            let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+            if let Ok(name) = std::str::from_utf8(&buf[..end]) {
+                if !name.is_empty() {
+                    return name.to_string();
+                }
+            }
+        }
+    }
+    fallback.to_string()
+}
+
 impl AppState {
     pub(crate) fn cluster_config_history_path(data_dir: &Path) -> PathBuf {
         data_dir
@@ -232,6 +266,9 @@ impl AppState {
         if let Err(err) = std::fs::create_dir_all(&data_dir) {
             tracing::error!(path = %data_dir.display(), error = %err, "无法创建数据目录 / cannot create data dir");
         }
+        // 提前查询本机数据目录所在文件系统的真实容量;data_dir 随后会被 move 进
+        // AppState 字面量,这里先算好留作 nodes 初始化使用,避免 use-after-move。
+        let local_disk_capacity = query_real_disk_capacity(&data_dir);
         let data_disks = Self::resolve_data_disks(&data_dir);
         for disk in &data_disks {
             if let Err(err) = std::fs::create_dir_all(disk) {
@@ -675,87 +712,26 @@ impl AppState {
                 ],
             },
             credentials: RwLock::new(credentials),
-            nodes: RwLock::new(vec![
-                ClusterNode {
-                    id: "node-a".to_string(),
-                    hostname: "rustio-node-a".to_string(),
-                    zone: "zone-1".to_string(),
+            nodes: RwLock::new({
+                // 只初始化本机节点,容量取本机数据目录所在文件系统的实际值。
+                // 集群模式下其余节点由 raft 成员变更时补入。
+                let (capacity_total_bytes, capacity_used_bytes) = local_disk_capacity;
+                vec![ClusterNode {
+                    id: if cluster_config.is_cluster() {
+                        cluster_config.local_node_name.clone()
+                    } else {
+                        "node-1".to_string()
+                    },
+                    hostname: resolve_local_hostname(&cluster_config.local_node_name),
+                    zone: cluster_config.local_zone.clone(),
                     online: true,
-                    capacity_total_bytes: 10 * 1024 * 1024 * 1024 * 1024,
-                    capacity_used_bytes: 3 * 1024 * 1024 * 1024 * 1024,
+                    capacity_total_bytes,
+                    capacity_used_bytes,
                     last_heartbeat: now,
-                },
-                ClusterNode {
-                    id: "node-b".to_string(),
-                    hostname: "rustio-node-b".to_string(),
-                    zone: "zone-1".to_string(),
-                    online: true,
-                    capacity_total_bytes: 10 * 1024 * 1024 * 1024 * 1024,
-                    capacity_used_bytes: 4 * 1024 * 1024 * 1024 * 1024,
-                    last_heartbeat: now,
-                },
-                ClusterNode {
-                    id: "node-c".to_string(),
-                    hostname: "rustio-node-c".to_string(),
-                    zone: "zone-2".to_string(),
-                    online: true,
-                    capacity_total_bytes: 10 * 1024 * 1024 * 1024 * 1024,
-                    capacity_used_bytes: 2 * 1024 * 1024 * 1024 * 1024,
-                    last_heartbeat: now,
-                },
-            ]),
-            quotas: RwLock::new(vec![
-                ClusterQuota {
-                    tenant: "default".to_string(),
-                    hard_limit_bytes: 20 * 1024 * 1024 * 1024 * 1024,
-                    used_bytes: 7 * 1024 * 1024 * 1024 * 1024,
-                },
-                ClusterQuota {
-                    tenant: "analytics".to_string(),
-                    hard_limit_bytes: 8 * 1024 * 1024 * 1024 * 1024,
-                    used_bytes: 2 * 1024 * 1024 * 1024 * 1024,
-                },
-            ]),
-            tenants: RwLock::new(vec![
-                TenantSpec {
-                    id: "default".to_string(),
-                    display_name: "默认租户".to_string(),
-                    owner_group: "platform-admins".to_string(),
-                    project_id: Some("default".to_string()),
-                    project_name: Some("默认租户".to_string()),
-                    domain_id: Some("default".to_string()),
-                    domain_name: Some("Default".to_string()),
-                    enabled: true,
-                    status: "active".to_string(),
-                    hard_limit_bytes: 20 * 1024 * 1024 * 1024 * 1024,
-                    used_bytes: 7 * 1024 * 1024 * 1024 * 1024,
-                    created_at: now,
-                    updated_at: now,
-                    labels: HashMap::from([
-                        ("env".to_string(), "prod".to_string()),
-                        ("tier".to_string(), "gold".to_string()),
-                    ]),
-                },
-                TenantSpec {
-                    id: "analytics".to_string(),
-                    display_name: "分析租户".to_string(),
-                    owner_group: "platform-admins".to_string(),
-                    project_id: Some("analytics".to_string()),
-                    project_name: Some("分析租户".to_string()),
-                    domain_id: Some("default".to_string()),
-                    domain_name: Some("Default".to_string()),
-                    enabled: true,
-                    status: "active".to_string(),
-                    hard_limit_bytes: 8 * 1024 * 1024 * 1024 * 1024,
-                    used_bytes: 2 * 1024 * 1024 * 1024 * 1024,
-                    created_at: now,
-                    updated_at: now,
-                    labels: HashMap::from([
-                        ("env".to_string(), "prod".to_string()),
-                        ("tier".to_string(), "silver".to_string()),
-                    ]),
-                },
-            ]),
+                }]
+            }),
+            quotas: RwLock::new(vec![]),
+            tenants: RwLock::new(vec![]),
             diagnostics: RwLock::new(vec![]),
             cluster_config_history: RwLock::new(cluster_config_history),
             users: RwLock::new(match persisted_iam.as_ref() {
@@ -816,33 +792,12 @@ impl AppState {
                 persisted_iam
                     .as_ref()
                     .map(|p| p.service_accounts.clone())
-                    .unwrap_or_else(|| {
-                        vec![rustio_core::ServiceAccount {
-                            access_key: "sa-bootstrap".to_string(),
-                            secret_key: "sa-bootstrap-secret".to_string(),
-                            owner: "admin".to_string(),
-                            created_at: now,
-                            status: "enabled".to_string(),
-                        }]
-                    }),
+                    // 不预置固定密钥的服务账号(所有实例使用相同密钥属于安全隐患);
+                    // 需要服务账号时由用户经 IAM 控制台创建,密钥随机生成。
+                    .unwrap_or_default(),
             ),
             admin_sessions: RwLock::new(console_sessions),
-            sts_sessions: RwLock::new(vec![StsSession {
-                session_id: Uuid::new_v4().to_string(),
-                principal: "admin".to_string(),
-                access_key: "sts-bootstrap-ak".to_string(),
-                secret_key: "sts-bootstrap-sk".to_string(),
-                session_token: Uuid::new_v4().to_string(),
-                provider: "manual".to_string(),
-                role_arn: None,
-                session_name: Some("bootstrap".to_string()),
-                session_policy: None,
-                subject: None,
-                audience: None,
-                status: "active".to_string(),
-                issued_at: now,
-                expires_at: now + Duration::hours(1),
-            }]),
+            sts_sessions: RwLock::new(vec![]),
             buckets: RwLock::new(buckets),
             remote_tiers: RwLock::new(remote_tiers),
             bucket_object_locks: RwLock::new(bucket_object_locks),
@@ -864,47 +819,12 @@ impl AppState {
             bucket_metrics_configs: RwLock::new(bucket_metrics_configs),
             bucket_inventory_configs: RwLock::new(bucket_inventory_configs),
             replications: RwLock::new(vec![]),
-            site_replications: RwLock::new(vec![
-                SiteReplicationStatus {
-                    site_id: "dr-site-a".to_string(),
-                    endpoint: "https://dr-site-a.example.internal".to_string(),
-                    role: "primary".to_string(),
-                    preferred_primary: true,
-                    state: "healthy".to_string(),
-                    lag_seconds: 0,
-                    managed_buckets: 3,
-                    last_sync_at: now,
-                    bootstrap_state: "ready".to_string(),
-                    joined_at: Some(now),
-                    last_resync_at: Some(now),
-                    last_reconcile_at: Some(now),
-                    pending_resync_items: 0,
-                    drifted_buckets: 0,
-                    topology_version: 1,
-                    last_error: None,
-                },
-                SiteReplicationStatus {
-                    site_id: "dr-site-b".to_string(),
-                    endpoint: "https://dr-site-b.example.internal".to_string(),
-                    role: "secondary".to_string(),
-                    preferred_primary: false,
-                    state: "healthy".to_string(),
-                    lag_seconds: 12,
-                    managed_buckets: 3,
-                    last_sync_at: now - Duration::seconds(12),
-                    bootstrap_state: "ready".to_string(),
-                    joined_at: Some(now),
-                    last_resync_at: Some(now - Duration::seconds(12)),
-                    last_reconcile_at: Some(now - Duration::seconds(12)),
-                    pending_resync_items: 0,
-                    drifted_buckets: 0,
-                    topology_version: 1,
-                    last_error: None,
-                },
-            ]),
+            // 站点复制需要用户经「复制与容灾」页面显式 bootstrap/join 后才会出现。
+            site_replications: RwLock::new(vec![]),
             replication_backlog: RwLock::new(vec![]),
             replication_checkpoints: RwLock::new(HashMap::new()),
             replication_sequence: AtomicU64::new(1),
+            // 默认监控规则模板;channels 留空,由用户在「告警」页面建好通道后自行挂上。
             alert_rules: RwLock::new(vec![
                 AlertRule {
                     id: "rule-capacity-high".to_string(),
@@ -915,7 +835,7 @@ impl AppState {
                     window_minutes: 5,
                     severity: "critical".to_string(),
                     enabled: true,
-                    channels: vec!["channel-webhook-main".to_string()],
+                    channels: vec![],
                     last_triggered_at: None,
                 },
                 AlertRule {
@@ -927,49 +847,21 @@ impl AppState {
                     window_minutes: 10,
                     severity: "warning".to_string(),
                     enabled: true,
-                    channels: vec!["channel-email-ops".to_string()],
+                    channels: vec![],
                     last_triggered_at: None,
                 },
             ]),
-            alert_channels: RwLock::new(vec![
-                AlertChannel {
-                    id: "channel-webhook-main".to_string(),
-                    name: "主 webhook".to_string(),
-                    kind: "webhook".to_string(),
-                    endpoint: "https://hooks.example.internal/rustio/alerts".to_string(),
-                    headers: HashMap::new(),
-                    payload_template: None,
-                    header_template: HashMap::new(),
-                    enabled: true,
-                    status: "healthy".to_string(),
-                    last_checked_at: now,
-                    error: None,
-                },
-                AlertChannel {
-                    id: "channel-email-ops".to_string(),
-                    name: "运维邮件组".to_string(),
-                    kind: "email".to_string(),
-                    endpoint: "ops@example.internal".to_string(),
-                    headers: HashMap::new(),
-                    payload_template: None,
-                    header_template: HashMap::new(),
-                    enabled: true,
-                    status: "healthy".to_string(),
-                    last_checked_at: now,
-                    error: None,
-                },
-            ]),
+            // 通知通道由用户自行配置。
+            alert_channels: RwLock::new(vec![]),
             alert_silences: RwLock::new(vec![]),
+            // 升级策略模板;同样不引用具体通道。
             alert_escalations: RwLock::new(vec![
                 AlertEscalationPolicy {
                     id: "escalation-critical".to_string(),
                     name: "严重告警 5 分钟升级".to_string(),
                     severity: "critical".to_string(),
                     wait_minutes: 5,
-                    channels: vec![
-                        "channel-webhook-main".to_string(),
-                        "channel-email-ops".to_string(),
-                    ],
+                    channels: vec![],
                     enabled: true,
                 },
                 AlertEscalationPolicy {
@@ -977,91 +869,17 @@ impl AppState {
                     name: "警告告警 15 分钟升级".to_string(),
                     severity: "warning".to_string(),
                     wait_minutes: 15,
-                    channels: vec!["channel-email-ops".to_string()],
+                    channels: vec![],
                     enabled: true,
                 },
             ]),
-            alert_history: RwLock::new(vec![
-                AlertHistoryEntry {
-                    id: "history-boot-1".to_string(),
-                    rule_id: Some("rule-capacity-high".to_string()),
-                    rule_name: Some("容量使用率过高".to_string()),
-                    severity: "critical".to_string(),
-                    status: "resolved".to_string(),
-                    message: "节点容量瞬时峰值已回落至阈值以下".to_string(),
-                    triggered_at: now - Duration::minutes(30),
-                    source: "rule-engine".to_string(),
-                    assignee: Some("admin".to_string()),
-                    claimed_at: Some(now - Duration::minutes(29)),
-                    acknowledged_by: Some("admin".to_string()),
-                    acknowledged_at: Some(now - Duration::minutes(28)),
-                    resolved_by: Some("admin".to_string()),
-                    resolved_at: Some(now - Duration::minutes(26)),
-                    details: json!({
-                        "value": 0.91,
-                        "threshold": 0.85
-                    }),
-                },
-                AlertHistoryEntry {
-                    id: "history-boot-2".to_string(),
-                    rule_id: Some("rule-repl-lag".to_string()),
-                    rule_name: Some("复制延迟超阈值".to_string()),
-                    severity: "warning".to_string(),
-                    status: "firing".to_string(),
-                    message: "跨站复制延迟持续超过 300 秒".to_string(),
-                    triggered_at: now - Duration::minutes(8),
-                    source: "rule-engine".to_string(),
-                    assignee: None,
-                    claimed_at: None,
-                    acknowledged_by: None,
-                    acknowledged_at: None,
-                    resolved_by: None,
-                    resolved_at: None,
-                    details: json!({
-                        "value": 420,
-                        "threshold": 300
-                    }),
-                },
-            ]),
+            alert_history: RwLock::new(vec![]),
             alert_delivery_queue: RwLock::new(vec![]),
             security: RwLock::new(security),
             oidc_auth_requests: RwLock::new(HashMap::new()),
             oidc_completed_logins: RwLock::new(HashMap::new()),
             audits: RwLock::new(vec![]),
-            jobs: RwLock::new(vec![JobStatus {
-                id: "job-heal-001".to_string(),
-                kind: "heal".to_string(),
-                status: "idle".to_string(),
-                priority: 3,
-                bucket: None,
-                object_key: None,
-                site_id: None,
-                idempotency_key: String::new(),
-                attempt: 0,
-                lease_owner: None,
-                lease_until: None,
-                checkpoint: None,
-                last_error: None,
-                payload: json!({}),
-                progress: 0.0,
-                created_at: now,
-                updated_at: now,
-                key: None,
-                version_id: None,
-                target: Some("cluster".to_string()),
-                affected_disks: vec![],
-                missing_shards: 0,
-                corrupted_shards: 0,
-                started_at: None,
-                finished_at: None,
-                attempts: 0,
-                max_attempts: 0,
-                next_attempt_at: None,
-                error: None,
-                dedupe_key: None,
-                source: Some("bootstrap".to_string()),
-                details: Value::Null,
-            }]),
+            jobs: RwLock::new(vec![]),
             object_access_heat: RwLock::new(HashMap::new()),
             storage_governance: RwLock::new(StorageGovernanceRuntimeState::default()),
             meta_store,
