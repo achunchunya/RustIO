@@ -60,7 +60,7 @@ function switchJobStatusTone(status: string): BadgeTone {
 
 export function ReplicationPage({ client }: ReplicationPageProps) {
   const confirm = useConfirm();
-  const showSuccess = useToast();
+  const toast = useToast();
   const [rules, setRules] = useState<ReplicationStatus[]>([]);
   const [sites, setSites] = useState<SiteReplicationStatus[]>([]);
   const [buckets, setBuckets] = useState<BucketSpec[]>([]);
@@ -68,7 +68,6 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
   const [summary, setSummary] = useState<SystemMetricsSummary | null>(null);
   const [replicationSummary, setReplicationSummary] = useState<AsyncJobSummary | null>(null);
   const [switchJobs, setSwitchJobs] = useState<AsyncJobStatus[]>([]);
-  const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const [updatingRule, setUpdatingRule] = useState('');
   const [deletingRule, setDeletingRule] = useState('');
@@ -133,7 +132,7 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
 
   useEffect(() => {
     reload().catch((requestError) => {
-      setError(requestError instanceof Error ? requestError.message : '加载复制状态失败');
+      toast.error(requestError instanceof Error ? requestError.message : '加载复制状态失败');
     });
   }, [client]);
 
@@ -207,13 +206,12 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
 
   async function openDrift(siteId: string, title: string, loader: () => Promise<SiteReplicationDriftReport>) {
     setDriftLoadingSite(siteId);
-    setError('');
     try {
       const report = await loader();
       setDriftReport(report);
       setDriftTitle(title);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : '获取漂移报告失败');
+      toast.error(requestError instanceof Error ? requestError.message : '获取漂移报告失败');
     } finally {
       setDriftLoadingSite('');
     }
@@ -261,8 +259,6 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
     <section className="space-y-6">
       <PageHeader title="复制" subtitle="跨站复制链路状态、规则配置与失败重试队列。" />
 
-      {error ? <p className="text-sm text-error">{toBilingualPrompt(error)}</p> : null}
-
       <div className="grid gap-4 md:grid-cols-4">
         <StatCard
           label="复制任务总数"
@@ -308,7 +304,6 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
           onSubmit={async (event) => {
             event.preventDefault();
             setBootstrapping(true);
-            setError('');
             try {
               await replicationService.bootstrapSite(client, {
                 site_id: bootstrapForm.site_id.trim(),
@@ -316,11 +311,11 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
                 reason: bootstrapForm.reason.trim(),
                 preferred_primary: bootstrapForm.preferred_primary
               });
-              showSuccess(`站点 ${bootstrapForm.site_id} 的初始化任务已创建`);
+              toast.success(`站点 ${bootstrapForm.site_id} 的初始化任务已创建`);
               setBootstrapForm({ site_id: '', endpoint: '', reason: '', preferred_primary: false });
               await reload();
             } catch (requestError) {
-              setError(requestError instanceof Error ? requestError.message : '初始化站点失败');
+              toast.error(requestError instanceof Error ? requestError.message : '初始化站点失败');
             } finally {
               setBootstrapping(false);
             }
@@ -405,7 +400,6 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
           onSubmit={async (event) => {
             event.preventDefault();
             setSaving(true);
-            setError('');
             try {
               await bucketService.updateReplication(client, form.source_bucket, {
                 rule_id: form.rule_id || undefined,
@@ -418,11 +412,11 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
                 sync_deletes: form.sync_deletes,
                 enabled: form.enabled
               });
-              showSuccess(`桶 ${form.source_bucket} 的复制规则已保存`);
+              toast.success(`桶 ${form.source_bucket} 的复制规则已保存`);
               resetRuleForm();
               await reload();
             } catch (requestError) {
-              setError(requestError instanceof Error ? requestError.message : '保存复制规则失败');
+              toast.error(requestError instanceof Error ? requestError.message : '保存复制规则失败');
             } finally {
               setSaving(false);
             }
@@ -645,13 +639,12 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
                       actionLabel="重同步"
                       onConfirm={async (reason) => {
                         setSwitchingSiteAction(`resync:${site.site_id}`);
-                        setError('');
                         try {
                           await replicationService.resyncSite(client, site.site_id, reason);
-                          showSuccess(`站点 ${site.site_id} 的重同步任务已创建`);
+                          toast.success(`站点 ${site.site_id} 的重同步任务已创建`);
                           await reload();
                         } catch (requestError) {
-                          setError(requestError instanceof Error ? requestError.message : '重同步失败');
+                          toast.error(requestError instanceof Error ? requestError.message : '重同步失败');
                           throw requestError;
                         } finally {
                           setSwitchingSiteAction('');
@@ -664,13 +657,12 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
                       actionLabel="执行收敛"
                       onConfirm={async (reason) => {
                         setSwitchingSiteAction(`reconcile:${site.site_id}`);
-                        setError('');
                         try {
                           await replicationService.reconcileSite(client, site.site_id, reason);
-                          showSuccess(`站点 ${site.site_id} 的收敛任务已创建`);
+                          toast.success(`站点 ${site.site_id} 的收敛任务已创建`);
                           await reload();
                         } catch (requestError) {
-                          setError(requestError instanceof Error ? requestError.message : '执行收敛失败');
+                          toast.error(requestError instanceof Error ? requestError.message : '执行收敛失败');
                           throw requestError;
                         } finally {
                           setSwitchingSiteAction('');
@@ -684,13 +676,12 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
                         actionLabel="执行 Failover"
                         onConfirm={async (reason) => {
                           setSwitchingSiteAction(`failover:${site.site_id}`);
-                          setError('');
                           try {
                             await replicationService.failoverSite(client, site.site_id, reason);
-                            showSuccess(`站点 ${site.site_id} 的 Failover 任务已创建`);
+                            toast.success(`站点 ${site.site_id} 的 Failover 任务已创建`);
                             await reload();
                           } catch (requestError) {
-                            setError(requestError instanceof Error ? requestError.message : '执行 Failover 失败');
+                            toast.error(requestError instanceof Error ? requestError.message : '执行 Failover 失败');
                             throw requestError;
                           } finally {
                             setSwitchingSiteAction('');
@@ -705,13 +696,12 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
                         actionLabel="执行 Failback"
                         onConfirm={async (reason) => {
                           setSwitchingSiteAction(`failback:${site.site_id}`);
-                          setError('');
                           try {
                             await replicationService.failbackSite(client, site.site_id, reason);
-                            showSuccess(`站点 ${site.site_id} 的 Failback 任务已创建`);
+                            toast.success(`站点 ${site.site_id} 的 Failback 任务已创建`);
                             await reload();
                           } catch (requestError) {
-                            setError(requestError instanceof Error ? requestError.message : '执行 Failback 失败');
+                            toast.error(requestError instanceof Error ? requestError.message : '执行 Failback 失败');
                             throw requestError;
                           } finally {
                             setSwitchingSiteAction('');
@@ -779,7 +769,6 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
                 disabled={updatingRule === rule.rule_id}
                 onClick={async () => {
                   setUpdatingRule(rule.rule_id);
-                  setError('');
                   try {
                     await bucketService.updateReplication(client, rule.source_bucket, {
                       rule_id: rule.rule_id,
@@ -792,12 +781,12 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
                       sync_deletes: rule.sync_deletes,
                       enabled: rule.status !== 'healthy'
                     });
-                    showSuccess(
+                    toast.success(
                       `复制规则 ${rule.rule_name || rule.source_bucket} 已${rule.status === 'healthy' ? '暂停' : '启用'}`
                     );
                     await reload();
                   } catch (requestError) {
-                    setError(requestError instanceof Error ? requestError.message : '更新复制状态失败');
+                    toast.error(requestError instanceof Error ? requestError.message : '更新复制状态失败');
                   } finally {
                     setUpdatingRule('');
                   }
@@ -819,16 +808,15 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
                     return;
                   }
                   setDeletingRule(rule.rule_id);
-                  setError('');
                   try {
                     await bucketService.deleteReplication(client, rule.source_bucket, rule.rule_id);
-                    showSuccess(`复制规则 ${rule.rule_name || rule.source_bucket} 已删除`);
+                    toast.success(`复制规则 ${rule.rule_name || rule.source_bucket} 已删除`);
                     if (form.rule_id === rule.rule_id) {
                       resetRuleForm();
                     }
                     await reload();
                   } catch (requestError) {
-                    setError(requestError instanceof Error ? requestError.message : '删除复制规则失败');
+                    toast.error(requestError instanceof Error ? requestError.message : '删除复制规则失败');
                   } finally {
                     setDeletingRule('');
                   }
@@ -852,11 +840,10 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
               variant="secondary"
               size="sm"
               onClick={async () => {
-                setError('');
                 try {
                   await reload();
                 } catch (requestError) {
-                  setError(requestError instanceof Error ? requestError.message : '刷新积压队列失败');
+                  toast.error(requestError instanceof Error ? requestError.message : '刷新积压队列失败');
                 }
               }}
             >
@@ -869,13 +856,12 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
               onClick={async () => {
                 if (!await confirm('确认重试全部复制积压项?')) return;
                 setRetryingAllBacklog(true);
-                setError('');
                 try {
                   const result = await jobsService.retryAsyncJobs(client, { kind: 'replication' });
-                  showSuccess(`已触发全部重试,处理 ${result.updated} 条复制任务`);
+                  toast.success(`已触发全部重试,处理 ${result.updated} 条复制任务`);
                   await reload();
                 } catch (requestError) {
-                  setError(requestError instanceof Error ? requestError.message : '重试全部积压失败');
+                  toast.error(requestError instanceof Error ? requestError.message : '重试全部积压失败');
                 } finally {
                   setRetryingAllBacklog(false);
                 }
@@ -890,16 +876,15 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
               disabled={cleaningDoneBacklog}
               onClick={async () => {
                 setCleaningDoneBacklog(true);
-                setError('');
                 try {
                   const result = await jobsService.cleanupAsyncJobs(client, {
                     kind: 'replication',
                     status: 'done'
                   });
-                  showSuccess(`已清理 ${result.removed} 条复制终态任务`);
+                  toast.success(`已清理 ${result.removed} 条复制终态任务`);
                   await reload();
                 } catch (requestError) {
-                  setError(requestError instanceof Error ? requestError.message : '清理复制终态任务失败');
+                  toast.error(requestError instanceof Error ? requestError.message : '清理复制终态任务失败');
                 } finally {
                   setCleaningDoneBacklog(false);
                 }
@@ -937,13 +922,12 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
                     disabled={retryingBacklogId === item.id}
                     onClick={async () => {
                       setRetryingBacklogId(item.id);
-                      setError('');
                       try {
                         await jobsService.retryAsyncJobs(client, {}, [item.id]);
-                        showSuccess(`积压项 ${item.id} 已触发重试`);
+                        toast.success(`积压项 ${item.id} 已触发重试`);
                         await reload();
                       } catch (requestError) {
-                        setError(requestError instanceof Error ? requestError.message : '重试积压项失败');
+                        toast.error(requestError instanceof Error ? requestError.message : '重试积压项失败');
                       } finally {
                         setRetryingBacklogId('');
                       }

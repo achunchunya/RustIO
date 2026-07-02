@@ -14,7 +14,6 @@ import {
   useToast
 } from '../components/ui';
 import type { TenantSpec } from '../types';
-import { toBilingualPrompt } from '../utils/bilingual';
 
 type TenantsPageProps = {
   client: ApiClient;
@@ -51,10 +50,9 @@ function toDraft(tenant: TenantSpec): TenantEditDraft {
 }
 
 export function TenantsPage({ client }: TenantsPageProps) {
-  const showSuccess = useToast();
+  const toast = useToast();
   const [tenants, setTenants] = useState<TenantSpec[]>([]);
   const [drafts, setDrafts] = useState<Record<string, TenantEditDraft>>({});
-  const [error, setError] = useState('');
   const [creating, setCreating] = useState(false);
   const [savingTenantId, setSavingTenantId] = useState('');
   const [newTenant, setNewTenant] = useState({
@@ -77,7 +75,7 @@ export function TenantsPage({ client }: TenantsPageProps) {
 
   useEffect(() => {
     reload().catch((requestError) => {
-      setError(requestError instanceof Error ? requestError.message : '加载租户失败');
+      toast.error(requestError instanceof Error ? requestError.message : '加载租户失败');
     });
   }, [client]);
 
@@ -90,14 +88,12 @@ export function TenantsPage({ client }: TenantsPageProps) {
       <PageHeader title="租户管理" subtitle="租户配额、状态、归属组与生命周期操作。" />
 
       <Card className="space-y-4">
-        {error ? <p className="text-sm text-error">{toBilingualPrompt(error)}</p> : null}
 
         <form
           className="grid gap-3 md:grid-cols-4"
           onSubmit={async (event) => {
             event.preventDefault();
             setCreating(true);
-            setError('');
             try {
               const hardLimit = tibToBytes(newTenant.hard_limit_tib);
               if (hardLimit <= 0) {
@@ -115,10 +111,10 @@ export function TenantsPage({ client }: TenantsPageProps) {
                 owner_group: 'platform-admins',
                 hard_limit_tib: '1'
               });
-              showSuccess(`租户 ${newTenant.id.trim()} 创建成功`);
+              toast.success(`租户 ${newTenant.id.trim()} 创建成功`);
               await reload();
             } catch (requestError) {
-              setError(requestError instanceof Error ? requestError.message : '创建租户失败');
+              toast.error(requestError instanceof Error ? requestError.message : '创建租户失败');
             } finally {
               setCreating(false);
             }
@@ -259,7 +255,6 @@ export function TenantsPage({ client }: TenantsPageProps) {
                   loading={savingTenantId === tenant.id}
                   onClick={async () => {
                     setSavingTenantId(tenant.id);
-                    setError('');
                     try {
                       const hardLimit = tibToBytes(draft.hard_limit_tib);
                       if (hardLimit <= 0) {
@@ -270,10 +265,10 @@ export function TenantsPage({ client }: TenantsPageProps) {
                         owner_group: draft.owner_group.trim(),
                         hard_limit_bytes: hardLimit
                       });
-                      showSuccess(`租户 ${tenant.id} 已更新`);
+                      toast.success(`租户 ${tenant.id} 已更新`);
                       await reload();
                     } catch (requestError) {
-                      setError(requestError instanceof Error ? requestError.message : '更新租户失败');
+                      toast.error(requestError instanceof Error ? requestError.message : '更新租户失败');
                     } finally {
                       setSavingTenantId('');
                     }
@@ -287,13 +282,12 @@ export function TenantsPage({ client }: TenantsPageProps) {
                     description="暂停后该租户将被标记为不可用，建议先确认业务窗口。"
                     actionLabel="暂停租户"
                     onConfirm={async (reason) => {
-                      setError('');
                       try {
                         await clusterService.suspendTenant(client, tenant.id, reason);
-                        showSuccess(`租户 ${tenant.id} 已暂停`);
+                        toast.success(`租户 ${tenant.id} 已暂停`);
                         await reload();
                       } catch (requestError) {
-                        setError(requestError instanceof Error ? requestError.message : '暂停租户失败');
+                        toast.error(requestError instanceof Error ? requestError.message : '暂停租户失败');
                         throw requestError;
                       }
                     }}
@@ -304,13 +298,12 @@ export function TenantsPage({ client }: TenantsPageProps) {
                     description="恢复后该租户将重新进入 active 状态。"
                     actionLabel="恢复租户"
                     onConfirm={async (reason) => {
-                      setError('');
                       try {
                         await clusterService.resumeTenant(client, tenant.id, reason);
-                        showSuccess(`租户 ${tenant.id} 已恢复`);
+                        toast.success(`租户 ${tenant.id} 已恢复`);
                         await reload();
                       } catch (requestError) {
-                        setError(requestError instanceof Error ? requestError.message : '恢复租户失败');
+                        toast.error(requestError instanceof Error ? requestError.message : '恢复租户失败');
                         throw requestError;
                       }
                     }}
@@ -322,13 +315,12 @@ export function TenantsPage({ client }: TenantsPageProps) {
                     description="删除后将移除租户配置与配额记录，该操作不可撤销。"
                     actionLabel="删除租户"
                     onConfirm={async (reason) => {
-                      setError('');
                       try {
                         await clusterService.deleteTenant(client, tenant.id, reason);
-                        showSuccess(`租户 ${tenant.id} 已删除`);
+                        toast.success(`租户 ${tenant.id} 已删除`);
                         await reload();
                       } catch (requestError) {
-                        setError(requestError instanceof Error ? requestError.message : '删除租户失败');
+                        toast.error(requestError instanceof Error ? requestError.message : '删除租户失败');
                         throw requestError;
                       }
                     }}

@@ -15,7 +15,7 @@ type ChangePasswordDialogProps = {
 
 /** 自助修改本人密码:原密码 + 新密码 + 确认新密码,成功后弹窗提示并关闭。 */
 export function ChangePasswordDialog({ open, onClose, client }: ChangePasswordDialogProps) {
-  const showSuccess = useToast();
+  const toast = useToast();
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -50,7 +50,7 @@ export function ChangePasswordDialog({ open, onClose, client }: ChangePasswordDi
         current_password: currentPassword,
         new_password: newPassword
       });
-      showSuccess('密码修改成功');
+      toast.success('密码修改成功');
       close();
     } catch (requestError) {
       setError(requestError instanceof Error ? toBilingualPrompt(requestError.message) : '密码修改失败');

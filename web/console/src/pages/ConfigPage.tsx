@@ -24,9 +24,8 @@ function parseConfigEditor(raw: string): Record<string, unknown> {
 }
 
 export function ConfigPage({ client, canWrite }: ConfigPageProps) {
-  const showSuccess = useToast();
+  const toast = useToast();
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
   const [current, setCurrent] = useState<ClusterConfigSnapshot | null>(null);
   const [history, setHistory] = useState<ClusterConfigSnapshot[]>([]);
   const [editor, setEditor] = useState('{}');
@@ -48,7 +47,7 @@ export function ConfigPage({ client, canWrite }: ConfigPageProps) {
     setLoading(true);
     reload()
       .catch((requestError) => {
-        setError(requestError instanceof Error ? requestError.message : '加载配置中心失败');
+        toast.error(requestError instanceof Error ? requestError.message : '加载配置中心失败');
       })
       .finally(() => setLoading(false));
   }, [client]);
@@ -66,14 +65,13 @@ export function ConfigPage({ client, canWrite }: ConfigPageProps) {
                 loading={loading}
                 disabled={loading}
                 onClick={async () => {
-                  setError('');
                   setLoading(true);
                   try {
                     await reload();
                     setValidation(null);
-                    showSuccess('配置已刷新 / Configuration refreshed');
+                    toast.success('配置已刷新 / Configuration refreshed');
                   } catch (requestError) {
-                    setError(requestError instanceof Error ? requestError.message : '刷新配置失败');
+                    toast.error(requestError instanceof Error ? requestError.message : '刷新配置失败');
                   } finally {
                     setLoading(false);
                   }
@@ -87,7 +85,6 @@ export function ConfigPage({ client, canWrite }: ConfigPageProps) {
                 disabled={exporting}
                 onClick={async () => {
                   setExporting(true);
-                  setError('');
                   try {
                     const text = await clusterService.exportConfig(client);
                     const blob = new Blob([text], { type: 'application/json' });
@@ -98,9 +95,9 @@ export function ConfigPage({ client, canWrite }: ConfigPageProps) {
                       .replace(/[:.]/g, '-')}.json`;
                     link.click();
                     URL.revokeObjectURL(link.href);
-                    showSuccess('配置文件已导出 / Cluster config exported');
+                    toast.success('配置文件已导出 / Cluster config exported');
                   } catch (requestError) {
-                    setError(requestError instanceof Error ? requestError.message : '导出配置失败');
+                    toast.error(requestError instanceof Error ? requestError.message : '导出配置失败');
                   } finally {
                     setExporting(false);
                   }
@@ -111,7 +108,6 @@ export function ConfigPage({ client, canWrite }: ConfigPageProps) {
             </>
           }
         />
-        {error ? <p className="text-sm text-error">{toBilingualPrompt(error)}</p> : null}
       </div>
 
       <div className="grid gap-6 xl:grid-cols-3">
@@ -124,7 +120,7 @@ export function ConfigPage({ client, canWrite }: ConfigPageProps) {
               onClick={() => {
                 if (current) {
                   setEditor(formatConfig(current.payload));
-                  showSuccess('已同步当前配置到编辑器 / Synced current config to editor');
+                  toast.success('已同步当前配置到编辑器 / Synced current config to editor');
                 }
               }}
             >
@@ -145,20 +141,19 @@ export function ConfigPage({ client, canWrite }: ConfigPageProps) {
               disabled={validating}
               onClick={async () => {
                 setValidating(true);
-                setError('');
                 try {
                   const payload = parseConfigEditor(editor);
                   const result = await clusterService.validateConfig(client, payload);
                   setValidation(result);
                   if (result.valid) {
-                    showSuccess('配置校验通过 / Configuration validation passed');
+                    toast.success('配置校验通过 / Configuration validation passed');
                   } else {
-                    showSuccess(
+                    toast.success(
                       `配置校验失败（${result.errors.length} 个错误） / Configuration validation failed (${result.errors.length} errors)`
                     );
                   }
                 } catch (requestError) {
-                  setError(requestError instanceof Error ? requestError.message : '校验配置失败');
+                  toast.error(requestError instanceof Error ? requestError.message : '校验配置失败');
                 } finally {
                   setValidating(false);
                 }
@@ -172,17 +167,16 @@ export function ConfigPage({ client, canWrite }: ConfigPageProps) {
                 description="该操作会立即更新运行配置并写入审计日志，请确认已完成校验。"
                 actionLabel="应用配置"
                 onConfirm={async (reason) => {
-                  setError('');
                   try {
                     const payload = parseConfigEditor(editor);
                     const snapshot = await clusterService.applyConfig(client, payload, reason);
                     setCurrent(snapshot);
                     setEditor(formatConfig(snapshot.payload));
                     setValidation(null);
-                    showSuccess(`配置版本 ${snapshot.version} 已应用`);
+                    toast.success(`配置版本 ${snapshot.version} 已应用`);
                     await reload();
                   } catch (requestError) {
-                    setError(requestError instanceof Error ? requestError.message : '应用配置失败');
+                    toast.error(requestError instanceof Error ? requestError.message : '应用配置失败');
                     throw requestError;
                   }
                 }}
@@ -227,16 +221,15 @@ export function ConfigPage({ client, canWrite }: ConfigPageProps) {
                       description="会基于选定版本生成新的活动配置版本，并记录审计日志。"
                       actionLabel="回滚到此版本"
                       onConfirm={async (reason) => {
-                        setError('');
                         try {
                           const snapshot = await clusterService.rollbackConfig(client, item.version, reason);
                           setCurrent(snapshot);
                           setEditor(formatConfig(snapshot.payload));
                           setValidation(null);
-                          showSuccess(`配置已回滚到 ${item.version}`);
+                          toast.success(`配置已回滚到 ${item.version}`);
                           await reload();
                         } catch (requestError) {
-                          setError(requestError instanceof Error ? requestError.message : '回滚配置失败');
+                          toast.error(requestError instanceof Error ? requestError.message : '回滚配置失败');
                           throw requestError;
                         }
                       }}

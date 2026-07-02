@@ -111,14 +111,12 @@ export function MetricsPage({ client }: MetricsPageProps) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [copying, setCopying] = useState(false);
-  const [error, setError] = useState('');
-  const showSuccess = useToast();
+  const toast = useToast();
 
   async function reload(silent = false) {
     if (!silent) {
       setLoading(true);
     }
-    setError('');
     try {
       const [summarySnapshot, prometheusSnapshot] = await Promise.all([
         systemService.metricsSummary(client),
@@ -127,7 +125,7 @@ export function MetricsPage({ client }: MetricsPageProps) {
       setSummary(summarySnapshot);
       setRawMetrics(prometheusSnapshot);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : '加载指标总览失败');
+      toast.error(requestError instanceof Error ? requestError.message : '加载指标总览失败');
     } finally {
       setLoading(false);
     }
@@ -206,12 +204,11 @@ export function MetricsPage({ client }: MetricsPageProps) {
               onClick={async () => {
                 if (!rawMetrics) return;
                 setCopying(true);
-                setError('');
                 try {
                   await navigator.clipboard.writeText(rawMetrics);
-                  showSuccess('Prometheus 指标文本已复制');
+                  toast.success('Prometheus 指标文本已复制');
                 } catch {
-                  setError('复制指标文本失败');
+                  toast.error('复制指标文本失败');
                 } finally {
                   setCopying(false);
                 }
@@ -223,8 +220,6 @@ export function MetricsPage({ client }: MetricsPageProps) {
         }
       />
       <p className="-mt-2 text-xs text-muted">最近生成时间：{generatedAt}</p>
-
-      {error ? <p className="rounded-lg bg-error/10 p-3 text-sm text-error">{toBilingualPrompt(error)}</p> : null}
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <StatCard

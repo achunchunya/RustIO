@@ -47,9 +47,8 @@ const tierHealthTone = (status: string): BadgeTone => {
 };
 
 export function StoragePage({ client, canWrite }: { client: ApiClient; canWrite: boolean }) {
-  const showSuccess = useToast();
+  const toast = useToast();
   const [tab, setTab] = useState('governance');
-  const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
   const [governance, setGovernance] = useState<StorageGovernanceStatusResponse | null>(null);
@@ -61,13 +60,11 @@ export function StoragePage({ client, canWrite }: { client: ApiClient; canWrite:
   const [diskIds, setDiskIds] = useState('');
 
   const notify = (fn: () => void) => {
-    setError('');
     fn();
   };
 
   const reload = useCallback(async () => {
     setLoading(true);
-    setError('');
     try {
       if (tab === 'governance') setGovernance(await storageService.governance(client));
       else if (tab === 'tiers') setTiers(await storageService.listTiers(client));
@@ -81,7 +78,7 @@ export function StoragePage({ client, canWrite }: { client: ApiClient; canWrite:
         setArchive(rep);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : '加载失败');
+      toast.error(err instanceof Error ? err.message : '加载失败');
     } finally {
       setLoading(false);
     }
@@ -104,8 +101,6 @@ export function StoragePage({ client, canWrite }: { client: ApiClient; canWrite:
       />
 
       <Tabs items={TABS} active={tab} onChange={setTab} />
-
-      {error ? <p className="text-sm text-error">{error}</p> : null}
 
       {/* 治理概览 */}
       {tab === 'governance' && governance ? (
@@ -201,8 +196,8 @@ export function StoragePage({ client, canWrite }: { client: ApiClient; canWrite:
                             void storageService
                               .checkTierHealth(client, tier.name)
                               .then(() => reload())
-                              .then(() => showSuccess(`已检查 ${tier.name}`))
-                              .catch((e) => setError(e instanceof Error ? e.message : '检查失败'));
+                              .then(() => toast.success(`已检查 ${tier.name}`))
+                              .catch((e) => toast.error(e instanceof Error ? e.message : '检查失败'));
                           })
                         }
                       >
@@ -306,7 +301,7 @@ export function StoragePage({ client, canWrite }: { client: ApiClient; canWrite:
                         disk_ids: diskIds ? diskIds.split(',').map((s) => s.trim()).filter(Boolean) : undefined,
                         reason
                       })
-                      .then(() => notify(() => showSuccess('已提交再平衡计划')))
+                      .then(() => notify(() => toast.success('已提交再平衡计划')))
                   }
                 />
                 <ConfirmActionDialog
@@ -316,7 +311,7 @@ export function StoragePage({ client, canWrite }: { client: ApiClient; canWrite:
                   onConfirm={(reason) =>
                     storageService
                       .startClusterRebalance(client, { reason })
-                      .then(() => notify(() => showSuccess('已提交集群摊匀')))
+                      .then(() => notify(() => toast.success('已提交集群摊匀')))
                   }
                 />
                 <ConfirmActionDialog
@@ -329,7 +324,7 @@ export function StoragePage({ client, canWrite }: { client: ApiClient; canWrite:
                         disk_ids: diskIds.split(',').map((s) => s.trim()).filter(Boolean),
                         reason
                       })
-                      .then(() => notify(() => showSuccess('已提交退役计划')))
+                      .then(() => notify(() => toast.success('已提交退役计划')))
                   }
                 />
                 <Button
@@ -337,8 +332,8 @@ export function StoragePage({ client, canWrite }: { client: ApiClient; canWrite:
                   onClick={() =>
                     storageService
                       .cancelClusterRebalance(client)
-                      .then((r) => notify(() => showSuccess(`已取消 ${r.cancelled} 个再平衡任务`)))
-                      .catch((e) => setError(e instanceof Error ? e.message : '取消失败'))
+                      .then((r) => notify(() => toast.success(`已取消 ${r.cancelled} 个再平衡任务`)))
+                      .catch((e) => toast.error(e instanceof Error ? e.message : '取消失败'))
                   }
                 >
                   取消集群再平衡

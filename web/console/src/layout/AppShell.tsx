@@ -51,26 +51,19 @@ const navGroups: NavGroup[] = [
     ]
   },
   {
-    label: '集群运维',
-    items: [
-      { to: '/operations', label: '集群运维', icon: IconOperations, permission: 'cluster:write' },
-      { to: '/raft', label: 'Raft 管理', icon: IconRaft, permission: 'cluster:read' },
-      { to: '/storage', label: '存储治理', icon: IconStorage, permission: 'cluster:read' }
-    ]
-  },
-  {
-    label: '身份与多租户',
-    items: [
-      { to: '/tenants', label: '租户管理', icon: IconTenants, permission: 'cluster:read' },
-      { to: '/iam', label: '身份与访问', icon: IconIam, permission: 'iam:read' }
-    ]
-  },
-  {
     label: '数据面',
     items: [
       { to: '/buckets', label: '桶治理', icon: IconBuckets, permission: 'bucket:read' },
       { to: '/objects', label: '对象浏览器', icon: IconObjects, permission: 'bucket:read' },
       { to: '/replication', label: '复制与容灾', icon: IconReplication, permission: 'replication:read' }
+    ]
+  },
+  {
+    label: '集群运维',
+    items: [
+      { to: '/operations', label: '集群运维', icon: IconOperations, permission: 'cluster:write' },
+      { to: '/raft', label: 'Raft 管理', icon: IconRaft, permission: 'cluster:read' },
+      { to: '/storage', label: '存储治理', icon: IconStorage, permission: 'cluster:read' }
     ]
   },
   {
@@ -81,6 +74,13 @@ const navGroups: NavGroup[] = [
       { to: '/config', label: '配置中心', icon: IconConfig, permission: 'cluster:read' },
       { to: '/audit', label: '审计', icon: IconAudit, permission: 'audit:read' },
       { to: '/jobs', label: '任务', icon: IconJobs, permission: 'jobs:read' }
+    ]
+  },
+  {
+    label: '身份与多租户',
+    items: [
+      { to: '/tenants', label: '租户管理', icon: IconTenants, permission: 'cluster:read' },
+      { to: '/iam', label: '身份与访问', icon: IconIam, permission: 'iam:read' }
     ]
   }
 ];

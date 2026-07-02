@@ -19,7 +19,7 @@ type IamPageProps = {
 
 export function IamPage({ client }: IamPageProps) {
   const confirm = useConfirm();
-  const showSuccess = useToast();
+  const toast = useToast();
   const [users, setUsers] = useState<IamUser[]>([]);
   const [groups, setGroups] = useState<IamGroup[]>([]);
   const [policies, setPolicies] = useState<IamPolicy[]>([]);
@@ -27,7 +27,6 @@ export function IamPage({ client }: IamPageProps) {
   const [stsSessions, setStsSessions] = useState<StsSession[]>([]);
   const [consoleSessions, setConsoleSessions] = useState<ConsoleSession[]>([]);
   const [summary, setSummary] = useState<SystemMetricsSummary | null>(null);
-  const [error, setError] = useState('');
 
   const [userForm, setUserForm] = useState({
     username: '',
@@ -83,7 +82,7 @@ export function IamPage({ client }: IamPageProps) {
 
   useEffect(() => {
     reloadAll().catch((requestError) => {
-      setError(requestError instanceof Error ? requestError.message : '加载 IAM 失败');
+      toast.error(requestError instanceof Error ? requestError.message : '加载 IAM 失败');
     });
   }, [client]);
 
@@ -92,7 +91,6 @@ export function IamPage({ client }: IamPageProps) {
       <article className="rounded-2xl border border-outline/60 bg-surface-container/70 p-4">
         <h1 className="font-heading text-2xl text-on-surface">身份与访问</h1>
         <p className="mt-1 text-sm text-muted">用户、组、策略、服务账号、控制台会话、STS 会话管理。</p>
-        {error ? <p className="mt-3 text-sm text-error">{toBilingualPrompt(error)}</p> : null}
         {summary ? (
           <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             <div className="rounded-lg border border-outline/60 bg-surface-container-high p-3 text-sm text-muted">
@@ -126,14 +124,13 @@ export function IamPage({ client }: IamPageProps) {
           onSubmit={async (event) => {
             event.preventDefault();
             setBusy(true);
-            setError('');
             try {
               await iamService.createUser(client, userForm);
-              showSuccess(`用户 ${userForm.username} 创建成功`);
+              toast.success(`用户 ${userForm.username} 创建成功`);
               setUserForm({ username: '', display_name: '', password: '', role: 'viewer' });
               await reloadAll();
             } catch (requestError) {
-              setError(requestError instanceof Error ? requestError.message : '创建用户失败');
+              toast.error(requestError instanceof Error ? requestError.message : '创建用户失败');
             } finally {
               setBusy(false);
             }
@@ -173,13 +170,9 @@ export function IamPage({ client }: IamPageProps) {
               <option value="operator">operator</option>
               <option value="admin">admin</option>
             </select>
-            <button
-              type="submit"
-              disabled={busy}
-              className="h-11 rounded-md bg-primary px-4 text-sm font-medium text-on-surface disabled:opacity-60"
-            >
+            <Button type="submit" variant="primary" loading={busy}>
               创建
-            </button>
+            </Button>
           </div>
         </form>
         <div className="mt-3 overflow-hidden rounded-lg border border-outline/60">
@@ -203,49 +196,50 @@ export function IamPage({ client }: IamPageProps) {
                   <td className="px-3 py-2">
                     <div className="flex gap-2">
                       {user.enabled ? (
-                        <button
-                          className="rounded-md border border-warning/40 px-2 py-1 text-xs text-warning hover:bg-warning/10 disabled:opacity-60"
-                          disabled={userActionKey === `${user.username}:disable`}
+                        <Button
+                          variant="danger"
+                          size="sm"
+                          loading={userActionKey === `${user.username}:disable`}
                           onClick={async () => {
                             if (!await confirm(`确认禁用用户 ${user.username}？`)) return;
-                            setError('');
                             setUserActionKey(`${user.username}:disable`);
                             try {
                               await iamService.disableUser(client, user.username);
-                              showSuccess(`用户 ${user.username} 已禁用`);
+                              toast.success(`用户 ${user.username} 已禁用`);
                               await reloadAll();
                             } catch (requestError) {
-                              setError(requestError instanceof Error ? requestError.message : '禁用用户失败');
+                              toast.error(requestError instanceof Error ? requestError.message : '禁用用户失败');
                             } finally {
                               setUserActionKey('');
                             }
                           }}
                         >
-                          {userActionKey === `${user.username}:disable` ? '处理中...' : '禁用'}
-                        </button>
+                          禁用
+                        </Button>
                       ) : (
-                        <button
-                          className="rounded-md border border-primary/40 px-2 py-1 text-xs text-primary hover:bg-primary/10 disabled:opacity-60"
-                          disabled={userActionKey === `${user.username}:enable`}
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          loading={userActionKey === `${user.username}:enable`}
                           onClick={async () => {
-                            setError('');
                             setUserActionKey(`${user.username}:enable`);
                             try {
                               await iamService.enableUser(client, user.username);
-                              showSuccess(`用户 ${user.username} 已启用`);
+                              toast.success(`用户 ${user.username} 已启用`);
                               await reloadAll();
                             } catch (requestError) {
-                              setError(requestError instanceof Error ? requestError.message : '启用用户失败');
+                              toast.error(requestError instanceof Error ? requestError.message : '启用用户失败');
                             } finally {
                               setUserActionKey('');
                             }
                           }}
                         >
-                          {userActionKey === `${user.username}:enable` ? '处理中...' : '启用'}
-                        </button>
+                          启用
+                        </Button>
                       )}
-                      <button
-                        className="rounded-md border border-primary/40 px-2 py-1 text-xs text-primary hover:bg-primary/10 disabled:opacity-60"
+                      <Button
+                        variant="secondary"
+                        size="sm"
                         onClick={() => {
                           setResetTarget(user.username);
                           setResetPasswordValue('');
@@ -253,27 +247,27 @@ export function IamPage({ client }: IamPageProps) {
                         }}
                       >
                         重置密码
-                      </button>
-                      <button
-                        className="rounded-md border border-error/40 px-2 py-1 text-xs text-error hover:bg-error/10 disabled:opacity-60"
-                        disabled={userActionKey === `${user.username}:delete`}
+                      </Button>
+                      <Button
+                        variant="danger"
+                        size="sm"
+                        loading={userActionKey === `${user.username}:delete`}
                         onClick={async () => {
                           if (!await confirm(`确认删除用户 ${user.username}？相关会话与归属账号将被清理。`)) return;
-                          setError('');
                           setUserActionKey(`${user.username}:delete`);
                           try {
                             await iamService.deleteUser(client, user.username);
-                            showSuccess(`用户 ${user.username} 已删除`);
+                            toast.success(`用户 ${user.username} 已删除`);
                             await reloadAll();
                           } catch (requestError) {
-                            setError(requestError instanceof Error ? requestError.message : '删除用户失败');
+                            toast.error(requestError instanceof Error ? requestError.message : '删除用户失败');
                           } finally {
                             setUserActionKey('');
                           }
                         }}
                       >
-                        {userActionKey === `${user.username}:delete` ? '删除中...' : '删除'}
-                      </button>
+                        删除
+                      </Button>
                     </div>
                   </td>
                 </tr>
@@ -290,14 +284,13 @@ export function IamPage({ client }: IamPageProps) {
           onSubmit={async (event) => {
             event.preventDefault();
             setBusy(true);
-            setError('');
             try {
               await iamService.createGroup(client, groupForm);
-              showSuccess(`组 ${groupForm.name} 创建成功`);
+              toast.success(`组 ${groupForm.name} 创建成功`);
               setGroupForm({ name: '' });
               await reloadAll();
             } catch (requestError) {
-              setError(requestError instanceof Error ? requestError.message : '创建组失败');
+              toast.error(requestError instanceof Error ? requestError.message : '创建组失败');
             } finally {
               setBusy(false);
             }
@@ -310,13 +303,9 @@ export function IamPage({ client }: IamPageProps) {
             placeholder="组名"
             className="h-11 flex-1 rounded-md border border-outline/60 bg-surface-lowest px-3 text-on-surface"
           />
-          <button
-            type="submit"
-            disabled={busy}
-            className="h-11 rounded-md bg-primary px-4 text-sm font-medium text-on-surface disabled:opacity-60"
-          >
+          <Button type="submit" variant="primary" loading={busy}>
             创建组
-          </button>
+          </Button>
         </form>
         <div className="mt-3 space-y-3">
           {groups.map((group) => (
@@ -332,16 +321,15 @@ export function IamPage({ client }: IamPageProps) {
                   group.members.map((member) => (
                     <button
                       key={member}
-                      className="rounded-full border border-outline/60 px-2 py-1 text-xs text-on-surface hover:bg-on-surface/5"
+                      className="rounded-full border border-error/40 px-2 py-1 text-xs text-error hover:bg-error/10"
                       onClick={async () => {
                         if (!await confirm(`确认将 ${member} 从组 ${group.name} 移除？`)) return;
-                        setError('');
                         try {
                           await iamService.removeGroupMember(client, group.name, member);
-                          showSuccess(`已将 ${member} 从 ${group.name} 移除`);
+                          toast.success(`已将 ${member} 从 ${group.name} 移除`);
                           await reloadAll();
                         } catch (requestError) {
-                          setError(requestError instanceof Error ? requestError.message : '移除成员失败');
+                          toast.error(requestError instanceof Error ? requestError.message : '移除成员失败');
                         }
                       }}
                     >
@@ -359,27 +347,27 @@ export function IamPage({ client }: IamPageProps) {
                   placeholder="新增成员用户名"
                   className="h-10 flex-1 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
                 />
-                <button
-                  className="h-10 rounded-md border border-outline/60 px-3 text-sm text-on-surface hover:bg-on-surface/5"
+                <Button
+                  variant="secondary"
+                  size="sm"
                   onClick={async () => {
                     const username = (groupMemberDraft[group.name] ?? '').trim();
                     if (!username) {
-                      setError('成员用户名不能为空');
+                      toast.error('成员用户名不能为空');
                       return;
                     }
-                    setError('');
                     try {
                       await iamService.addGroupMember(client, group.name, { username });
                       setGroupMemberDraft((current) => ({ ...current, [group.name]: '' }));
-                      showSuccess(`成员 ${username} 已加入组 ${group.name}`);
+                      toast.success(`成员 ${username} 已加入组 ${group.name}`);
                       await reloadAll();
                     } catch (requestError) {
-                      setError(requestError instanceof Error ? requestError.message : '添加成员失败');
+                      toast.error(requestError instanceof Error ? requestError.message : '添加成员失败');
                     }
                   }}
                 >
                   添加成员
-                </button>
+                </Button>
               </div>
             </article>
           ))}
@@ -393,21 +381,20 @@ export function IamPage({ client }: IamPageProps) {
           onSubmit={async (event) => {
             event.preventDefault();
             setBusy(true);
-            setError('');
             try {
               const document = JSON.parse(policyForm.document) as Record<string, unknown>;
               await iamService.createPolicy(client, {
                 name: policyForm.name,
                 document
               });
-              showSuccess(`策略 ${policyForm.name} 创建成功`);
+              toast.success(`策略 ${policyForm.name} 创建成功`);
               setPolicyForm({
                 name: '',
                 document: '{\n  "Version": "2012-10-17",\n  "Statement": []\n}'
               });
               await reloadAll();
             } catch (requestError) {
-              setError(requestError instanceof Error ? requestError.message : '创建策略失败');
+              toast.error(requestError instanceof Error ? requestError.message : '创建策略失败');
             } finally {
               setBusy(false);
             }
@@ -426,13 +413,9 @@ export function IamPage({ client }: IamPageProps) {
             onChange={(event) => setPolicyForm((current) => ({ ...current, document: event.target.value }))}
             className="h-32 rounded-md border border-outline/60 bg-surface-lowest px-3 py-2 text-sm text-on-surface"
           />
-          <button
-            type="submit"
-            disabled={busy}
-            className="h-11 rounded-md bg-primary px-4 text-sm font-medium text-on-surface disabled:opacity-60"
-          >
+          <Button type="submit" variant="primary" loading={busy}>
             创建策略
-          </button>
+          </Button>
         </form>
         <div className="mt-3 space-y-3">
           {policies.map((policy) => (
@@ -453,46 +436,46 @@ export function IamPage({ client }: IamPageProps) {
                   placeholder="principal（用户名或组名）"
                   className="h-10 flex-1 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
                 />
-                <button
-                  className="h-10 rounded-md border border-outline/60 px-3 text-sm text-on-surface hover:bg-on-surface/5"
+                <Button
+                  variant="secondary"
+                  size="sm"
                   onClick={async () => {
                     const principal = (policyPrincipalDraft[policy.name] ?? '').trim();
                     if (!principal) {
-                      setError('principal 不能为空');
+                      toast.error('principal 不能为空');
                       return;
                     }
-                    setError('');
                     try {
                       await iamService.attachPolicy(client, policy.name, { principal });
-                      showSuccess(`策略 ${policy.name} 已挂载到 ${principal}`);
+                      toast.success(`策略 ${policy.name} 已挂载到 ${principal}`);
                       await reloadAll();
                     } catch (requestError) {
-                      setError(requestError instanceof Error ? requestError.message : '挂载策略失败');
+                      toast.error(requestError instanceof Error ? requestError.message : '挂载策略失败');
                     }
                   }}
                 >
                   挂载
-                </button>
-                <button
-                  className="h-10 rounded-md border border-outline/60 px-3 text-sm text-on-surface hover:bg-on-surface/5"
+                </Button>
+                <Button
+                  variant="danger"
+                  size="sm"
                   onClick={async () => {
                     const principal = (policyPrincipalDraft[policy.name] ?? '').trim();
                     if (!principal) {
-                      setError('principal 不能为空');
+                      toast.error('principal 不能为空');
                       return;
                     }
-                    setError('');
                     try {
                       await iamService.detachPolicy(client, policy.name, { principal });
-                      showSuccess(`策略 ${policy.name} 已从 ${principal} 解绑`);
+                      toast.success(`策略 ${policy.name} 已从 ${principal} 解绑`);
                       await reloadAll();
                     } catch (requestError) {
-                      setError(requestError instanceof Error ? requestError.message : '解绑策略失败');
+                      toast.error(requestError instanceof Error ? requestError.message : '解绑策略失败');
                     }
                   }}
                 >
                   解绑
-                </button>
+                </Button>
               </div>
             </article>
           ))}
@@ -506,13 +489,12 @@ export function IamPage({ client }: IamPageProps) {
             className="mt-3 flex gap-2"
             onSubmit={async (event) => {
               event.preventDefault();
-              setError('');
               try {
                 await iamService.createServiceAccount(client, serviceForm);
-                showSuccess(`服务账号已为 ${serviceForm.owner} 创建`);
+                toast.success(`服务账号已为 ${serviceForm.owner} 创建`);
                 await reloadAll();
               } catch (requestError) {
-                setError(requestError instanceof Error ? requestError.message : '创建服务账号失败');
+                toast.error(requestError instanceof Error ? requestError.message : '创建服务账号失败');
               }
             }}
           >
@@ -527,7 +509,9 @@ export function IamPage({ client }: IamPageProps) {
                 </option>
               ))}
             </select>
-            <button className="h-10 rounded-md bg-primary px-3 text-sm text-on-surface">创建</button>
+            <Button type="submit" variant="primary" size="sm">
+              创建
+            </Button>
           </form>
           <div className="mt-3 space-y-2">
             {serviceAccounts.map((account) => (
@@ -539,22 +523,22 @@ export function IamPage({ client }: IamPageProps) {
                   <p className="font-mono text-xs text-primary">{account.access_key}</p>
                   <p className="text-xs text-muted">Owner: {account.owner}</p>
                 </div>
-                <button
-                  className="rounded-md border border-error/40 px-2 py-1 text-xs text-error hover:bg-error/10"
+                <Button
+                  variant="danger"
+                  size="sm"
                   onClick={async () => {
                     if (!await confirm(`确认删除服务账号 ${account.access_key}？`)) return;
-                    setError('');
                     try {
                       await iamService.deleteServiceAccount(client, account.access_key);
-                      showSuccess(`服务账号 ${account.access_key} 已删除`);
+                      toast.success(`服务账号 ${account.access_key} 已删除`);
                       await reloadAll();
                     } catch (requestError) {
-                      setError(requestError instanceof Error ? requestError.message : '删除服务账号失败');
+                      toast.error(requestError instanceof Error ? requestError.message : '删除服务账号失败');
                     }
                   }}
                 >
                   删除
-                </button>
+                </Button>
               </div>
             ))}
           </div>
@@ -582,23 +566,23 @@ export function IamPage({ client }: IamPageProps) {
                     访问到期 {new Date(session.access_expires_at).toLocaleString()} · 状态 {session.status}
                   </p>
                 </div>
-                <button
-                  className="rounded-md border border-error/40 px-2 py-1 text-xs text-error hover:bg-error/10 disabled:opacity-60"
+                <Button
+                  variant="danger"
+                  size="sm"
                   disabled={session.status !== 'active'}
                   onClick={async () => {
                     if (!await confirm(`确认回收控制台会话 ${session.session_id}？`)) return;
-                    setError('');
                     try {
                       await iamService.deleteConsoleSession(client, session.session_id);
-                      showSuccess(`控制台会话 ${session.session_id} 已回收`);
+                      toast.success(`控制台会话 ${session.session_id} 已回收`);
                       await reloadAll();
                     } catch (requestError) {
-                      setError(requestError instanceof Error ? requestError.message : '回收控制台会话失败');
+                      toast.error(requestError instanceof Error ? requestError.message : '回收控制台会话失败');
                     }
                   }}
                 >
                   {session.status === 'active' ? '回收' : '已回收'}
-                </button>
+                </Button>
               </div>
             ))}
           </div>
@@ -610,13 +594,12 @@ export function IamPage({ client }: IamPageProps) {
             className="mt-3 grid gap-2"
             onSubmit={async (event) => {
               event.preventDefault();
-              setError('');
               try {
                 await iamService.createStsSession(client, stsForm);
-                showSuccess(`已为 ${stsForm.principal} 创建 STS 会话`);
+                toast.success(`已为 ${stsForm.principal} 创建 STS 会话`);
                 await reloadAll();
               } catch (requestError) {
-                setError(requestError instanceof Error ? requestError.message : '创建 STS 会话失败');
+                toast.error(requestError instanceof Error ? requestError.message : '创建 STS 会话失败');
               }
             }}
           >
@@ -641,7 +624,9 @@ export function IamPage({ client }: IamPageProps) {
               }
               className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
             />
-            <button className="h-10 rounded-md bg-primary px-3 text-sm text-on-surface">创建会话</button>
+            <Button type="submit" variant="primary" size="sm">
+              创建会话
+            </Button>
           </form>
           <div className="mt-3 space-y-2">
             {stsSessions.map((session) => (
@@ -664,22 +649,22 @@ export function IamPage({ client }: IamPageProps) {
                     会话策略：{session.session_policy ? '已收敛' : '无'}
                   </p>
                 </div>
-                <button
-                  className="rounded-md border border-error/40 px-2 py-1 text-xs text-error hover:bg-error/10"
+                <Button
+                  variant="danger"
+                  size="sm"
                   onClick={async () => {
                     if (!await confirm(`确认回收 STS 会话 ${session.session_id}？`)) return;
-                    setError('');
                     try {
                       await iamService.deleteStsSession(client, session.session_id);
-                      showSuccess(`STS 会话 ${session.session_id} 已回收`);
+                      toast.success(`STS 会话 ${session.session_id} 已回收`);
                       await reloadAll();
                     } catch (requestError) {
-                      setError(requestError instanceof Error ? requestError.message : '回收 STS 会话失败');
+                      toast.error(requestError instanceof Error ? requestError.message : '回收 STS 会话失败');
                     }
                   }}
                 >
                   回收
-                </button>
+                </Button>
               </div>
             ))}
           </div>
@@ -711,7 +696,7 @@ export function IamPage({ client }: IamPageProps) {
                   await iamService.resetUserPassword(client, resetTarget, {
                     new_password: resetPasswordValue
                   });
-                  showSuccess(`用户 ${resetTarget} 密码已重置`);
+                  toast.success(`用户 ${resetTarget} 密码已重置`);
                   setResetTarget(null);
                   await reloadAll();
                 } catch (requestError) {

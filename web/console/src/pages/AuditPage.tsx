@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import { toBilingualPrompt } from '../utils/bilingual';
 import { ApiClient } from '../api/client';
 import { auditService } from '../api/services';
 import type { AuditEvent } from '../types';
@@ -52,16 +51,14 @@ function outcomeTone(outcome: string): BadgeTone {
 }
 
 export function AuditPage({ client }: AuditPageProps) {
-  const showSuccess = useToast();
+  const toast = useToast();
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const [limit, setLimit] = useState(200);
   const [filters, setFilters] = useState<AuditFilters>(EMPTY_FILTERS);
-  const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
   async function reload(nextLimit = limit, nextFilters = filters) {
     setLoading(true);
-    setError('');
     const rows = await auditService.events(client, {
       limit: nextLimit,
       actor: nextFilters.actor || undefined,
@@ -79,7 +76,7 @@ export function AuditPage({ client }: AuditPageProps) {
   useEffect(() => {
     reload().catch((requestError) => {
       setLoading(false);
-      setError(requestError instanceof Error ? requestError.message : '加载审计事件失败');
+      toast.error(requestError instanceof Error ? requestError.message : '加载审计事件失败');
     });
   }, [client]);
 
@@ -101,7 +98,7 @@ export function AuditPage({ client }: AuditPageProps) {
                   try {
                     await reload(value, filters);
                   } catch (requestError) {
-                    setError(requestError instanceof Error ? requestError.message : '刷新审计事件失败');
+                    toast.error(requestError instanceof Error ? requestError.message : '刷新审计事件失败');
                   }
                 }}
               >
@@ -118,7 +115,7 @@ export function AuditPage({ client }: AuditPageProps) {
                 try {
                   await reload();
                 } catch (requestError) {
-                  setError(requestError instanceof Error ? requestError.message : '刷新审计事件失败');
+                  toast.error(requestError instanceof Error ? requestError.message : '刷新审计事件失败');
                 }
               }}
             >
@@ -127,7 +124,6 @@ export function AuditPage({ client }: AuditPageProps) {
             <Button
               variant="primary"
               onClick={async () => {
-                setError('');
                 try {
                   const content = await auditService.exportEvents(client);
                   const blob = new Blob([content], { type: 'application/json' });
@@ -139,9 +135,9 @@ export function AuditPage({ client }: AuditPageProps) {
                   link.click();
                   document.body.removeChild(link);
                   URL.revokeObjectURL(url);
-                  showSuccess('审计文件已导出');
+                  toast.success('审计文件已导出');
                 } catch (requestError) {
-                  setError(requestError instanceof Error ? requestError.message : '导出审计文件失败');
+                  toast.error(requestError instanceof Error ? requestError.message : '导出审计文件失败');
                 }
               }}
             >
@@ -203,11 +199,10 @@ export function AuditPage({ client }: AuditPageProps) {
             <Button
               variant="primary"
               onClick={async () => {
-                setError('');
                 try {
                   await reload();
                 } catch (requestError) {
-                  setError(requestError instanceof Error ? requestError.message : '检索审计事件失败');
+                  toast.error(requestError instanceof Error ? requestError.message : '检索审计事件失败');
                 }
               }}
             >
@@ -218,11 +213,10 @@ export function AuditPage({ client }: AuditPageProps) {
               onClick={async () => {
                 const reset = { ...EMPTY_FILTERS };
                 setFilters(reset);
-                setError('');
                 try {
                   await reload(limit, reset);
                 } catch (requestError) {
-                  setError(requestError instanceof Error ? requestError.message : '清空筛选失败');
+                  toast.error(requestError instanceof Error ? requestError.message : '清空筛选失败');
                 }
               }}
             >
@@ -232,7 +226,6 @@ export function AuditPage({ client }: AuditPageProps) {
         </div>
       </Card>
 
-      {error ? <p className="text-sm text-error">{toBilingualPrompt(error)}</p> : null}
       {loading ? <p className="text-sm text-muted">加载中...</p> : null}
 
       <Card className="p-0">

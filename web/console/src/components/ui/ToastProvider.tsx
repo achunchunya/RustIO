@@ -1,13 +1,31 @@
-import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Dialog } from './Dialog';
-import { IconCheck } from './icons';
-import { toBilingualNotice } from '../../utils/bilingual';
+import { Button } from './Button';
+import { IconCheck, IconWarning } from './icons';
+import { toBilingualNotice, toBilingualPrompt } from '../../utils/bilingual';
 
-/** 全局成功提示:居中弹窗 + 绿色对勾,默认约 2.5s 自动消失,也可点击遮罩关闭。 */
-const ToastContext = createContext<(message: string) => void>(() => {});
+type ToastKind = 'success' | 'error';
 
+type ToastState = {
+  kind: ToastKind;
+  message: string;
+};
+
+export type ToastApi = {
+  /** 成功提示:居中弹窗,约 2.5s 自动消失,也可点击"确认"提前关闭。 */
+  success: (message: string) => void;
+  /** 失败提示:居中弹窗,不自动消失,须点击"确认"关闭。 */
+  error: (message: string) => void;
+};
+
+const noop: ToastApi = { success: () => {}, error: () => {} };
+const ToastContext = createContext<ToastApi>(noop);
+
+const AUTO_DISMISS_MS = 2500;
+
+/** 全局提示弹窗:成功(绿色对勾,自动消失+可提前确认关闭)与失败(黄色警示,须手动确认关闭)。 */
 export function ToastProvider({ children }: { children: ReactNode }) {
-  const [message, setMessage] = useState<string | null>(null);
+  const [toast, setToast] = useState<ToastState | null>(null);
   const timerRef = useRef<number | null>(null);
 
   const clearTimer = useCallback(() => {
@@ -19,30 +37,49 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
   const close = useCallback(() => {
     clearTimer();
-    setMessage(null);
+    setToast(null);
   }, [clearTimer]);
 
-  const showSuccess = useCallback(
+  const success = useCallback(
     (text: string) => {
       clearTimer();
-      setMessage(toBilingualNotice(text));
+      setToast({ kind: 'success', message: toBilingualNotice(text) });
       timerRef.current = window.setTimeout(() => {
         timerRef.current = null;
-        setMessage(null);
-      }, 2500);
+        setToast(null);
+      }, AUTO_DISMISS_MS);
     },
     [clearTimer]
   );
 
+  const error = useCallback(
+    (text: string) => {
+      clearTimer();
+      setToast({ kind: 'error', message: toBilingualPrompt(text) });
+    },
+    [clearTimer]
+  );
+
+  const api = useMemo(() => ({ success, error }), [success, error]);
+
   return (
-    <ToastContext.Provider value={showSuccess}>
+    <ToastContext.Provider value={api}>
       {children}
-      <Dialog open={!!message} onClose={close} className="max-w-sm">
+      <Dialog open={!!toast} onClose={close} className="max-w-sm">
         <div className="flex flex-col items-center gap-3 py-2 text-center">
-          <span className="grid h-12 w-12 place-items-center rounded-full bg-primary/10 text-primary">
-            <IconCheck size={26} />
+          <span
+            className={
+              toast?.kind === 'error'
+                ? 'grid h-12 w-12 place-items-center rounded-full bg-error/10 text-error'
+                : 'grid h-12 w-12 place-items-center rounded-full bg-primary/10 text-primary'
+            }
+          >
+            {toast?.kind === 'error' ? <IconWarning size={26} /> : <IconCheck size={26} />}
           </span>
-          <p className="whitespace-pre-wrap text-sm font-medium text-on-surface">{message}</p>
+          <p className="whitespace-pre-wrap text-sm font-medium text-on-surface">{toast?.message}</p>
+          <Button variant={toast?.kind === 'error' ? 'danger' : 'primary'} size="sm" onClick={close}>
+            确认
+          </Button>
         </div>
       </Dialog>
     </ToastContext.Provider>

@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import { toBilingualPrompt } from '../utils/bilingual';
 import { ApiClient } from '../api/client';
 import { clusterService } from '../api/services';
 import { ConfirmActionDialog } from '../components/ConfirmActionDialog';
@@ -12,8 +11,7 @@ type OperationsPageProps = {
 
 export function OperationsPage({ client }: OperationsPageProps) {
   const [nodes, setNodes] = useState<ClusterNode[]>([]);
-  const [error, setError] = useState('');
-  const showSuccess = useToast();
+  const toast = useToast();
   const [latestDiagnostic, setLatestDiagnostic] = useState<DiagnosticReport | null>(null);
   const [creatingDiagnostic, setCreatingDiagnostic] = useState(false);
 
@@ -24,7 +22,7 @@ export function OperationsPage({ client }: OperationsPageProps) {
 
   useEffect(() => {
     reload().catch((requestError) => {
-      setError(requestError instanceof Error ? requestError.message : '加载节点失败');
+      toast.error(requestError instanceof Error ? requestError.message : '加载节点失败');
     });
   }, [client]);
 
@@ -40,13 +38,12 @@ export function OperationsPage({ client }: OperationsPageProps) {
             disabled={creatingDiagnostic}
             onClick={async () => {
               setCreatingDiagnostic(true);
-              setError('');
               try {
                 const report = await clusterService.createDiagnostic(client);
                 setLatestDiagnostic(report);
-                showSuccess(`诊断报告已生成：${report.id}`);
+                toast.success(`诊断报告已生成：${report.id}`);
               } catch (requestError) {
-                setError(requestError instanceof Error ? requestError.message : '生成诊断报告失败');
+                toast.error(requestError instanceof Error ? requestError.message : '生成诊断报告失败');
               } finally {
                 setCreatingDiagnostic(false);
               }
@@ -58,7 +55,6 @@ export function OperationsPage({ client }: OperationsPageProps) {
       />
 
       <Card>
-        {error ? <p className="text-sm text-error">{toBilingualPrompt(error)}</p> : null}
         {latestDiagnostic ? (
           <p className="mt-2 text-xs text-muted">
             最近报告：{latestDiagnostic.summary}（{new Date(latestDiagnostic.created_at).toLocaleString()}）
@@ -87,13 +83,12 @@ export function OperationsPage({ client }: OperationsPageProps) {
                     description="在集群降级场景下可能影响写入法定仲裁，请谨慎操作。"
                     actionLabel="执行下线"
                     onConfirm={async (reason) => {
-                      setError('');
                       try {
                         await clusterService.setNodeOffline(client, node.id, reason);
-                        showSuccess(`节点 ${node.hostname} 已下线`);
+                        toast.success(`节点 ${node.hostname} 已下线`);
                         await reload();
                       } catch (requestError) {
-                        setError(requestError instanceof Error ? requestError.message : '下线节点失败');
+                        toast.error(requestError instanceof Error ? requestError.message : '下线节点失败');
                         throw requestError;
                       }
                     }}
@@ -104,13 +99,12 @@ export function OperationsPage({ client }: OperationsPageProps) {
                     description="节点会重新加入集群并触发同步流程。"
                     actionLabel="执行上线"
                     onConfirm={async (reason) => {
-                      setError('');
                       try {
                         await clusterService.setNodeOnline(client, node.id, reason);
-                        showSuccess(`节点 ${node.hostname} 已上线`);
+                        toast.success(`节点 ${node.hostname} 已上线`);
                         await reload();
                       } catch (requestError) {
-                        setError(requestError instanceof Error ? requestError.message : '上线节点失败');
+                        toast.error(requestError instanceof Error ? requestError.message : '上线节点失败');
                         throw requestError;
                       }
                     }}

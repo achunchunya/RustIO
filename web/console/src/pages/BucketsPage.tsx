@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from 'react';
-import { toBilingualPrompt } from '../utils/bilingual';
 import { ApiClient } from '../api/client';
 import { bucketService } from '../api/services';
 import {
@@ -302,10 +301,9 @@ function normalizeLifecycleRuleDraft(draft: LifecycleRuleDraft): BucketLifecycle
 
 export function BucketsPage({ client }: BucketsPageProps) {
   const confirm = useConfirm();
-  const showSuccess = useToast();
+  const toast = useToast();
   const [buckets, setBuckets] = useState<BucketSpec[]>([]);
   const [usage, setUsage] = useState<Record<string, BucketUsageStats>>({});
-  const [error, setError] = useState('');
   const [creating, setCreating] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedBucket, setSelectedBucket] = useState('');
@@ -458,7 +456,7 @@ export function BucketsPage({ client }: BucketsPageProps) {
 
   useEffect(() => {
     reload().catch((requestError) => {
-      setError(requestError instanceof Error ? requestError.message : '加载桶列表失败');
+      toast.error(requestError instanceof Error ? requestError.message : '加载桶列表失败');
     });
   }, [client]);
 
@@ -512,14 +510,13 @@ export function BucketsPage({ client }: BucketsPageProps) {
             onClick={async () => {
               if (!await confirm(`确认删除桶 ${bucket.name}？仅允许删除空桶。`)) return;
               setSavingKey(`${bucket.name}:delete`);
-              setError('');
               try {
                 await bucketService.deleteBucket(client, bucket.name);
-                showSuccess(`桶 ${bucket.name} 已删除`);
+                toast.success(`桶 ${bucket.name} 已删除`);
                 setSelectedBucket('');
                 await reload();
               } catch (requestError) {
-                setError(requestError instanceof Error ? requestError.message : '删除桶失败');
+                toast.error(requestError instanceof Error ? requestError.message : '删除桶失败');
               } finally {
                 setSavingKey('');
               }
@@ -712,9 +709,8 @@ export function BucketsPage({ client }: BucketsPageProps) {
                       ...current,
                       [bucket.name]: defaultLifecycleRuleDraft()
                     }));
-                    setError('');
                   } catch (requestError) {
-                    setError(
+                    toast.error(
                       requestError instanceof Error ? requestError.message : '新增生命周期规则失败'
                     );
                   }
@@ -731,7 +727,6 @@ export function BucketsPage({ client }: BucketsPageProps) {
               loading={savingKey === `${bucket.name}:lifecycle`}
               onClick={async () => {
                 setSavingKey(`${bucket.name}:lifecycle`);
-                setError('');
                 try {
                   const payload = lifecycleRules.map(normalizeLifecycleRuleDraft);
                   const ids = new Set(payload.map((rule) => rule.id));
@@ -739,10 +734,10 @@ export function BucketsPage({ client }: BucketsPageProps) {
                     throw new Error('生命周期规则 ID 不能重复');
                   }
                   await bucketService.updateLifecycle(client, bucket.name, payload);
-                  showSuccess(`桶 ${bucket.name} 的生命周期规则已更新`);
+                  toast.success(`桶 ${bucket.name} 的生命周期规则已更新`);
                   await reload();
                 } catch (requestError) {
-                  setError(requestError instanceof Error ? requestError.message : '更新生命周期规则失败');
+                  toast.error(requestError instanceof Error ? requestError.message : '更新生命周期规则失败');
                 } finally {
                   setSavingKey('');
                 }
@@ -756,13 +751,12 @@ export function BucketsPage({ client }: BucketsPageProps) {
               onClick={async () => {
                 if (!await confirm(`确认清除桶 ${bucket.name} 的生命周期配置？`)) return;
                 setSavingKey(`${bucket.name}:lifecycle-clear`);
-                setError('');
                 try {
                   await bucketService.deleteLifecycle(client, bucket.name);
-                  showSuccess(`桶 ${bucket.name} 的生命周期配置已清除`);
+                  toast.success(`桶 ${bucket.name} 的生命周期配置已清除`);
                   await reload();
                 } catch (requestError) {
-                  setError(requestError instanceof Error ? requestError.message : '清除生命周期配置失败');
+                  toast.error(requestError instanceof Error ? requestError.message : '清除生命周期配置失败');
                 } finally {
                   setSavingKey('');
                 }
@@ -842,7 +836,6 @@ export function BucketsPage({ client }: BucketsPageProps) {
                 loading={savingKey === `${bucket.name}:governance`}
                 onClick={async () => {
                   setSavingKey(`${bucket.name}:governance`);
-                  setError('');
                   try {
                     await bucketService.updateGovernance(client, bucket.name, {
                       versioning: governanceDraft.versioning,
@@ -850,10 +843,10 @@ export function BucketsPage({ client }: BucketsPageProps) {
                       ilm_policy: governanceDraft.ilm_policy || undefined,
                       replication_policy: governanceDraft.replication_policy || undefined
                     });
-                    showSuccess(`桶 ${bucket.name} 基础治理已更新`);
+                    toast.success(`桶 ${bucket.name} 基础治理已更新`);
                     await reload();
                   } catch (requestError) {
-                    setError(requestError instanceof Error ? requestError.message : '更新基础治理失败');
+                    toast.error(requestError instanceof Error ? requestError.message : '更新基础治理失败');
                   } finally {
                     setSavingKey('');
                   }
@@ -921,13 +914,12 @@ export function BucketsPage({ client }: BucketsPageProps) {
                 loading={savingKey === `${bucket.name}:object-lock`}
                 onClick={async () => {
                   setSavingKey(`${bucket.name}:object-lock`);
-                  setError('');
                   try {
                     await bucketService.updateObjectLock(client, bucket.name, objectLock);
-                    showSuccess(`桶 ${bucket.name} 的 Object Lock 配置已更新`);
+                    toast.success(`桶 ${bucket.name} 的 Object Lock 配置已更新`);
                     await reload();
                   } catch (requestError) {
-                    setError(requestError instanceof Error ? requestError.message : '更新 Object Lock 失败');
+                    toast.error(requestError instanceof Error ? requestError.message : '更新 Object Lock 失败');
                   } finally {
                     setSavingKey('');
                   }
@@ -995,13 +987,12 @@ export function BucketsPage({ client }: BucketsPageProps) {
                 loading={savingKey === `${bucket.name}:retention`}
                 onClick={async () => {
                   setSavingKey(`${bucket.name}:retention`);
-                  setError('');
                   try {
                     await bucketService.updateRetention(client, bucket.name, retention);
-                    showSuccess(`桶 ${bucket.name} 的默认保留策略已更新`);
+                    toast.success(`桶 ${bucket.name} 的默认保留策略已更新`);
                     await reload();
                   } catch (requestError) {
-                    setError(requestError instanceof Error ? requestError.message : '更新默认保留失败');
+                    toast.error(requestError instanceof Error ? requestError.message : '更新默认保留失败');
                   } finally {
                     setSavingKey('');
                   }
@@ -1035,13 +1026,12 @@ export function BucketsPage({ client }: BucketsPageProps) {
                 loading={savingKey === `${bucket.name}:legal-hold`}
                 onClick={async () => {
                   setSavingKey(`${bucket.name}:legal-hold`);
-                  setError('');
                   try {
                     await bucketService.updateLegalHold(client, bucket.name, legalHold);
-                    showSuccess(`桶 ${bucket.name} 的法律保留已更新`);
+                    toast.success(`桶 ${bucket.name} 的法律保留已更新`);
                     await reload();
                   } catch (requestError) {
-                    setError(requestError instanceof Error ? requestError.message : '更新法律保留失败');
+                    toast.error(requestError instanceof Error ? requestError.message : '更新法律保留失败');
                   } finally {
                     setSavingKey('');
                   }
@@ -1076,13 +1066,12 @@ export function BucketsPage({ client }: BucketsPageProps) {
                 loading={savingKey === `${bucket.name}:acl`}
                 onClick={async () => {
                   setSavingKey(`${bucket.name}:acl`);
-                  setError('');
                   try {
                     await bucketService.updateAcl(client, bucket.name, acl);
-                    showSuccess(`桶 ${bucket.name} ACL 已更新`);
+                    toast.success(`桶 ${bucket.name} ACL 已更新`);
                     await reload();
                   } catch (requestError) {
-                    setError(requestError instanceof Error ? requestError.message : '更新桶 ACL 失败');
+                    toast.error(requestError instanceof Error ? requestError.message : '更新桶 ACL 失败');
                   } finally {
                     setSavingKey('');
                   }
@@ -1161,17 +1150,16 @@ export function BucketsPage({ client }: BucketsPageProps) {
                   loading={savingKey === `${bucket.name}:pab`}
                   onClick={async () => {
                     setSavingKey(`${bucket.name}:pab`);
-                    setError('');
                     try {
                       await bucketService.updatePublicAccessBlock(
                         client,
                         bucket.name,
                         publicAccessBlock
                       );
-                      showSuccess(`桶 ${bucket.name} Public Access Block 已更新`);
+                      toast.success(`桶 ${bucket.name} Public Access Block 已更新`);
                       await reload();
                     } catch (requestError) {
-                      setError(
+                      toast.error(
                         requestError instanceof Error
                           ? requestError.message
                           : '更新 Public Access Block 失败'
@@ -1191,13 +1179,12 @@ export function BucketsPage({ client }: BucketsPageProps) {
                       return;
                     }
                     setSavingKey(`${bucket.name}:pab-clear`);
-                    setError('');
                     try {
                       await bucketService.deletePublicAccessBlock(client, bucket.name);
-                      showSuccess(`桶 ${bucket.name} Public Access Block 已清除`);
+                      toast.success(`桶 ${bucket.name} Public Access Block 已清除`);
                       await reload();
                     } catch (requestError) {
-                      setError(
+                      toast.error(
                         requestError instanceof Error
                           ? requestError.message
                           : '清除 Public Access Block 失败'
@@ -1237,20 +1224,19 @@ export function BucketsPage({ client }: BucketsPageProps) {
                 loading={savingKey === `${bucket.name}:policy`}
                 onClick={async () => {
                   setSavingKey(`${bucket.name}:policy`);
-                  setError('');
                   try {
                     const raw = policyText.trim();
                     if (!raw) {
                       await bucketService.deletePolicy(client, bucket.name);
-                      showSuccess(`桶 ${bucket.name} 的策略已清除`);
+                      toast.success(`桶 ${bucket.name} 的策略已清除`);
                     } else {
                       const parsed = JSON.parse(raw) as Record<string, unknown>;
                       await bucketService.updatePolicy(client, bucket.name, parsed);
-                      showSuccess(`桶 ${bucket.name} 的策略已更新`);
+                      toast.success(`桶 ${bucket.name} 的策略已更新`);
                     }
                     await reload();
                   } catch (requestError) {
-                    setError(requestError instanceof Error ? requestError.message : '更新策略失败');
+                    toast.error(requestError instanceof Error ? requestError.message : '更新策略失败');
                   } finally {
                     setSavingKey('');
                   }
@@ -1264,13 +1250,12 @@ export function BucketsPage({ client }: BucketsPageProps) {
                 onClick={async () => {
                   if (!await confirm(`确认清除桶 ${bucket.name} 的策略配置？`)) return;
                   setSavingKey(`${bucket.name}:policy-clear`);
-                  setError('');
                   try {
                     await bucketService.deletePolicy(client, bucket.name);
-                    showSuccess(`桶 ${bucket.name} 的策略已清除`);
+                    toast.success(`桶 ${bucket.name} 的策略已清除`);
                     await reload();
                   } catch (requestError) {
-                    setError(requestError instanceof Error ? requestError.message : '清除策略失败');
+                    toast.error(requestError instanceof Error ? requestError.message : '清除策略失败');
                   } finally {
                     setSavingKey('');
                   }
@@ -1338,19 +1323,18 @@ export function BucketsPage({ client }: BucketsPageProps) {
                   loading={savingKey === `${bucket.name}:encryption`}
                   onClick={async () => {
                     setSavingKey(`${bucket.name}:encryption`);
-                    setError('');
                     try {
                       if (!encryption.enabled) {
                         await bucketService.deleteEncryption(client, bucket.name);
-                        showSuccess(`桶 ${bucket.name} 的默认加密已关闭`);
+                        toast.success(`桶 ${bucket.name} 的默认加密已关闭`);
                       } else {
                         const payload = normalizeEncryptionDraft(encryption);
                         await bucketService.updateEncryption(client, bucket.name, payload);
-                        showSuccess(`桶 ${bucket.name} 的默认加密已更新`);
+                        toast.success(`桶 ${bucket.name} 的默认加密已更新`);
                       }
                       await reload();
                     } catch (requestError) {
-                      setError(requestError instanceof Error ? requestError.message : '更新默认加密失败');
+                      toast.error(requestError instanceof Error ? requestError.message : '更新默认加密失败');
                     } finally {
                       setSavingKey('');
                     }
@@ -1364,13 +1348,12 @@ export function BucketsPage({ client }: BucketsPageProps) {
                   onClick={async () => {
                     if (!await confirm(`确认删除桶 ${bucket.name} 的默认加密配置？`)) return;
                     setSavingKey(`${bucket.name}:encryption-clear`);
-                    setError('');
                     try {
                       await bucketService.deleteEncryption(client, bucket.name);
-                      showSuccess(`桶 ${bucket.name} 的默认加密已清除`);
+                      toast.success(`桶 ${bucket.name} 的默认加密已清除`);
                       await reload();
                     } catch (requestError) {
-                      setError(requestError instanceof Error ? requestError.message : '清除默认加密失败');
+                      toast.error(requestError instanceof Error ? requestError.message : '清除默认加密失败');
                     } finally {
                       setSavingKey('');
                     }
@@ -1586,9 +1569,8 @@ export function BucketsPage({ client }: BucketsPageProps) {
                       ...current,
                       [bucket.name]: defaultCorsRuleDraft()
                     }));
-                    setError('');
                   } catch (requestError) {
-                    setError(requestError instanceof Error ? requestError.message : '新增 CORS 规则失败');
+                    toast.error(requestError instanceof Error ? requestError.message : '新增 CORS 规则失败');
                   }
                 }}
               >
@@ -1603,14 +1585,13 @@ export function BucketsPage({ client }: BucketsPageProps) {
               loading={savingKey === `${bucket.name}:cors`}
               onClick={async () => {
                 setSavingKey(`${bucket.name}:cors`);
-                setError('');
                 try {
                   const payload = corsRules.map(normalizeCorsRuleDraft);
                   await bucketService.updateCors(client, bucket.name, payload);
-                  showSuccess(`桶 ${bucket.name} 的 CORS 规则已更新`);
+                  toast.success(`桶 ${bucket.name} 的 CORS 规则已更新`);
                   await reload();
                 } catch (requestError) {
-                  setError(requestError instanceof Error ? requestError.message : '更新 CORS 失败');
+                  toast.error(requestError instanceof Error ? requestError.message : '更新 CORS 失败');
                 } finally {
                   setSavingKey('');
                 }
@@ -1624,13 +1605,12 @@ export function BucketsPage({ client }: BucketsPageProps) {
               onClick={async () => {
                 if (!await confirm(`确认删除桶 ${bucket.name} 的 CORS 配置？`)) return;
                 setSavingKey(`${bucket.name}:cors-clear`);
-                setError('');
                 try {
                   await bucketService.deleteCors(client, bucket.name);
-                  showSuccess(`桶 ${bucket.name} 的 CORS 配置已清除`);
+                  toast.success(`桶 ${bucket.name} 的 CORS 配置已清除`);
                   await reload();
                 } catch (requestError) {
-                  setError(requestError instanceof Error ? requestError.message : '清除 CORS 失败');
+                  toast.error(requestError instanceof Error ? requestError.message : '清除 CORS 失败');
                 } finally {
                   setSavingKey('');
                 }
@@ -1738,9 +1718,8 @@ export function BucketsPage({ client }: BucketsPageProps) {
                       ...current,
                       [bucket.name]: defaultTagDraft()
                     }));
-                    setError('');
                   } catch (requestError) {
-                    setError(requestError instanceof Error ? requestError.message : '新增标签失败');
+                    toast.error(requestError instanceof Error ? requestError.message : '新增标签失败');
                   }
                 }}
               >
@@ -1755,14 +1734,13 @@ export function BucketsPage({ client }: BucketsPageProps) {
               loading={savingKey === `${bucket.name}:tags`}
               onClick={async () => {
                 setSavingKey(`${bucket.name}:tags`);
-                setError('');
                 try {
                   const payload = tags.map(normalizeTagDraft);
                   await bucketService.updateTags(client, bucket.name, payload);
-                  showSuccess(`桶 ${bucket.name} 的标签已更新`);
+                  toast.success(`桶 ${bucket.name} 的标签已更新`);
                   await reload();
                 } catch (requestError) {
-                  setError(requestError instanceof Error ? requestError.message : '更新标签失败');
+                  toast.error(requestError instanceof Error ? requestError.message : '更新标签失败');
                 } finally {
                   setSavingKey('');
                 }
@@ -1776,13 +1754,12 @@ export function BucketsPage({ client }: BucketsPageProps) {
               onClick={async () => {
                 if (!await confirm(`确认删除桶 ${bucket.name} 的所有标签？`)) return;
                 setSavingKey(`${bucket.name}:tags-clear`);
-                setError('');
                 try {
                   await bucketService.deleteTags(client, bucket.name);
-                  showSuccess(`桶 ${bucket.name} 的标签已清除`);
+                  toast.success(`桶 ${bucket.name} 的标签已清除`);
                   await reload();
                 } catch (requestError) {
-                  setError(requestError instanceof Error ? requestError.message : '清除标签失败');
+                  toast.error(requestError instanceof Error ? requestError.message : '清除标签失败');
                 } finally {
                   setSavingKey('');
                 }
@@ -1979,14 +1956,13 @@ export function BucketsPage({ client }: BucketsPageProps) {
                 onClick={() => {
                   const normalized = normalizeRule(newRule);
                   if (!normalized.id || !normalized.event || !normalized.target) {
-                    setError('通知规则的 ID、事件、目标不能为空');
+                    toast.error('通知规则的 ID、事件、目标不能为空');
                     return;
                   }
                   if (notificationRules.some((rule) => rule.id === normalized.id)) {
-                    setError(`通知规则 ID ${normalized.id} 已存在`);
+                    toast.error(`通知规则 ID ${normalized.id} 已存在`);
                     return;
                   }
-                  setError('');
                   setNotificationDrafts((current) => ({
                     ...current,
                     [bucket.name]: [...notificationRules, normalized]
@@ -2008,14 +1984,13 @@ export function BucketsPage({ client }: BucketsPageProps) {
               loading={savingKey === `${bucket.name}:notifications`}
               onClick={async () => {
                 setSavingKey(`${bucket.name}:notifications`);
-                setError('');
                 try {
                   const payload = notificationRules.map(normalizeRule);
                   await bucketService.updateNotifications(client, bucket.name, payload);
-                  showSuccess(`桶 ${bucket.name} 的通知规则已更新`);
+                  toast.success(`桶 ${bucket.name} 的通知规则已更新`);
                   await reload();
                 } catch (requestError) {
-                  setError(requestError instanceof Error ? requestError.message : '更新通知规则失败');
+                  toast.error(requestError instanceof Error ? requestError.message : '更新通知规则失败');
                 } finally {
                   setSavingKey('');
                 }
@@ -2040,8 +2015,6 @@ export function BucketsPage({ client }: BucketsPageProps) {
           </Button>
         }
       />
-
-      {error ? <p className="text-sm text-error">{toBilingualPrompt(error)}</p> : null}
 
       {activeBucket ? (
         <div className="space-y-4">
@@ -2097,7 +2070,6 @@ export function BucketsPage({ client }: BucketsPageProps) {
                     size="sm"
                     onClick={() => {
                       setSelectedBucket(bucket.name);
-                      setError('');
                     }}
                   >
                     管理 →
@@ -2127,7 +2099,6 @@ export function BucketsPage({ client }: BucketsPageProps) {
           onSubmit={async (event) => {
             event.preventDefault();
             setCreating(true);
-            setError('');
             try {
               await bucketService.createBucket(client, {
                 name: newBucket.name,
@@ -2137,7 +2108,7 @@ export function BucketsPage({ client }: BucketsPageProps) {
                 ilm_policy: newBucket.ilm_policy || undefined,
                 replication_policy: newBucket.replication_policy || undefined
               });
-              showSuccess(`桶 ${newBucket.name} 创建成功`);
+              toast.success(`桶 ${newBucket.name} 创建成功`);
               setNewBucket({
                 name: '',
                 tenant_id: 'default',
@@ -2149,7 +2120,7 @@ export function BucketsPage({ client }: BucketsPageProps) {
               setCreateOpen(false);
               await reload();
             } catch (requestError) {
-              setError(requestError instanceof Error ? requestError.message : '创建桶失败');
+              toast.error(requestError instanceof Error ? requestError.message : '创建桶失败');
             } finally {
               setCreating(false);
             }

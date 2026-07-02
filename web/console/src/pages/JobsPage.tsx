@@ -4,7 +4,7 @@ import { ApiClient } from '../api/client';
 import { jobsService } from '../api/services';
 import { ConfirmActionDialog } from '../components/ConfirmActionDialog';
 import { StatCard } from '../components/StatCard';
-import { useToast } from '../components/ui';
+import { useToast, Button } from '../components/ui';
 import type { AsyncJobPage, AsyncJobStatus, AsyncJobSummary } from '../types';
 
 type JobsPageProps = {
@@ -66,14 +66,13 @@ function buildQuery(filters: Filters, cursor?: string) {
 }
 
 export function JobsPage({ client }: JobsPageProps) {
-  const showSuccess = useToast();
+  const toast = useToast();
   const [target, setTarget] = useState('cluster');
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
   const [jobsPage, setJobsPage] = useState<AsyncJobPage>({ items: [], next_cursor: null });
   const [summary, setSummary] = useState<AsyncJobSummary | null>(null);
   const [cursorStack, setCursorStack] = useState<string[]>([]);
   const [currentCursor, setCurrentCursor] = useState('');
-  const [error, setError] = useState('');
   const [starting, setStarting] = useState(false);
   const [loading, setLoading] = useState(false);
   const [actioning, setActioning] = useState('');
@@ -99,7 +98,7 @@ export function JobsPage({ client }: JobsPageProps) {
 
   useEffect(() => {
     reload(undefined, true).catch((requestError) => {
-      setError(requestError instanceof Error ? requestError.message : '加载统一任务列表失败');
+      toast.error(requestError instanceof Error ? requestError.message : '加载统一任务列表失败');
     });
   }, [client, filters]);
 
@@ -109,7 +108,6 @@ export function JobsPage({ client }: JobsPageProps) {
     successMessage?: string
   ) {
     setActioning(action);
-    setError('');
     try {
       if (action === 'retry') {
         await jobsService.retryAsyncJobs(client, buildQuery(filters), jobIds);
@@ -118,10 +116,10 @@ export function JobsPage({ client }: JobsPageProps) {
       } else {
         await jobsService.skipAsyncJobs(client, buildQuery(filters), jobIds);
       }
-      showSuccess(successMessage ?? '批量操作已完成');
+      toast.success(successMessage ?? '批量操作已完成');
       await reload();
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : '批量任务操作失败');
+      toast.error(requestError instanceof Error ? requestError.message : '批量任务操作失败');
     } finally {
       setActioning('');
     }
@@ -142,39 +140,39 @@ export function JobsPage({ client }: JobsPageProps) {
               className="h-10 rounded-md border border-outline/60 bg-surface-lowest px-3 text-sm text-on-surface"
               placeholder="修复目标"
             />
-            <button
-              className="h-10 rounded-md bg-primary px-3 text-sm text-on-surface disabled:opacity-60"
-              disabled={starting}
+            <Button
+              variant="primary"
+              size="sm"
+              loading={starting}
               onClick={async () => {
                 setStarting(true);
-                setError('');
                 try {
                   await jobsService.heal(client, target || 'cluster');
-                  showSuccess('修复任务已启动');
+                  toast.success('修复任务已启动');
                   await reload();
                 } catch (requestError) {
-                  setError(requestError instanceof Error ? requestError.message : '启动修复失败');
+                  toast.error(requestError instanceof Error ? requestError.message : '启动修复失败');
                 } finally {
                   setStarting(false);
                 }
               }}
             >
-              {starting ? '启动中...' : '启动修复'}
-            </button>
-            <button
-              className="h-10 rounded-md border border-outline/60 px-3 text-sm text-on-surface hover:bg-on-surface/5"
+              启动修复
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              loading={loading}
               onClick={() => {
                 reload().catch((requestError) => {
-                  setError(requestError instanceof Error ? requestError.message : '刷新任务失败');
+                  toast.error(requestError instanceof Error ? requestError.message : '刷新任务失败');
                 });
               }}
             >
-              {loading ? '刷新中...' : '刷新'}
-            </button>
+              刷新
+            </Button>
           </div>
         </div>
-
-        {error ? <p className="mt-3 text-sm text-error">{toBilingualPrompt(error)}</p> : null}
 
         <div className="mt-4 grid gap-4 md:grid-cols-4">
           <StatCard label="任务总数" value={summary ? String(summary.total) : '...'} helper="统一异步任务口径" />
@@ -254,27 +252,30 @@ export function JobsPage({ client }: JobsPageProps) {
         </div>
 
         <div className="mt-3 flex flex-wrap gap-2">
-          <button
-            className="h-10 rounded-md border border-warning/30 px-3 text-sm text-warning hover:bg-warning/10 disabled:opacity-60"
-            disabled={actioning === 'retry'}
+          <Button
+            variant="secondary"
+            size="sm"
+            loading={actioning === 'retry'}
             onClick={() => runBulkAction('retry', [], '当前筛选任务已批量重试')}
           >
-            {actioning === 'retry' ? '处理中...' : '批量重试'}
-          </button>
-          <button
-            className="h-10 rounded-md border border-info/30 px-3 text-sm text-sky-200 hover:bg-info/10 disabled:opacity-60"
-            disabled={actioning === 'skip'}
+            批量重试
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            loading={actioning === 'skip'}
             onClick={() => runBulkAction('skip', [], '当前筛选任务已批量跳过')}
           >
-            {actioning === 'skip' ? '处理中...' : '批量跳过'}
-          </button>
-          <button
-            className="h-10 rounded-md border border-outline/60 px-3 text-sm text-on-surface hover:bg-on-surface/5 disabled:opacity-60"
-            disabled={actioning === 'cleanup'}
+            批量跳过
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            loading={actioning === 'cleanup'}
             onClick={() => runBulkAction('cleanup', [], '当前筛选终态任务已清理')}
           >
-            {actioning === 'cleanup' ? '处理中...' : '批量清理'}
-          </button>
+            批量清理
+          </Button>
         </div>
       </article>
 
@@ -282,31 +283,33 @@ export function JobsPage({ client }: JobsPageProps) {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="font-heading text-xl text-on-surface">统一任务列表</h2>
           <div className="flex gap-2">
-            <button
-              className="h-10 rounded-md border border-outline/60 px-3 text-sm text-on-surface hover:bg-on-surface/5 disabled:opacity-60"
+            <Button
+              variant="tertiary"
+              size="sm"
               disabled={cursorStack.length === 0}
               onClick={() => {
                 const previous = cursorStack[cursorStack.length - 1];
                 setCursorStack((current) => current.slice(0, -1));
                 reload(previous, false).catch((requestError) => {
-                  setError(requestError instanceof Error ? requestError.message : '加载上一页失败');
+                  toast.error(requestError instanceof Error ? requestError.message : '加载上一页失败');
                 });
               }}
             >
               上一页
-            </button>
-            <button
-              className="h-10 rounded-md border border-outline/60 px-3 text-sm text-on-surface hover:bg-on-surface/5 disabled:opacity-60"
+            </Button>
+            <Button
+              variant="tertiary"
+              size="sm"
               disabled={!jobsPage.next_cursor}
               onClick={() => {
                 setCursorStack((current) => [...current, currentCursor]);
                 reload(jobsPage.next_cursor ?? undefined, false).catch((requestError) => {
-                  setError(requestError instanceof Error ? requestError.message : '加载下一页失败');
+                  toast.error(requestError instanceof Error ? requestError.message : '加载下一页失败');
                 });
               }}
             >
               下一页
-            </button>
+            </Button>
           </div>
         </div>
 
@@ -333,28 +336,31 @@ export function JobsPage({ client }: JobsPageProps) {
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {job.retryable ? (
-                    <button
-                      className="h-9 rounded-md border border-warning/30 px-3 text-xs text-warning hover:bg-warning/10"
+                    <Button
+                      variant="secondary"
+                      size="sm"
                       onClick={() => runBulkAction('retry', [job.job_id], `任务 ${job.job_id} 已重试`)}
                     >
                       重试
-                    </button>
+                    </Button>
                   ) : null}
                   {!job.terminal ? (
-                    <button
-                      className="h-9 rounded-md border border-info/30 px-3 text-xs text-sky-200 hover:bg-info/10"
+                    <Button
+                      variant="secondary"
+                      size="sm"
                       onClick={() => runBulkAction('skip', [job.job_id], `任务 ${job.job_id} 已跳过`)}
                     >
                       跳过
-                    </button>
+                    </Button>
                   ) : null}
                   {job.terminal ? (
-                    <button
-                      className="h-9 rounded-md border border-outline/60 px-3 text-xs text-on-surface hover:bg-on-surface/5"
+                    <Button
+                      variant="secondary"
+                      size="sm"
                       onClick={() => runBulkAction('cleanup', [job.job_id], `任务 ${job.job_id} 已清理`)}
                     >
                       清理
-                    </button>
+                    </Button>
                   ) : null}
                   {job.kind === 'heal' && job.status === 'running' ? (
                     <ConfirmActionDialog
@@ -362,13 +368,12 @@ export function JobsPage({ client }: JobsPageProps) {
                       description="取消任务可能导致后台处理不完整，请确认审计原因。"
                       actionLabel="取消任务"
                       onConfirm={async (reason) => {
-                        setError('');
                         try {
                           await jobsService.cancel(client, job.job_id, reason);
-                          showSuccess(`任务 ${job.job_id} 已取消`);
+                          toast.success(`任务 ${job.job_id} 已取消`);
                           await reload();
                         } catch (requestError) {
-                          setError(requestError instanceof Error ? requestError.message : '取消任务失败');
+                          toast.error(requestError instanceof Error ? requestError.message : '取消任务失败');
                           throw requestError;
                         }
                       }}

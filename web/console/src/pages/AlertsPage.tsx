@@ -3,7 +3,7 @@ import { toBilingualPrompt } from '../utils/bilingual';
 import { ApiClient } from '../api/client';
 import { alertService, jobsService, systemService } from '../api/services';
 import { StatCard } from '../components/StatCard';
-import { useConfirm, useToast } from '../components/ui';
+import { useConfirm, useToast, Button } from '../components/ui';
 import type {
   AsyncJobSummary,
   AlertChannel,
@@ -125,7 +125,7 @@ function toggleId(ids: string[], id: string, checked: boolean) {
 
 export function AlertsPage({ client }: AlertsPageProps) {
   const confirm = useConfirm();
-  const showSuccess = useToast();
+  const toast = useToast();
   const [channels, setChannels] = useState<AlertChannel[]>([]);
   const [rules, setRules] = useState<AlertRule[]>([]);
   const [silences, setSilences] = useState<AlertSilence[]>([]);
@@ -143,7 +143,6 @@ export function AlertsPage({ client }: AlertsPageProps) {
   const [creatingSilence, setCreatingSilence] = useState(false);
   const [creatingEscalation, setCreatingEscalation] = useState(false);
   const [savingKey, setSavingKey] = useState('');
-  const [error, setError] = useState('');
 
   const [newChannel, setNewChannel] = useState<ChannelDraft>({
     name: '',
@@ -279,7 +278,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
 
   useEffect(() => {
     reloadAll().catch((requestError) => {
-      setError(requestError instanceof Error ? requestError.message : '加载告警配置失败');
+      toast.error(requestError instanceof Error ? requestError.message : '加载告警配置失败');
     });
   }, [client]);
 
@@ -310,8 +309,6 @@ export function AlertsPage({ client }: AlertsPageProps) {
         <p className="mt-1 text-sm text-muted">
           告警规则、通知渠道、静默窗口、升级策略与触发历史可视化管理。
         </p>
-        {error ? <p className="mt-3 text-sm text-error">{toBilingualPrompt(error)}</p> : null}
-
         <div className="mt-4 grid gap-4 md:grid-cols-4">
           <StatCard
             label="告警规则"
@@ -347,19 +344,19 @@ export function AlertsPage({ client }: AlertsPageProps) {
       <article className="rounded-2xl border border-outline/60 bg-surface-container/70 p-4">
         <div className="flex items-center justify-between gap-3">
           <h2 className="font-heading text-xl text-on-surface">通知渠道</h2>
-          <button
-            className="h-10 rounded-md border border-outline/60 px-3 text-sm text-on-surface hover:bg-on-surface/5"
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={async () => {
-              setError('');
               try {
                 await reloadConfig();
               } catch (requestError) {
-                setError(requestError instanceof Error ? requestError.message : '刷新通知渠道失败');
+                toast.error(requestError instanceof Error ? requestError.message : '刷新通知渠道失败');
               }
             }}
           >
             刷新
-          </button>
+          </Button>
         </div>
 
         <form
@@ -367,14 +364,13 @@ export function AlertsPage({ client }: AlertsPageProps) {
           onSubmit={async (event) => {
             event.preventDefault();
             setCreatingChannel(true);
-            setError('');
             try {
               await alertService.createChannel(client, newChannel);
-              showSuccess(`通知渠道 ${newChannel.name} 创建成功`);
+              toast.success(`通知渠道 ${newChannel.name} 创建成功`);
               setNewChannel({ name: '', kind: 'webhook', endpoint: '', enabled: true });
               await reloadConfig();
             } catch (requestError) {
-              setError(requestError instanceof Error ? requestError.message : '创建通知渠道失败');
+              toast.error(requestError instanceof Error ? requestError.message : '创建通知渠道失败');
             } finally {
               setCreatingChannel(false);
             }
@@ -415,13 +411,9 @@ export function AlertsPage({ client }: AlertsPageProps) {
               />
               启用
             </label>
-            <button
-              type="submit"
-              disabled={creatingChannel}
-              className="h-10 rounded-md bg-primary px-3 text-sm text-on-surface disabled:opacity-60"
-            >
-              {creatingChannel ? '创建中...' : '新增渠道'}
-            </button>
+            <Button type="submit" variant="primary" size="sm" loading={creatingChannel}>
+              新增渠道
+            </Button>
           </div>
         </form>
 
@@ -497,64 +489,64 @@ export function AlertsPage({ client }: AlertsPageProps) {
                     启用
                   </label>
                   <div className="flex items-center justify-end gap-2">
-                    <button
-                      className="h-10 rounded-md border border-outline/60 px-3 text-xs text-on-surface hover:bg-on-surface/5 disabled:opacity-60"
-                      disabled={savingKey === `${channel.id}:save`}
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      loading={savingKey === `${channel.id}:save`}
                       onClick={async () => {
                         setSavingKey(`${channel.id}:save`);
-                        setError('');
                         try {
                           await alertService.updateChannel(client, channel.id, draft);
-                          showSuccess(`通知渠道 ${channel.name} 已更新`);
+                          toast.success(`通知渠道 ${channel.name} 已更新`);
                           await reloadConfig();
                         } catch (requestError) {
-                          setError(requestError instanceof Error ? requestError.message : '更新通知渠道失败');
+                          toast.error(requestError instanceof Error ? requestError.message : '更新通知渠道失败');
                         } finally {
                           setSavingKey('');
                         }
                       }}
                     >
                       保存
-                    </button>
-                    <button
-                      className="h-10 rounded-md border border-primary/40 px-3 text-xs text-primary hover:bg-primary/10 disabled:opacity-60"
-                      disabled={savingKey === `${channel.id}:test`}
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      loading={savingKey === `${channel.id}:test`}
                       onClick={async () => {
                         setSavingKey(`${channel.id}:test`);
-                        setError('');
                         try {
                           await alertService.testChannel(client, channel.id);
-                          showSuccess(`渠道 ${channel.name} 测试完成`);
+                          toast.success(`渠道 ${channel.name} 测试完成`);
                           await Promise.all([reloadConfig(), reloadHistory()]);
                         } catch (requestError) {
-                          setError(requestError instanceof Error ? requestError.message : '测试通知渠道失败');
+                          toast.error(requestError instanceof Error ? requestError.message : '测试通知渠道失败');
                         } finally {
                           setSavingKey('');
                         }
                       }}
                     >
                       测试
-                    </button>
-                    <button
-                      className="h-10 rounded-md border border-error/40 px-3 text-xs text-error hover:bg-error/10 disabled:opacity-60"
-                      disabled={savingKey === `${channel.id}:delete`}
+                    </Button>
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      loading={savingKey === `${channel.id}:delete`}
                       onClick={async () => {
                         if (!await confirm(`确认删除通知渠道 ${channel.name}？`)) return;
                         setSavingKey(`${channel.id}:delete`);
-                        setError('');
                         try {
                           await alertService.deleteChannel(client, channel.id);
-                          showSuccess(`通知渠道 ${channel.name} 已删除`);
+                          toast.success(`通知渠道 ${channel.name} 已删除`);
                           await reloadConfig();
                         } catch (requestError) {
-                          setError(requestError instanceof Error ? requestError.message : '删除通知渠道失败');
+                          toast.error(requestError instanceof Error ? requestError.message : '删除通知渠道失败');
                         } finally {
                           setSavingKey('');
                         }
                       }}
                     >
                       删除
-                    </button>
+                    </Button>
                   </div>
                 </div>
                 <p className="mt-2 text-xs text-muted">
@@ -589,18 +581,17 @@ export function AlertsPage({ client }: AlertsPageProps) {
           onSubmit={async (event) => {
             event.preventDefault();
             if (newRule.channels.length === 0) {
-              setError('至少选择一个通知渠道');
+              toast.error('至少选择一个通知渠道');
               return;
             }
             setCreatingRule(true);
-            setError('');
             try {
               await alertService.createRule(client, newRule);
-              showSuccess(`告警规则 ${newRule.name} 创建成功`);
+              toast.success(`告警规则 ${newRule.name} 创建成功`);
               setNewRule(defaultRuleDraft(channels.map((channel) => channel.id)));
               await reloadConfig();
             } catch (requestError) {
-              setError(requestError instanceof Error ? requestError.message : '创建告警规则失败');
+              toast.error(requestError instanceof Error ? requestError.message : '创建告警规则失败');
             } finally {
               setCreatingRule(false);
             }
@@ -691,13 +682,9 @@ export function AlertsPage({ client }: AlertsPageProps) {
           </label>
 
           <div className="md:col-span-6">
-            <button
-              type="submit"
-              disabled={creatingRule}
-              className="h-10 rounded-md bg-primary px-4 text-sm text-on-surface disabled:opacity-60"
-            >
-              {creatingRule ? '创建中...' : '新增规则'}
-            </button>
+            <Button type="submit" variant="primary" loading={creatingRule}>
+              新增规则
+            </Button>
           </div>
         </form>
 
@@ -875,68 +862,68 @@ export function AlertsPage({ client }: AlertsPageProps) {
                       : ' · 目标：无'}
                   </p>
                   <div className="flex items-center gap-2">
-                    <button
-                      className="h-10 rounded-md border border-outline/60 px-3 text-xs text-on-surface hover:bg-on-surface/5 disabled:opacity-60"
-                      disabled={savingKey === `${rule.id}:save`}
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      loading={savingKey === `${rule.id}:save`}
                       onClick={async () => {
                         if (draft.channels.length === 0) {
-                          setError('规则至少需要一个通知渠道');
+                          toast.error('规则至少需要一个通知渠道');
                           return;
                         }
                         setSavingKey(`${rule.id}:save`);
-                        setError('');
                         try {
                           await alertService.updateRule(client, rule.id, draft);
-                          showSuccess(`告警规则 ${rule.name} 已更新`);
+                          toast.success(`告警规则 ${rule.name} 已更新`);
                           await reloadConfig();
                         } catch (requestError) {
-                          setError(requestError instanceof Error ? requestError.message : '更新告警规则失败');
+                          toast.error(requestError instanceof Error ? requestError.message : '更新告警规则失败');
                         } finally {
                           setSavingKey('');
                         }
                       }}
                     >
                       保存
-                    </button>
-                    <button
-                      className="h-10 rounded-md border border-primary/40 px-3 text-xs text-primary hover:bg-primary/10 disabled:opacity-60"
-                      disabled={savingKey === `${rule.id}:simulate`}
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      loading={savingKey === `${rule.id}:simulate`}
                       onClick={async () => {
                         setSavingKey(`${rule.id}:simulate`);
-                        setError('');
                         try {
                           const entry = await alertService.simulateRule(client, rule.id);
-                          showSuccess(`规则 ${rule.name} 已完成实时评估（${historyStatusText(entry.status)}）`);
+                          toast.success(`规则 ${rule.name} 已完成实时评估（${historyStatusText(entry.status)}）`);
                           await Promise.all([reloadConfig(), reloadHistory()]);
                         } catch (requestError) {
-                          setError(requestError instanceof Error ? requestError.message : '规则评估失败');
+                          toast.error(requestError instanceof Error ? requestError.message : '规则评估失败');
                         } finally {
                           setSavingKey('');
                         }
                       }}
                     >
                       立即评估
-                    </button>
-                    <button
-                      className="h-10 rounded-md border border-error/40 px-3 text-xs text-error hover:bg-error/10 disabled:opacity-60"
-                      disabled={savingKey === `${rule.id}:delete`}
+                    </Button>
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      loading={savingKey === `${rule.id}:delete`}
                       onClick={async () => {
                         if (!await confirm(`确认删除告警规则 ${rule.name}？`)) return;
                         setSavingKey(`${rule.id}:delete`);
-                        setError('');
                         try {
                           await alertService.deleteRule(client, rule.id);
-                          showSuccess(`告警规则 ${rule.name} 已删除`);
+                          toast.success(`告警规则 ${rule.name} 已删除`);
                           await reloadConfig();
                         } catch (requestError) {
-                          setError(requestError instanceof Error ? requestError.message : '删除告警规则失败');
+                          toast.error(requestError instanceof Error ? requestError.message : '删除告警规则失败');
                         } finally {
                           setSavingKey('');
                         }
                       }}
                     >
                       删除
-                    </button>
+                    </Button>
                   </div>
                 </div>
               </article>
@@ -952,17 +939,16 @@ export function AlertsPage({ client }: AlertsPageProps) {
           onSubmit={async (event) => {
             event.preventDefault();
             if (newSilence.rule_ids.length === 0) {
-              setError('静默窗口至少选择一个规则');
+              toast.error('静默窗口至少选择一个规则');
               return;
             }
             const startsAt = toIsoFromDateTimeLocal(newSilence.starts_at);
             const endsAt = toIsoFromDateTimeLocal(newSilence.ends_at);
             if (!startsAt || !endsAt) {
-              setError('请填写有效的开始和结束时间');
+              toast.error('请填写有效的开始和结束时间');
               return;
             }
             setCreatingSilence(true);
-            setError('');
             try {
               await alertService.createSilence(client, {
                 name: newSilence.name,
@@ -972,7 +958,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
                 ends_at: endsAt,
                 enabled: newSilence.enabled
               });
-              showSuccess(`静默窗口 ${newSilence.name} 创建成功`);
+              toast.success(`静默窗口 ${newSilence.name} 创建成功`);
               setNewSilence((current) => ({
                 ...current,
                 name: '',
@@ -981,7 +967,7 @@ export function AlertsPage({ client }: AlertsPageProps) {
               }));
               await reloadConfig();
             } catch (requestError) {
-              setError(requestError instanceof Error ? requestError.message : '创建静默窗口失败');
+              toast.error(requestError instanceof Error ? requestError.message : '创建静默窗口失败');
             } finally {
               setCreatingSilence(false);
             }
@@ -1031,13 +1017,9 @@ export function AlertsPage({ client }: AlertsPageProps) {
             />
             启用静默
           </label>
-          <button
-            type="submit"
-            disabled={creatingSilence}
-            className="h-10 rounded-md bg-primary px-3 text-sm text-on-surface disabled:opacity-60 md:mt-6"
-          >
-            {creatingSilence ? '创建中...' : '新增静默'}
-          </button>
+          <Button type="submit" variant="primary" size="sm" className="md:mt-6" loading={creatingSilence}>
+            新增静默
+          </Button>
 
           <div className="md:col-span-6 rounded-md border border-outline/60 bg-surface-lowest/40 p-2">
             <p className="text-xs text-muted">静默规则范围</p>
@@ -1071,26 +1053,26 @@ export function AlertsPage({ client }: AlertsPageProps) {
               <article key={silence.id} className="rounded-lg border border-outline/60 bg-surface-container-high p-3">
                 <div className="flex items-center justify-between gap-2">
                   <p className="text-sm font-medium text-on-surface">{silence.name}</p>
-                  <button
-                    className="h-9 rounded-md border border-error/40 px-3 text-xs text-error hover:bg-error/10 disabled:opacity-60"
-                    disabled={savingKey === `${silence.id}:delete`}
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    loading={savingKey === `${silence.id}:delete`}
                     onClick={async () => {
                       if (!await confirm(`确认删除静默窗口 ${silence.name}？`)) return;
                       setSavingKey(`${silence.id}:delete`);
-                      setError('');
                       try {
                         await alertService.deleteSilence(client, silence.id);
-                        showSuccess(`静默窗口 ${silence.name} 已删除`);
+                        toast.success(`静默窗口 ${silence.name} 已删除`);
                         await reloadConfig();
                       } catch (requestError) {
-                        setError(requestError instanceof Error ? requestError.message : '删除静默窗口失败');
+                        toast.error(requestError instanceof Error ? requestError.message : '删除静默窗口失败');
                       } finally {
                         setSavingKey('');
                       }
                     }}
                   >
                     删除
-                  </button>
+                  </Button>
                 </div>
                 <p className="mt-1 text-xs text-muted">
                   范围：{silence.rule_ids.map((ruleId) => ruleNames[ruleId] ?? ruleId).join(', ')}
@@ -1115,18 +1097,17 @@ export function AlertsPage({ client }: AlertsPageProps) {
           onSubmit={async (event) => {
             event.preventDefault();
             if (newEscalation.channels.length === 0) {
-              setError('升级策略至少选择一个通知渠道');
+              toast.error('升级策略至少选择一个通知渠道');
               return;
             }
             setCreatingEscalation(true);
-            setError('');
             try {
               await alertService.createEscalation(client, newEscalation);
-              showSuccess(`升级策略 ${newEscalation.name} 创建成功`);
+              toast.success(`升级策略 ${newEscalation.name} 创建成功`);
               setNewEscalation(defaultEscalationDraft(channels.map((channel) => channel.id)));
               await reloadConfig();
             } catch (requestError) {
-              setError(requestError instanceof Error ? requestError.message : '创建升级策略失败');
+              toast.error(requestError instanceof Error ? requestError.message : '创建升级策略失败');
             } finally {
               setCreatingEscalation(false);
             }
@@ -1172,13 +1153,9 @@ export function AlertsPage({ client }: AlertsPageProps) {
             启用策略
           </label>
           <div className="md:col-span-2">
-            <button
-              type="submit"
-              disabled={creatingEscalation}
-              className="h-10 rounded-md bg-primary px-3 text-sm text-on-surface disabled:opacity-60"
-            >
-              {creatingEscalation ? '创建中...' : '新增升级策略'}
-            </button>
+            <Button type="submit" variant="primary" size="sm" loading={creatingEscalation}>
+              新增升级策略
+            </Button>
           </div>
 
           <div className="md:col-span-6 rounded-md border border-outline/60 bg-surface-lowest/40 p-2">
@@ -1278,49 +1255,49 @@ export function AlertsPage({ client }: AlertsPageProps) {
                     启用
                   </label>
                   <div className="flex items-center justify-end gap-2">
-                    <button
-                      className="h-10 rounded-md border border-outline/60 px-3 text-xs text-on-surface hover:bg-on-surface/5 disabled:opacity-60"
-                      disabled={savingKey === `${policy.id}:save`}
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      loading={savingKey === `${policy.id}:save`}
                       onClick={async () => {
                         if (draft.channels.length === 0) {
-                          setError('升级策略至少需要一个通知渠道');
+                          toast.error('升级策略至少需要一个通知渠道');
                           return;
                         }
                         setSavingKey(`${policy.id}:save`);
-                        setError('');
                         try {
                           await alertService.updateEscalation(client, policy.id, draft);
-                          showSuccess(`升级策略 ${policy.name} 已更新`);
+                          toast.success(`升级策略 ${policy.name} 已更新`);
                           await reloadConfig();
                         } catch (requestError) {
-                          setError(requestError instanceof Error ? requestError.message : '更新升级策略失败');
+                          toast.error(requestError instanceof Error ? requestError.message : '更新升级策略失败');
                         } finally {
                           setSavingKey('');
                         }
                       }}
                     >
                       保存
-                    </button>
-                    <button
-                      className="h-10 rounded-md border border-error/40 px-3 text-xs text-error hover:bg-error/10 disabled:opacity-60"
-                      disabled={savingKey === `${policy.id}:delete`}
+                    </Button>
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      loading={savingKey === `${policy.id}:delete`}
                       onClick={async () => {
                         if (!await confirm(`确认删除升级策略 ${policy.name}？`)) return;
                         setSavingKey(`${policy.id}:delete`);
-                        setError('');
                         try {
                           await alertService.deleteEscalation(client, policy.id);
-                          showSuccess(`升级策略 ${policy.name} 已删除`);
+                          toast.success(`升级策略 ${policy.name} 已删除`);
                           await reloadConfig();
                         } catch (requestError) {
-                          setError(requestError instanceof Error ? requestError.message : '删除升级策略失败');
+                          toast.error(requestError instanceof Error ? requestError.message : '删除升级策略失败');
                         } finally {
                           setSavingKey('');
                         }
                       }}
                     >
                       删除
-                    </button>
+                    </Button>
                   </div>
                 </div>
 
@@ -1364,19 +1341,19 @@ export function AlertsPage({ client }: AlertsPageProps) {
       <article className="rounded-2xl border border-outline/60 bg-surface-container/70 p-4">
         <div className="flex items-center justify-between gap-3">
           <h2 className="font-heading text-xl text-on-surface">触发历史</h2>
-          <button
-            className="h-10 rounded-md border border-outline/60 px-3 text-sm text-on-surface hover:bg-on-surface/5"
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={async () => {
-              setError('');
               try {
                 await reloadHistory();
               } catch (requestError) {
-                setError(requestError instanceof Error ? requestError.message : '刷新触发历史失败');
+                toast.error(requestError instanceof Error ? requestError.message : '刷新触发历史失败');
               }
             }}
           >
             刷新
-          </button>
+          </Button>
         </div>
 
         <div className="mt-3 grid gap-2 rounded-lg border border-outline/60 bg-surface-container-high p-3 md:grid-cols-5">
@@ -1436,21 +1413,20 @@ export function AlertsPage({ client }: AlertsPageProps) {
           </select>
 
           <div className="md:col-span-5 flex gap-2">
-            <button
-              className="h-10 rounded-md bg-primary px-4 text-sm text-on-surface"
+            <Button
+              variant="secondary"
               onClick={async () => {
-                setError('');
                 try {
                   await reloadHistory(historyFilters);
                 } catch (requestError) {
-                  setError(requestError instanceof Error ? requestError.message : '检索触发历史失败');
+                  toast.error(requestError instanceof Error ? requestError.message : '检索触发历史失败');
                 }
               }}
             >
               应用筛选
-            </button>
-            <button
-              className="h-10 rounded-md border border-outline/60 px-4 text-sm text-on-surface hover:bg-on-surface/5"
+            </Button>
+            <Button
+              variant="tertiary"
               onClick={async () => {
                 const reset: HistoryFilters = {
                   severity: '',
@@ -1460,16 +1436,15 @@ export function AlertsPage({ client }: AlertsPageProps) {
                   limit: 200
                 };
                 setHistoryFilters(reset);
-                setError('');
                 try {
                   await reloadHistory(reset);
                 } catch (requestError) {
-                  setError(requestError instanceof Error ? requestError.message : '重置筛选失败');
+                  toast.error(requestError instanceof Error ? requestError.message : '重置筛选失败');
                 }
               }}
             >
               清空筛选
-            </button>
+            </Button>
           </div>
         </div>
 
@@ -1509,63 +1484,65 @@ export function AlertsPage({ client }: AlertsPageProps) {
                 {entry.resolved_at ? `（${new Date(entry.resolved_at).toLocaleString()}）` : ''}
               </p>
               <div className="mt-2 flex flex-wrap gap-2">
-                <button
-                  className="h-9 rounded-md border border-outline/60 px-3 text-xs text-on-surface hover:bg-on-surface/5 disabled:opacity-60"
-                  disabled={savingKey === `${entry.id}:claim`}
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  loading={savingKey === `${entry.id}:claim`}
                   onClick={async () => {
                     setSavingKey(`${entry.id}:claim`);
-                    setError('');
                     try {
                       await alertService.claimHistory(client, entry.id);
-                      showSuccess(`告警事件 ${entry.id} 已认领`);
+                      toast.success(`告警事件 ${entry.id} 已认领`);
                       await reloadHistory(historyFilters);
                     } catch (requestError) {
-                      setError(requestError instanceof Error ? requestError.message : '认领告警失败');
+                      toast.error(requestError instanceof Error ? requestError.message : '认领告警失败');
                     } finally {
                       setSavingKey('');
                     }
                   }}
                 >
                   认领
-                </button>
-                <button
-                  className="h-9 rounded-md border border-primary/40 px-3 text-xs text-primary hover:bg-primary/10 disabled:opacity-60"
-                  disabled={savingKey === `${entry.id}:ack` || entry.status === 'resolved'}
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={entry.status === 'resolved'}
+                  loading={savingKey === `${entry.id}:ack`}
                   onClick={async () => {
                     setSavingKey(`${entry.id}:ack`);
-                    setError('');
                     try {
                       await alertService.ackHistory(client, entry.id);
-                      showSuccess(`告警事件 ${entry.id} 已确认`);
+                      toast.success(`告警事件 ${entry.id} 已确认`);
                       await reloadHistory(historyFilters);
                     } catch (requestError) {
-                      setError(requestError instanceof Error ? requestError.message : '确认告警失败');
+                      toast.error(requestError instanceof Error ? requestError.message : '确认告警失败');
                     } finally {
                       setSavingKey('');
                     }
                   }}
                 >
                   确认
-                </button>
-                <button
-                  className="h-9 rounded-md border border-warning/40 px-3 text-xs text-warning hover:bg-warning/10 disabled:opacity-60"
-                  disabled={savingKey === `${entry.id}:resolve` || entry.status === 'resolved'}
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={entry.status === 'resolved'}
+                  loading={savingKey === `${entry.id}:resolve`}
                   onClick={async () => {
                     setSavingKey(`${entry.id}:resolve`);
-                    setError('');
                     try {
                       await alertService.resolveHistory(client, entry.id);
-                      showSuccess(`告警事件 ${entry.id} 已标记恢复`);
+                      toast.success(`告警事件 ${entry.id} 已标记恢复`);
                       await reloadHistory(historyFilters);
                     } catch (requestError) {
-                      setError(requestError instanceof Error ? requestError.message : '恢复告警失败');
+                      toast.error(requestError instanceof Error ? requestError.message : '恢复告警失败');
                     } finally {
                       setSavingKey('');
                     }
                   }}
                 >
                   标记恢复
-                </button>
+                </Button>
               </div>
             </li>
           ))}

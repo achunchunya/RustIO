@@ -7,19 +7,17 @@ import { ConfirmActionDialog } from '../components/ConfirmActionDialog';
 
 export function RaftPage({ client, canWrite }: { client: ApiClient; canWrite: boolean }) {
   const [status, setStatus] = useState<MetadataRaftStatus | null>(null);
-  const [error, setError] = useState('');
-  const showSuccess = useToast();
+  const toast = useToast();
   const [loading, setLoading] = useState(false);
   const [peerId, setPeerId] = useState('');
   const [peerEndpoint, setPeerEndpoint] = useState('');
 
   const reload = useCallback(async () => {
     setLoading(true);
-    setError('');
     try {
       setStatus(await systemService.raftStatus(client));
     } catch (err) {
-      setError(err instanceof Error ? err.message : '加载失败');
+      toast.error(err instanceof Error ? err.message : '加载失败');
     } finally {
       setLoading(false);
     }
@@ -30,12 +28,11 @@ export function RaftPage({ client, canWrite }: { client: ApiClient; canWrite: bo
   }, [reload]);
 
   const runAction = async (fn: () => Promise<MetadataRaftStatus>, ok: string) => {
-    setError('');
     try {
       setStatus(await fn());
-      showSuccess(ok);
+      toast.success(ok);
     } catch (err) {
-      setError(err instanceof Error ? err.message : '操作失败');
+      toast.error(err instanceof Error ? err.message : '操作失败');
     }
   };
 
@@ -50,8 +47,6 @@ export function RaftPage({ client, canWrite }: { client: ApiClient; canWrite: bo
           </Button>
         }
       />
-
-      {error ? <p className="text-sm text-error">{error}</p> : null}
 
       {status ? (
         <Card>

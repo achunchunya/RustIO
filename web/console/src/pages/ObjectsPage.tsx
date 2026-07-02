@@ -52,7 +52,7 @@ type DisplayItem = FolderItem | FileItem;
 
 export function ObjectsPage({ client, canWrite = true }: ObjectsPageProps) {
   const confirm = useConfirm();
-  const showSuccess = useToast();
+  const toast = useToast();
   const [buckets, setBuckets] = useState<BucketSpec[]>([]);
   const [objects, setObjects] = useState<BucketObjectEntry[]>([]);
   const [versions, setVersions] = useState<BucketObjectVersionEntry[]>([]);
@@ -61,7 +61,6 @@ export function ObjectsPage({ client, canWrite = true }: ObjectsPageProps) {
   const [selectedObjectKey, setSelectedObjectKey] = useState('');
   const [uploadKey, setUploadKey] = useState('');
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
-  const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [versionsLoading, setVersionsLoading] = useState(false);
   const [versionsError, setVersionsError] = useState('');
@@ -189,7 +188,6 @@ export function ObjectsPage({ client, canWrite = true }: ObjectsPageProps) {
     if (!bucket) return;
     const actionKey = versionId ? `${objectKey}@${versionId}` : objectKey;
     setDownloadingKey(actionKey);
-    setError('');
     try {
       const blob = await bucketService.downloadObject(client, bucket, objectKey, versionId);
       const url = URL.createObjectURL(blob);
@@ -202,7 +200,7 @@ export function ObjectsPage({ client, canWrite = true }: ObjectsPageProps) {
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : '下载对象失败');
+      toast.error(requestError instanceof Error ? requestError.message : '下载对象失败');
     } finally {
       setDownloadingKey('');
     }
@@ -210,13 +208,12 @@ export function ObjectsPage({ client, canWrite = true }: ObjectsPageProps) {
 
   async function handleUploadFiles(files: File[]) {
     if (!bucket) {
-      setError('请先选择桶');
+      toast.error('请先选择桶');
       return;
     }
     if (files.length === 0) return;
 
     setUploading(true);
-    setError('');
     let successCount = 0;
 
     for (const file of files) {
@@ -225,14 +222,14 @@ export function ObjectsPage({ client, canWrite = true }: ObjectsPageProps) {
         await bucketService.uploadObject(client, bucket, key, file);
         successCount++;
       } catch (requestError) {
-        setError(requestError instanceof Error ? requestError.message : `上传 ${file.name} 失败`);
+        toast.error(requestError instanceof Error ? requestError.message : `上传 ${file.name} 失败`);
         break;
       }
     }
 
     setUploading(false);
     if (successCount > 0) {
-      showSuccess(`成功上传 ${successCount} 个文件`);
+      toast.success(`成功上传 ${successCount} 个文件`);
       setUploadFiles([]);
       await reloadObjects(bucket);
     }
@@ -240,7 +237,6 @@ export function ObjectsPage({ client, canWrite = true }: ObjectsPageProps) {
 
   async function handleDeleteSelected(reason: string) {
     if (!bucket || selectedKeys.size === 0) return;
-    setError('');
     let successCount = 0;
 
     for (const key of selectedKeys) {
@@ -248,13 +244,13 @@ export function ObjectsPage({ client, canWrite = true }: ObjectsPageProps) {
         await bucketService.deleteObject(client, bucket, key);
         successCount++;
       } catch (requestError) {
-        setError(requestError instanceof Error ? requestError.message : `删除 ${key} 失败`);
+        toast.error(requestError instanceof Error ? requestError.message : `删除 ${key} 失败`);
         break;
       }
     }
 
     if (successCount > 0) {
-      showSuccess(`成功删除 ${successCount} 个对象`);
+      toast.success(`成功删除 ${successCount} 个对象`);
       setSelectedKeys(new Set());
       await reloadObjects(bucket);
     }
@@ -263,13 +259,12 @@ export function ObjectsPage({ client, canWrite = true }: ObjectsPageProps) {
   async function handleDeleteSingle(key: string, reason: string) {
     if (!bucket) return;
     setDeletingKey(key);
-    setError('');
     try {
       await bucketService.deleteObject(client, bucket, key);
-      showSuccess(`对象 ${key} 已删除`);
+      toast.success(`对象 ${key} 已删除`);
       await reloadObjects(bucket);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : '删除对象失败');
+      toast.error(requestError instanceof Error ? requestError.message : '删除对象失败');
     } finally {
       setDeletingKey('');
     }
@@ -293,8 +288,8 @@ export function ObjectsPage({ client, canWrite = true }: ObjectsPageProps) {
 
   function copyToClipboard(text: string) {
     navigator.clipboard.writeText(text).then(
-      () => showSuccess(`已复制: ${text}`),
-      () => setError('复制失败')
+      () => toast.success(`已复制: ${text}`),
+      () => toast.error('复制失败')
     );
   }
 
@@ -302,7 +297,7 @@ export function ObjectsPage({ client, canWrite = true }: ObjectsPageProps) {
     reloadBuckets()
       .then(() => reloadObjects())
       .catch((requestError) => {
-        setError(requestError instanceof Error ? requestError.message : '加载对象浏览器失败');
+        toast.error(requestError instanceof Error ? requestError.message : '加载对象浏览器失败');
       });
   }, [client]);
 
@@ -323,17 +318,15 @@ export function ObjectsPage({ client, canWrite = true }: ObjectsPageProps) {
       <article className="rounded-2xl border border-outline/60 bg-surface-container/70 p-4">
         <h1 className="font-heading text-2xl text-on-surface">对象浏览器</h1>
         <p className="mt-1 text-sm text-muted">可视化上传、下载、删除对象，并查看对象版本历史。</p>
-        {error ? <p className="mt-3 text-sm text-error">{toBilingualPrompt(error)}</p> : null}
 
         <form
           className="mt-4 grid gap-3 rounded-xl border border-outline/60 bg-surface-container-high p-4 md:grid-cols-2"
           onSubmit={async (event: FormEvent) => {
             event.preventDefault();
-            setError('');
             try {
               await reloadObjects();
             } catch (requestError) {
-              setError(requestError instanceof Error ? requestError.message : '查询对象失败');
+              toast.error(requestError instanceof Error ? requestError.message : '查询对象失败');
             }
           }}
         >
@@ -355,24 +348,23 @@ export function ObjectsPage({ client, canWrite = true }: ObjectsPageProps) {
             </select>
           </label>
           <div className="flex items-end gap-2">
-            <button className="h-11 rounded-md border border-outline/60 px-3 text-sm text-on-surface hover:bg-on-surface/5">
+            <Button type="submit" variant="secondary">
               查询对象
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
-              className="h-11 rounded-md border border-outline/60 px-3 text-sm text-on-surface hover:bg-on-surface/5"
+              variant="secondary"
               onClick={async () => {
-                setError('');
                 try {
                   await reloadBuckets();
                   await reloadObjects();
                 } catch (requestError) {
-                  setError(requestError instanceof Error ? requestError.message : '刷新失败');
+                  toast.error(requestError instanceof Error ? requestError.message : '刷新失败');
                 }
               }}
             >
               刷新桶
-            </button>
+            </Button>
           </div>
         </form>
 
@@ -395,7 +387,7 @@ export function ObjectsPage({ client, canWrite = true }: ObjectsPageProps) {
                   event.target.value = '';
                 }}
               />
-              <span className="inline-block rounded-md bg-primary px-4 py-2 text-sm font-medium text-on-surface hover:opacity-90">
+              <span className="inline-block rounded-md bg-primary px-4 py-2 text-sm font-medium text-on-primary hover:opacity-90">
                 {uploading ? '上传中...' : '选择文件上传'}
               </span>
             </label>
@@ -527,32 +519,24 @@ export function ObjectsPage({ client, canWrite = true }: ObjectsPageProps) {
                     <td className="px-3 py-2 text-on-surface">{formatBytes(obj.size)}</td>
                     <td className="px-3 py-2 text-muted">{new Date(obj.last_modified).toLocaleString()}</td>
                     <td className="px-3 py-2">
-                      <div className="flex gap-2">
-                        <button
-                          className="text-xs text-primary hover:underline"
-                          onClick={() => openPreview(obj)}
-                        >
+                      <div className="flex flex-wrap gap-2">
+                        <Button variant="tertiary" size="sm" onClick={() => openPreview(obj)}>
                           预览
-                        </button>
-                        <button
-                          className="text-xs text-primary hover:underline disabled:opacity-50"
-                          disabled={downloadingKey === obj.key}
+                        </Button>
+                        <Button
+                          variant="tertiary"
+                          size="sm"
+                          loading={downloadingKey === obj.key}
                           onClick={() => downloadObject(obj.key)}
                         >
-                          {downloadingKey === obj.key ? '下载中' : '下载'}
-                        </button>
-                        <button
-                          className="text-xs text-primary hover:underline"
-                          onClick={() => copyToClipboard(obj.key)}
-                        >
+                          下载
+                        </Button>
+                        <Button variant="tertiary" size="sm" onClick={() => copyToClipboard(obj.key)}>
                           复制键
-                        </button>
-                        <button
-                          className="text-xs text-primary hover:underline"
-                          onClick={() => loadObjectVersions(obj.key)}
-                        >
+                        </Button>
+                        <Button variant="tertiary" size="sm" onClick={() => loadObjectVersions(obj.key)}>
                           版本
-                        </button>
+                        </Button>
                         {canWrite ? (
                           <ConfirmActionDialog
                             title="删除对象"
@@ -585,14 +569,16 @@ export function ObjectsPage({ client, canWrite = true }: ObjectsPageProps) {
               <h2 className="font-heading text-xl text-on-surface">对象版本历史</h2>
               <p className="mt-1 font-mono text-xs text-primary">{selectedObjectKey}</p>
             </div>
-            <button
-              className="h-9 rounded-md border border-outline/60 px-3 text-xs text-on-surface hover:bg-on-surface/5"
+            <Button
+              variant="secondary"
+              size="sm"
+              loading={versionsLoading}
               onClick={async () => {
                 await loadObjectVersions(selectedObjectKey);
               }}
             >
               刷新版本
-            </button>
+            </Button>
           </div>
           {versionsError ? <p className="mt-3 text-sm text-error">{toBilingualPrompt(versionsError)}</p> : null}
           {versionsLoading ? <p className="mt-3 text-sm text-muted">加载中...</p> : null}
@@ -621,18 +607,20 @@ export function ObjectsPage({ client, canWrite = true }: ObjectsPageProps) {
                         {new Date(item.last_modified).toLocaleString()}
                       </td>
                       <td className="px-3 py-2">
-                        <div className="flex gap-2">
-                          <button
-                            className="text-xs text-primary hover:underline disabled:opacity-50"
-                            disabled={downloadingKey === actionKey}
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            variant="tertiary"
+                            size="sm"
+                            loading={downloadingKey === actionKey}
                             onClick={() => downloadObject(selectedObjectKey, item.version_id)}
                           >
-                            {downloadingKey === actionKey ? '下载中' : '下载'}
-                          </button>
+                            下载
+                          </Button>
                           {canWrite ? (
-                            <button
-                              className="text-xs text-error hover:underline disabled:opacity-50"
-                              disabled={versionActionKey === `${actionKey}:delete`}
+                            <Button
+                              variant="danger"
+                              size="sm"
+                              loading={versionActionKey === `${actionKey}:delete`}
                               onClick={async () => {
                                 if (
                                   !await confirm(
@@ -641,7 +629,6 @@ export function ObjectsPage({ client, canWrite = true }: ObjectsPageProps) {
                                 )
                                   return;
                                 setVersionActionKey(`${actionKey}:delete`);
-                                setError('');
                                 try {
                                   await bucketService.deleteObject(
                                     client,
@@ -649,11 +636,11 @@ export function ObjectsPage({ client, canWrite = true }: ObjectsPageProps) {
                                     selectedObjectKey,
                                     item.version_id
                                   );
-                                  showSuccess(`版本 ${item.version_id} 已删除`);
+                                  toast.success(`版本 ${item.version_id} 已删除`);
                                   await reloadObjects(bucket);
                                   await loadObjectVersions(selectedObjectKey, bucket);
                                 } catch (requestError) {
-                                  setError(
+                                  toast.error(
                                     requestError instanceof Error ? requestError.message : '删除对象版本失败'
                                   );
                                 } finally {
@@ -661,8 +648,8 @@ export function ObjectsPage({ client, canWrite = true }: ObjectsPageProps) {
                                 }
                               }}
                             >
-                              {versionActionKey === `${actionKey}:delete` ? '删除中' : '删除版本'}
-                            </button>
+                              删除版本
+                            </Button>
                           ) : null}
                         </div>
                       </td>
