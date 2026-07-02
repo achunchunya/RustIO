@@ -3,11 +3,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT"
 
 RUSTIO_ADDR="${RUSTIO_ADDR:-0.0.0.0:9000}"
-RUSTIO_DATA_DIR="${RUSTIO_DATA_DIR:-$SCRIPT_DIR/data}"
-RUSTIO_CONSOLE_DIST="${RUSTIO_CONSOLE_DIST:-$SCRIPT_DIR/web/console/dist}"
+RUSTIO_DATA_DIR="${RUSTIO_DATA_DIR:-$PROJECT_ROOT/data}"
+RUSTIO_CONSOLE_DIST="${RUSTIO_CONSOLE_DIST:-$PROJECT_ROOT/web/console/dist}"
 RUSTIO_AUTO_MIRROR="${RUSTIO_AUTO_MIRROR:-1}"
 RUSTIO_USE_DOCKER_NODE_BUILD="${RUSTIO_USE_DOCKER_NODE_BUILD:-0}"
 RUSTIO_SKIP_WEB_BUILD="${RUSTIO_SKIP_WEB_BUILD:-0}"
@@ -39,7 +40,7 @@ fail() {
 
 usage() {
   cat <<'EOF'
-用法: ./start-source.sh [选项]
+用法: ./scripts/start-source.sh [选项]
 
 选项:
   --addr <host:port>         指定监听地址，默认 0.0.0.0:9000
@@ -79,7 +80,7 @@ resolve_path() {
   if [[ "$input_path" = /* ]]; then
     printf '%s\n' "$input_path"
   else
-    printf '%s\n' "$SCRIPT_DIR/$input_path"
+    printf '%s\n' "$PROJECT_ROOT/$input_path"
   fi
 }
 
@@ -129,8 +130,8 @@ parse_args() {
 }
 
 get_rust_toolchain_channel() {
-  if [[ -f "$SCRIPT_DIR/rust-toolchain.toml" ]]; then
-    awk -F'"' '/^[[:space:]]*channel[[:space:]]*=/ { print $2; exit }' "$SCRIPT_DIR/rust-toolchain.toml"
+  if [[ -f "$PROJECT_ROOT/rust-toolchain.toml" ]]; then
+    awk -F'"' '/^[[:space:]]*channel[[:space:]]*=/ { print $2; exit }' "$PROJECT_ROOT/rust-toolchain.toml"
   fi
 }
 
@@ -399,12 +400,12 @@ build_console_locally() {
 
 build_console_with_docker() {
   ensure_docker_ready
-  mkdir -p "$SCRIPT_DIR/.cache/npm"
+  mkdir -p "$PROJECT_ROOT/.cache/npm"
   log "开始使用 Docker 构建控制台前端..."
 
   docker run --rm \
-    -v "$SCRIPT_DIR:/workspace" \
-    -v "$SCRIPT_DIR/.cache/npm:/root/.npm" \
+    -v "$PROJECT_ROOT:/workspace" \
+    -v "$PROJECT_ROOT/.cache/npm:/root/.npm" \
     -w /workspace/web/console \
     -e RUSTIO_NPM_REGISTRY="${RUSTIO_NPM_REGISTRY:-}" \
     node:22-alpine \
@@ -417,7 +418,7 @@ console_build_stamp() {
 
 console_build_needed() {
   local stamp_path=""
-  local console_root="$SCRIPT_DIR/web/console"
+  local console_root="$PROJECT_ROOT/web/console"
   local watch_targets=(
     "$console_root/package.json"
     "$console_root/package-lock.json"
@@ -495,7 +496,7 @@ build_backend() {
   log "开始构建后端..."
   CARGO_REGISTRIES_CRATES_IO_PROTOCOL="${CARGO_REGISTRIES_CRATES_IO_PROTOCOL:-sparse}" \
     cargo build --locked --release -p rustio
-  [[ -x "$SCRIPT_DIR/target/release/rustio" ]] || fail "后端构建完成，但未找到可执行文件：$SCRIPT_DIR/target/release/rustio / Backend build finished but executable was not found: $SCRIPT_DIR/target/release/rustio"
+  [[ -x "$PROJECT_ROOT/target/release/rustio" ]] || fail "后端构建完成，但未找到可执行文件：$PROJECT_ROOT/target/release/rustio / Backend build finished but executable was not found: $PROJECT_ROOT/target/release/rustio"
 }
 
 run_rustio() {

@@ -3,12 +3,13 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT"
 
 RUSTIO_ADDR="${RUSTIO_ADDR:-0.0.0.0:9000}"
 RUSTIO_HOST_PORT="${RUSTIO_HOST_PORT:-9000}"
 RUSTIO_CONTAINER_PORT="${RUSTIO_CONTAINER_PORT:-9000}"
-RUSTIO_DATA_DIR_HOST="${RUSTIO_DATA_DIR_HOST:-$SCRIPT_DIR/data}"
+RUSTIO_DATA_DIR_HOST="${RUSTIO_DATA_DIR_HOST:-$PROJECT_ROOT/data}"
 RUSTIO_DATA_DIR_CONTAINER="${RUSTIO_DATA_DIR_CONTAINER:-/app/data}"
 RUSTIO_CONTAINER_NAME="${RUSTIO_CONTAINER_NAME:-rustio}"
 RUSTIO_IMAGE_NAME="${RUSTIO_IMAGE_NAME:-rustio-rustio}"
@@ -44,7 +45,7 @@ fail() {
 
 usage() {
   cat <<'EOF'
-用法: ./start.sh [选项]
+用法: ./scripts/start.sh [选项]
 
 选项:
   --build, --rebuild         构建前强制重建镜像
@@ -81,7 +82,7 @@ resolve_path() {
   if [[ "$input_path" = /* ]]; then
     printf '%s\n' "$input_path"
   else
-    printf '%s\n' "$SCRIPT_DIR/$input_path"
+    printf '%s\n' "$PROJECT_ROOT/$input_path"
   fi
 }
 
