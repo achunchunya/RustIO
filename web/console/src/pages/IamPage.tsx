@@ -84,6 +84,8 @@ export function IamPage({ client }: IamPageProps) {
     reloadAll().catch((requestError) => {
       toast.error(requestError instanceof Error ? requestError.message : '加载 IAM 失败');
     });
+    const interval = window.setInterval(() => { void reloadAll(); }, 15000);
+    return () => window.clearInterval(interval);
   }, [client]);
 
   return (

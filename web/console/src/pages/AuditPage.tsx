@@ -78,6 +78,8 @@ export function AuditPage({ client }: AuditPageProps) {
       setLoading(false);
       toast.error(requestError instanceof Error ? requestError.message : '加载审计事件失败');
     });
+    const interval = window.setInterval(() => { void reload(); }, 15000);
+    return () => window.clearInterval(interval);
   }, [client]);
 
   return (

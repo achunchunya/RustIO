@@ -100,6 +100,8 @@ export function JobsPage({ client }: JobsPageProps) {
     reload(undefined, true).catch((requestError) => {
       toast.error(requestError instanceof Error ? requestError.message : '加载统一任务列表失败');
     });
+    const interval = window.setInterval(() => { void reload(undefined, true); }, 15000);
+    return () => window.clearInterval(interval);
   }, [client, filters]);
 
   async function runBulkAction(

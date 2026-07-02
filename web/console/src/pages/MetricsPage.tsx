@@ -133,6 +133,8 @@ export function MetricsPage({ client }: MetricsPageProps) {
 
   useEffect(() => {
     void reload();
+    const interval = window.setInterval(() => { void reload(); }, 15000);
+    return () => window.clearInterval(interval);
   }, [client]);
 
   const metricsLines = useMemo(
@@ -205,7 +207,20 @@ export function MetricsPage({ client }: MetricsPageProps) {
                 if (!rawMetrics) return;
                 setCopying(true);
                 try {
-                  await navigator.clipboard.writeText(rawMetrics);
+                  // 优先用 Clipboard API；部分浏览器仅在 HTTPS/localhost 且需用户手势才能用。
+                  // 失败时回退到 document.execCommand('copy')，兼容所有主流浏览器和 HTTP 场景。
+                  try {
+                    await navigator.clipboard.writeText(rawMetrics);
+                  } catch {
+                    const ta = document.createElement('textarea');
+                    ta.value = rawMetrics;
+                    ta.style.position = 'fixed';
+                    ta.style.left = '-9999px';
+                    document.body.appendChild(ta);
+                    ta.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(ta);
+                  }
                   toast.success('Prometheus 指标文本已复制');
                 } catch {
                   toast.error('复制指标文本失败');

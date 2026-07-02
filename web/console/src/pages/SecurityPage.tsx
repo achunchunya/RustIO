@@ -123,6 +123,8 @@ export function SecurityPage({ client }: SecurityPageProps) {
     reload().catch((requestError) => {
       toast.error(requestError instanceof Error ? requestError.message : '加载安全配置失败');
     });
+    const interval = window.setInterval(() => { void reload(); }, 15000);
+    return () => window.clearInterval(interval);
   }, [client]);
 
   function boolText(value: boolean) {

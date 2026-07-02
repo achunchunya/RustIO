@@ -280,6 +280,8 @@ export function AlertsPage({ client }: AlertsPageProps) {
     reloadAll().catch((requestError) => {
       toast.error(requestError instanceof Error ? requestError.message : '加载告警配置失败');
     });
+    const interval = window.setInterval(() => { void reloadAll(); }, 15000);
+    return () => window.clearInterval(interval);
   }, [client]);
 
   const sortedChannels = useMemo(

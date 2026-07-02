@@ -299,6 +299,14 @@ export function ObjectsPage({ client, canWrite = true }: ObjectsPageProps) {
       .catch((requestError) => {
         toast.error(requestError instanceof Error ? requestError.message : '加载对象浏览器失败');
       });
+    const interval = window.setInterval(() => {
+      reloadBuckets()
+        .then(() => reloadObjects())
+        .catch((requestError) => {
+          toast.error(requestError instanceof Error ? requestError.message : '自动刷新对象浏览器失败');
+        });
+    }, 15000);
+    return () => window.clearInterval(interval);
   }, [client]);
 
   useEffect(() => {

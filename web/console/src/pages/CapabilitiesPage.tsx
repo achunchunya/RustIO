@@ -79,6 +79,8 @@ export function CapabilitiesPage({ client }: { client: ApiClient }) {
 
   useEffect(() => {
     void reload();
+    const interval = window.setInterval(() => { void reload(); }, 15000);
+    return () => window.clearInterval(interval);
   }, [reload]);
 
   const ecData = caps?.ec_data_shards ?? summary?.storage.ec_data_shards ?? 0;

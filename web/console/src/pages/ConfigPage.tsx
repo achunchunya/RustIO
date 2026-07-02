@@ -50,6 +50,8 @@ export function ConfigPage({ client, canWrite }: ConfigPageProps) {
         toast.error(requestError instanceof Error ? requestError.message : '加载配置中心失败');
       })
       .finally(() => setLoading(false));
+    const interval = window.setInterval(() => { void reload(); }, 15000);
+    return () => window.clearInterval(interval);
   }, [client]);
 
   return (

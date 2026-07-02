@@ -458,6 +458,8 @@ export function BucketsPage({ client }: BucketsPageProps) {
     reload().catch((requestError) => {
       toast.error(requestError instanceof Error ? requestError.message : '加载桶列表失败');
     });
+    const interval = window.setInterval(() => { void reload(); }, 15000);
+    return () => window.clearInterval(interval);
   }, [client]);
 
   const sortedBuckets = useMemo(

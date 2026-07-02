@@ -54,6 +54,26 @@ export function DashboardPage({ client, token }: DashboardPageProps) {
       .catch((requestError) => {
         setError(requestError instanceof Error ? requestError.message : '加载集群总览失败');
       });
+
+    async function reloadDashboard() {
+      try {
+        const [healthSnapshot, metricsSummary, nodesSnapshot, quotaSnapshot] = await Promise.all([
+          clusterService.health(client),
+          systemService.metricsSummary(client),
+          clusterService.nodes(client),
+          clusterService.quotas(client)
+        ]);
+        setHealth(healthSnapshot);
+        setSummary(metricsSummary);
+        setNodes(nodesSnapshot);
+        setQuotas(quotaSnapshot);
+      } catch (requestError) {
+        setError(requestError instanceof Error ? requestError.message : '加载集群总览失败');
+      }
+    }
+
+    const interval = window.setInterval(() => { void reloadDashboard(); }, 15000);
+    return () => window.clearInterval(interval);
   }, [client]);
 
   return (

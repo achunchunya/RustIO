@@ -86,6 +86,8 @@ export function StoragePage({ client, canWrite }: { client: ApiClient; canWrite:
 
   useEffect(() => {
     void reload();
+    const interval = window.setInterval(() => { void reload(); }, 15000);
+    return () => window.clearInterval(interval);
   }, [reload]);
 
   return (

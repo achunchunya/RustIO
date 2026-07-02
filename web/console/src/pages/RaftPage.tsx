@@ -25,6 +25,8 @@ export function RaftPage({ client, canWrite }: { client: ApiClient; canWrite: bo
 
   useEffect(() => {
     void reload();
+    const interval = window.setInterval(() => { void reload(); }, 15000);
+    return () => window.clearInterval(interval);
   }, [reload]);
 
   const runAction = async (fn: () => Promise<MetadataRaftStatus>, ok: string) => {

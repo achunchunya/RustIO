@@ -134,6 +134,8 @@ export function ReplicationPage({ client }: ReplicationPageProps) {
     reload().catch((requestError) => {
       toast.error(requestError instanceof Error ? requestError.message : '加载复制状态失败');
     });
+    const interval = window.setInterval(() => { void reload(); }, 15000);
+    return () => window.clearInterval(interval);
   }, [client]);
 
   function replicationStatusText(status: string) {
