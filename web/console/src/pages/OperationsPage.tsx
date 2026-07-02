@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ApiClient } from '../api/client';
 import { clusterService } from '../api/services';
 import { ConfirmActionDialog } from '../components/ConfirmActionDialog';
@@ -24,6 +24,8 @@ export function OperationsPage({ client }: OperationsPageProps) {
     reload().catch((requestError) => {
       toast.error(requestError instanceof Error ? requestError.message : '加载节点失败');
     });
+    const timer = window.setInterval(() => { void reload(); }, 15000);
+    return () => window.clearInterval(timer);
   }, [client]);
 
   return (

@@ -101,6 +101,8 @@ export function ArchitecturePage({ client }: { client: ApiClient }) {
 
   useEffect(() => {
     void reload();
+    const timer = window.setInterval(() => { void reload(); }, 15000);
+    return () => window.clearInterval(timer);
   }, [reload]);
 
   return (
