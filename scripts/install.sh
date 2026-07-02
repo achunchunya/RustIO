@@ -830,11 +830,16 @@ cmd_upgrade() {
 
 cluster_up() {
   local num_nodes="$1" base_port="$2" data_root="$3" version="$4"
+  local join_seed="${5:-}"   # 格式: node_id=http://host:port,加入已有集群做种子
+  local join_token="${6:-}"  # 加入时用的内部通信令牌
 
   echo "=== RustIO 本地多节点集群 ==="
   echo "  节点数: ${num_nodes}"
   echo "  起始端口: ${base_port}"
   echo "  数据目录: ${data_root}"
+  if [[ -n "${join_seed}" ]]; then
+    echo "  加入已有集群: ${join_seed}"
+  fi
 
   local use_systemd=0
   if command -v systemctl >/dev/null 2>&1; then
@@ -846,7 +851,8 @@ cluster_up() {
       local ans
       prompt ans "  用 sudo 重新执行以获得持久化? [Y/n] " "Y"
       if [[ ! "${ans}" =~ ^[Nn]$ ]]; then
-        exec sudo -E "$0" cluster --nodes "${num_nodes}" --base-port "${base_port}" --data "${data_root}" ${version:+--version "${version}"}
+        exec sudo -E "$0" cluster --nodes "${num_nodes}" --base-port "${base_port}" --data "${data_root}" \
+          ${version:+--version "${version}"} ${join_seed:+--join "${join_seed}"} ${join_token:+--join-token "${join_token}"}
       fi
       echo "  改用本次会话内 nohup 常驻(重启机器/终端会话结束后不保留)。"
     fi
@@ -872,7 +878,12 @@ cluster_up() {
 
   mkdir -p "${data_root}/.pids"
   local internal_token
-  internal_token="rustio-cluster-$(date +%s)-$$"
+  # 加入已有集群时复用对方的 token——否则所有节点必须共享同一个 RUSTIO_INTERNAL_TOKEN 才能互相验证内部请求。
+  if [[ -n "${join_token}" ]]; then
+    internal_token="${join_token}"
+  else
+    internal_token="rustio-cluster-$(date +%s)-$$"
+  fi
   local root_pass
   root_pass=$(gen_password)
   local jwt_secret
@@ -884,6 +895,10 @@ cluster_up() {
     [[ -n "${peer_map}" ]] && peer_map="${peer_map},"
     peer_map="${peer_map}meta-${i}=http://127.0.0.1:${port}"
   done
+  # 把要加入的已有集群种子节点拼进 peer_map，让新节点 raft 启动时能识别为初始成员。
+  if [[ -n "${join_seed}" ]]; then
+    peer_map="${peer_map},${join_seed}"
+  fi
 
   local nodes_conf="${data_root}/nodes.conf"
   : > "${nodes_conf}"
@@ -1028,30 +1043,47 @@ cmd_cluster() {
   local data_root="${RUSTIO_CLUSTER_DATA:-${HOME}/.rustio/cluster}"
   local version="${RUSTIO_VERSION:-}"
   local down=0
+  local join_seed=""  # 格式: node_id=http://host:port
+  local join_token="" # 加入已有集群的内部通信令牌
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --nodes)     num_nodes="$2"; shift 2 ;;
-      --base-port) base_port="$2"; shift 2 ;;
-      --data)      data_root="$2"; shift 2 ;;
-      --version)   version="$2"; shift 2 ;;
-      --down)      down=1; shift ;;
+      --nodes)      num_nodes="$2"; shift 2 ;;
+      --base-port)  base_port="$2"; shift 2 ;;
+      --data)       data_root="$2"; shift 2 ;;
+      --version)    version="$2"; shift 2 ;;
+      --join)       join_seed="$2"; shift 2 ;;
+      --join-token) join_token="$2"; shift 2 ;;
+      --down)       down=1; shift ;;
       --help|-h)
         echo "用法: $0 cluster [--nodes 3] [--base-port 19801] [--data <目录>] [--version vX]"
         echo "      $0 cluster --down [--data <目录>]"
+        echo "      $0 cluster [选项] --join <node_id>=http://<host>:<port> [--join-token <token>]"
         echo "本地起 N 个节点组成 Raft 集群,用于测试/开发。有 systemd+root 时注册为持久化服务,"
         echo "否则用 nohup 常驻本次会话。默认数据目录 ~/.rustio/cluster。"
+        echo "--join 指定把新节点加入已有集群(种子节点地址),--join-token 指定内部通信令牌,"
+        echo "不写时从 /etc/rustio/env 自动获取(由 install 或 expand 子命令写入)。"
         return 0 ;;
       *) fail "未知参数: $1(cluster)" ;;
     esac
   done
+
+  # 没有显式给 join-token 时,尝试从已有单机/env配置里提取。
+  if [[ -z "${join_token}" && -n "${join_seed}" ]]; then
+    if [[ -r "/etc/rustio/env" ]]; then
+      join_token=$(grep '^RUSTIO_INTERNAL_TOKEN=' /etc/rustio/env 2>/dev/null | cut -d= -f2- || true)
+    fi
+    if [[ -z "${join_token}" ]]; then
+      fail "--join 需要 --join-token,但未提供且未在 /etc/rustio/env 中找到 RUSTIO_INTERNAL_TOKEN。请用 expand 子命令先扩容单机,再 cluster --join。"
+    fi
+  fi
 
   if [[ "${down}" == "1" ]]; then
     cluster_down "${data_root}"
     return 0
   fi
 
-  cluster_up "${num_nodes}" "${base_port}" "${data_root}" "${version}"
+  cluster_up "${num_nodes}" "${base_port}" "${data_root}" "${version}" "${join_seed}" "${join_token}"
 }
 
 # ── expand(把已有单机实例扩容为集群) ──
@@ -1159,11 +1191,16 @@ cmd_expand() {
   echo "  ✅ 已扩容为集群模式(node_id=${node_id})"
   echo "=========================================="
   echo ""
-  echo "  在新机器上加入集群,执行:"
-  local first_peer="${peers[0]}"
-  local new_id="${first_peer%%=*}"
+  echo "  在同一台机器或另一台机器上新增节点加入本集群:"
+  echo ""
+  echo "  # 方式一 · 全新安装节点并自动加入"
   echo "    curl -sSL https://raw.githubusercontent.com/${REPO}/main/scripts/install.sh \\"
-  echo "      | RUSTIO_CLUSTER_NODE_ID=${new_id} RUSTIO_CLUSTER_SEEDS=${seeds} RUSTIO_INTERNAL_TOKEN=${internal_token} bash -s -- install"
+  echo "      | RUSTIO_CLUSTER_NODE_ID=2 RUSTIO_CLUSTER_SEEDS=${seeds} RUSTIO_INTERNAL_TOKEN=${internal_token} bash -s -- install"
+  echo ""
+  echo "  # 方式二 · 用 cluster 子命令本地起多个节点连上来"
+  echo "    ${0} cluster --nodes 2 --base-port 19901 --join ${node_id}=${node_addr} --join-token ${internal_token}"
+  echo ""
+  echo "  # 方式三 · 手动安装二进制后,对应脚本里面设置好 RUSTIO_CLUSTER_NODE_ID/RUSTIO_CLUSTER_SEEDS/RUSTIO_INTERNAL_TOKEN 再启动"
   echo ""
   echo "  新节点启动后会自动发现并加入本集群,无需额外操作。"
 }
@@ -1230,7 +1267,17 @@ cmd_menu() {
         echo "  未输入,取消"
         return 1
       fi
-      cmd_expand --peer "${peer}"
+      local yn
+      prompt yn "  新节点在同一个机器上? [Y/n] " "Y"
+      if [[ "${yn}" =~ ^[Yy]$ ]]; then
+        echo "  同一台机器:用 cluster --join 在本机加更多节点。"
+        local n bp
+        prompt n "  新节点数 [2]: " "2"
+        prompt bp "  起始端口 [19901]: " "19901"
+        cmd_cluster --nodes "${n}" --base-port "${bp}" --join "${peer}"
+      else
+        cmd_expand --peer "${peer}"
+      fi
       ;;
     0) echo "  已退出" ;;
     *) echo "  无效选项" ; return 1 ;;
