@@ -1093,7 +1093,17 @@ async fn system_raft_read_index(
     })))
 }
 
-async fn prometheus_metrics(State(state): State<Arc<AppState>>) -> Result<Response, AppError> {
+async fn prometheus_metrics(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    // 浏览器在控制台"指标中心"页刷新时(Accept: text/html)返回 SPA 页面,
+    // 避免精确路由 /metrics 遮蔽前端路由;Prometheus 抓取器(Accept: */*)不受影响。
+    if request_accepts_html(&headers) {
+        if let Some(response) = serve_console_path("metrics", true).await {
+            return Ok(response);
+        }
+    }
     let summary = build_system_metrics_summary(&state).await;
     Ok((
         StatusCode::OK,

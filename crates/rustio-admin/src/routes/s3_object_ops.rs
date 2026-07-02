@@ -9,9 +9,11 @@ pub(crate) async fn s3_root_get_object(
     headers: HeaderMap,
     Path((bucket, key)): Path<(String, String)>,
 ) -> Response {
+    // 无 query 的裸 GET,或浏览器刷新(Accept: text/html,可能带 query 如 ?code=xxx)
+    // 都优先走 website / console fallback;S3 SDK 与签名请求不受影响。
     if method == Method::GET
-        && uri.query().is_none()
         && !is_s3_signed_request(&headers, uri.query())
+        && (uri.query().is_none() || request_accepts_html(&headers))
     {
         // bucket 配了 website 则按静态网站语义服务(优先于 console fallback)。
         if let Some(response) = serve_website_request(&state, &bucket, &key).await {
